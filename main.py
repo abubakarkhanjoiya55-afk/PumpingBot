@@ -36,10 +36,10 @@ SYMBOLS = [
 DAILY_MAX_LOSS_PCT   = 0.02
 DAILY_TRAIL_START    = 0.02
 DAILY_TRAIL_GAP      = 0.01
-RISK_PER_TRADE_PCT   = 0.005
+RISK_PER_TRADE_PCT   = 0.002
 MAX_OPEN_TRADES      = 5
-MIN_SCORE            = 70
-STRONG_SCORE         = 85
+MIN_SCORE            = 60
+STRONG_SCORE         = 80
 MAX_SPREAD_POINTS    = 2000
 
 # Cooldown: condition-based (minimum 5 min, phir signal dekho)
