@@ -132,7 +132,7 @@ class MT5Manager:
 
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
         if not self._ready: return None
-        data = self._run(self._connection.get_candles(symbol, timeframe, count=count))
+        data = self._run(self._async_get_candles(symbol, timeframe, count))
         if not data: return None
         return [{
             'open':  c.get('open', 0),
@@ -141,6 +141,14 @@ class MT5Manager:
             'close': c.get('close', 0),
             'time':  c.get('time', 0),
         } for c in data]
+
+    async def _async_get_candles(self, symbol, timeframe, count):
+        try:
+            data = await self._account.get_historical_candles(symbol, timeframe, count=count)
+            return data
+        except Exception as e:
+            print(f'[Candles] {e}')
+            return None
 
     def order_send(self, request):
         if not self._ready: return TradeResult(False)
