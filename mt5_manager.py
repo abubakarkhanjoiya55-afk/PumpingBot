@@ -144,7 +144,9 @@ class MT5Manager:
 
     async def _async_get_candles(self, symbol, timeframe, count):
         try:
-            data = await self._account.get_historical_candles(symbol, timeframe, count=count)
+            from datetime import datetime, timezone
+            start_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            data = await self._account.get_historical_candles(symbol, timeframe, start_time, count)
             return data
         except Exception as e:
             print(f'[Candles] {e}')
