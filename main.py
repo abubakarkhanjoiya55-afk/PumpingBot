@@ -35,7 +35,6 @@ SYMBOLS = [
     "BTCUSDm", "ETHUSDm", "SOLUSDm",
 ]
 
-# ---- RISK SETTINGS ----
 DAILY_MAX_LOSS_PCT   = 0.02
 DAILY_TRAIL_START    = 0.02
 DAILY_TRAIL_GAP      = 0.01
@@ -45,30 +44,17 @@ MIN_SCORE            = 55
 STRONG_SCORE         = 75
 MAX_SPREAD_POINTS    = 2000
 MIN_COOLDOWN_SEC     = 300
-
-# Score 60-75: Fast scalp — ATR 50% target
-# Score 75+: Hold — trailing SL after $10 profit
-SCALP_ATR_MULT       = 0.5   # 60-75 score: TP = ATR * 0.5
-HOLD_MIN_PROFIT      = 10.0  # 75+ score: start trailing after $10
-HOLD_TRAIL_PCT       = 0.5   # lock 50% of peak profit
+SCALP_ATR_MULT       = 0.5
+HOLD_MIN_PROFIT      = 10.0
+HOLD_TRAIL_PCT       = 0.5
 
 TRAILING_LEVELS = [
-    (2.0,  1.0),
-    (5.0,  3.0),
-    (8.0,  5.0),
-    (10.0, 7.0),
-    (12.0, 9.0),
-    (15.0, 12.0),
-    (18.0, 14.0),
-    (20.0, 16.0),
-    (25.0, 20.0),
-    (30.0, 25.0),
-    (40.0, 33.0),
-    (50.0, 42.0),
+    (2.0,  1.0), (5.0,  3.0), (8.0,  5.0), (10.0, 7.0),
+    (12.0, 9.0), (15.0, 12.0), (18.0, 14.0), (20.0, 16.0),
+    (25.0, 20.0), (30.0, 25.0), (40.0, 33.0), (50.0, 42.0),
 ]
 
 def get_profit_target(score, atr, symbol):
-    """Score 60-75: fast scalp ATR-based. Score 75+: bigger target."""
     info = mt5_manager.symbol_info(symbol)
     if info is None or atr == 0:
         return 5.0
@@ -78,14 +64,10 @@ def get_profit_target(score, atr, symbol):
         return 5.0
     atr_ticks  = atr / tick_size
     atr_dollar = atr_ticks * tick_value * 0.01
-
     if score >= 75:
-        # Hold trade — bigger target
         mult = 2.0 if score >= 85 else 1.5
     else:
-        # Scalp trade — 50% ATR
         mult = SCALP_ATR_MULT
-
     return round(max(2.0, min(150.0, atr_dollar * mult)), 2)
 
 def get_locked_profit(current_profit):
@@ -98,7 +80,6 @@ def get_locked_profit(current_profit):
 def is_scalp_trade(score):
     return score < STRONG_SCORE
 
-# ---- DB MODELS ----
 class User(Base):
     __tablename__ = "users"
     id               = Column(Integer, primary_key=True, index=True)
@@ -190,7 +171,6 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
-# ---- INDICATORS ----
 def ema(prices, period):
     if len(prices) < period:
         return [prices[-1]] * len(prices)
@@ -387,17 +367,17 @@ def close_pos(pos, reason=""):
         if tick is None: return False, 0
         price = tick.bid if pos.type == 0 else tick.ask
         request = {
-            "action":      mt5_manager.TRADE_ACTION_DEAL,
-            "symbol":      pos.symbol,
-            "volume":      pos.volume,
-            "type":        mt5_manager.ORDER_TYPE_SELL if pos.type == 0 else mt5_manager.ORDER_TYPE_BUY,
-            "position":    pos.ticket,
-            "price":       price,
-            "deviation":   50,
-            "magic":       888888,
-            "comment":     f"PB_{reason}",
-            "type_time":   mt5_manager.ORDER_TIME_GTC,
-            "type_filling":mt5_manager.ORDER_FILLING_IOC,
+            "action":       mt5_manager.TRADE_ACTION_DEAL,
+            "symbol":       pos.symbol,
+            "volume":       pos.volume,
+            "type":         mt5_manager.ORDER_TYPE_SELL if pos.type == 0 else mt5_manager.ORDER_TYPE_BUY,
+            "position":     pos.ticket,
+            "price":        price,
+            "deviation":    50,
+            "magic":        888888,
+            "comment":      f"PB_{reason}",
+            "type_time":    mt5_manager.ORDER_TIME_GTC,
+            "type_filling": mt5_manager.ORDER_FILLING_IOC,
         }
         result = mt5_manager.order_send(request)
         return result.retcode == mt5_manager.TRADE_RETCODE_DONE, pos.profit
@@ -478,14 +458,14 @@ def run_user_bot(user_id, login, password, server):
         if not mt5_manager.initialize(login=login, password=password, server=server):
             print("[BOT] MT5 init failed")
             return
-    
+
     # Wait until ready
     for i in range(30):
         if mt5_manager._ready:
             break
         print(f"[BOT] Waiting for MetaApi... {i+1}/30")
         time.sleep(5)
-    
+
     if not mt5_manager._ready:
         print("[BOT] MetaApi timeout - stopping")
         return
@@ -494,8 +474,8 @@ def run_user_bot(user_id, login, password, server):
     daily_start_balance = None
     last_date           = None
     high_water_mark     = None
-    locked_profits      = {}   # ticket -> locked amount
-    peak_profits        = {}   # ticket -> peak profit (for hold trades)
+    locked_profits      = {}
+    peak_profits        = {}
     daily_peak_pnl      = 0.0
     day_locked_out      = False
 
@@ -503,6 +483,7 @@ def run_user_bot(user_id, login, password, server):
         try:
             info = mt5_manager.account_info()
             if info is None:
+                print("[BOT] account_info None - waiting...")
                 time.sleep(10)
                 continue
 
@@ -510,7 +491,6 @@ def run_user_bot(user_id, login, password, server):
             equity  = info.equity
             now     = datetime.now()
 
-            # ---- NEW DAY ----
             if last_date != now.date():
                 daily_start_balance = balance
                 last_date           = now.date()
@@ -527,7 +507,6 @@ def run_user_bot(user_id, login, password, server):
 
             daily_pnl_equity = (equity - daily_start_balance) / daily_start_balance
 
-            # ---- DAILY TRAILING LOCK ----
             if daily_pnl_equity > daily_peak_pnl:
                 daily_peak_pnl = daily_pnl_equity
 
@@ -536,7 +515,7 @@ def run_user_bot(user_id, login, password, server):
                 current_lock = daily_peak_pnl - DAILY_TRAIL_GAP
 
             if not day_locked_out and current_lock > 0 and daily_pnl_equity < current_lock:
-                print(f"[LOCK] Profit lock! Closing all — aaj band!")
+                print(f"[LOCK] Profit lock! Closing all!")
                 close_all_positions(user_id, "ProfitLock", balance)
                 day_locked_out = True
                 time.sleep(60)
@@ -563,17 +542,15 @@ def run_user_bot(user_id, login, password, server):
                 score = tr.score if tr else 60
                 db.close()
 
-                # Get current ATR for target
                 rates5 = mt5_manager.copy_rates_from_pos(
                     pos.symbol, mt5_manager.TIMEFRAME_M5, 0, 50)
                 atr = 0
-                if rates5 and len(rates5) > 14:
+                if rates5 is not None and len(rates5) > 14:
                     h5 = [r['high']  for r in rates5]
                     l5 = [r['low']   for r in rates5]
                     c5 = [r['close'] for r in rates5]
                     atr = calc_atr(h5, l5, c5)
 
-                # ---- TREND REVERSAL EXIT ----
                 current_trend, current_adx_4h, current_adx_1h = get_trend(pos.symbol)
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
                                  (trade_type == "SELL" and current_trend == "BUY")
@@ -591,7 +568,6 @@ def run_user_bot(user_id, login, password, server):
                         peak_profits.pop(ticket, None)
                     continue
 
-                # ---- DEAD MOMENTUM (loss trades only) ----
                 if current_profit < 0 and current_adx_1h < 15 and current_adx_4h < 15:
                     tick = mt5_manager.symbol_info_tick(pos.symbol)
                     done, profit = close_pos(pos, "DeadMomentum")
@@ -606,7 +582,6 @@ def run_user_bot(user_id, login, password, server):
 
                 profit_target = get_profit_target(score, atr, pos.symbol)
 
-                # ---- SCALP TRADE (score 60-75): Simple TP ----
                 if is_scalp_trade(score):
                     if current_profit >= profit_target:
                         tick = mt5_manager.symbol_info_tick(pos.symbol)
@@ -615,11 +590,9 @@ def run_user_bot(user_id, login, password, server):
                             cp = tick.bid if pos.type == 0 else tick.ask
                             update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
                             last_close_times[(user_id, pos.symbol)] = now
-                            fee = get_platform_fee(profit, user_id, balance)
+                            get_platform_fee(profit, user_id, balance)
                             print(f"[SCALP TP] {pos.symbol} ${profit:.2f}")
                         continue
-
-                    # Scalp trailing (small)
                     locked = get_locked_profit(current_profit)
                     if locked is not None:
                         prev = locked_profits.get(ticket, 0)
@@ -636,16 +609,10 @@ def run_user_bot(user_id, login, password, server):
                                 print(f"[SCALP TRAIL] {pos.symbol} ${profit:.2f}")
                                 locked_profits.pop(ticket, None)
                             continue
-
-                # ---- HOLD TRADE (score 75+): Trail after $10 ----
                 else:
-                    # Track peak profit
                     if current_profit > peak_profits.get(ticket, 0):
                         peak_profits[ticket] = current_profit
-
                     peak = peak_profits.get(ticket, 0)
-
-                    # After $10 profit — trail at 50% of peak
                     if peak >= HOLD_MIN_PROFIT:
                         trail_lock = peak * HOLD_TRAIL_PCT
                         if current_profit < trail_lock:
@@ -655,12 +622,10 @@ def run_user_bot(user_id, login, password, server):
                                 cp = tick.bid if pos.type == 0 else tick.ask
                                 update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
                                 last_close_times[(user_id, pos.symbol)] = now
-                                fee = get_platform_fee(max(0, profit), user_id, balance)
-                                print(f"[HOLD TRAIL] {pos.symbol} Peak:${peak:.2f} Locked:${trail_lock:.2f} Close:${profit:.2f}")
+                                get_platform_fee(max(0, profit), user_id, balance)
+                                print(f"[HOLD TRAIL] {pos.symbol} Peak:${peak:.2f} Close:${profit:.2f}")
                                 peak_profits.pop(ticket, None)
                             continue
-
-                    # Normal TP
                     if current_profit >= profit_target:
                         tick = mt5_manager.symbol_info_tick(pos.symbol)
                         done, profit = close_pos(pos, "HoldTP")
@@ -668,7 +633,7 @@ def run_user_bot(user_id, login, password, server):
                             cp = tick.bid if pos.type == 0 else tick.ask
                             update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
                             last_close_times[(user_id, pos.symbol)] = now
-                            fee = get_platform_fee(profit, user_id, balance)
+                            get_platform_fee(profit, user_id, balance)
                             print(f"[HOLD TP] {pos.symbol} ${profit:.2f}")
                             peak_profits.pop(ticket, None)
                         continue
@@ -698,20 +663,26 @@ def run_user_bot(user_id, login, password, server):
                     continue
 
                 sym_pos = [p for p in bot_pos if p.symbol == symbol]
-                if sym_pos: continue
+                if sym_pos:
+                    continue
 
                 tick     = mt5_manager.symbol_info_tick(symbol)
                 sym_info = mt5_manager.symbol_info(symbol)
-                if tick is None or sym_info is None: continue
+                if tick is None or sym_info is None:
+                    print(f"[NO TICK] {symbol}")
+                    continue
 
                 spread = (tick.ask - tick.bid) / sym_info.point
-                if spread > MAX_SPREAD_POINTS: continue
+                if spread > MAX_SPREAD_POINTS:
+                    continue
 
                 trend, adx_4h, adx_1h = get_trend(symbol)
 
                 rates5 = mt5_manager.copy_rates_from_pos(
                     symbol, mt5_manager.TIMEFRAME_M5, 0, 100)
-                if rates5 is None or len(rates5) < 30: continue
+                if rates5 is None or len(rates5) < 30:
+                    print(f"[NO DATA] {symbol} - candles nahi mile")
+                    continue
 
                 opens5  = [r['open']  for r in rates5]
                 highs5  = [r['high']  for r in rates5]
@@ -757,7 +728,8 @@ def run_user_bot(user_id, login, password, server):
                     continue
 
                 lot = calculate_lot(balance, atr, symbol)
-                if lot is None: continue
+                if lot is None:
+                    continue
 
                 entry = tick.ask if trend == "BUY" else tick.bid
                 sl    = entry - atr if trend == "BUY" else entry + atr
@@ -904,7 +876,6 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
 async def startup_event():
     db = SessionLocal()
     try:
-        # Auto create admin user
         existing = db.query(User).filter(User.username == "admin").first()
         if not existing:
             new_user = User(
@@ -921,7 +892,6 @@ async def startup_event():
         else:
             print("[STARTUP] Admin user exists!")
 
-        # Auto connect MT5
         mt5_manager.initialize(
             login=474114625,
             password="Tradingdemo.123",
@@ -929,7 +899,6 @@ async def startup_event():
         )
         print("[STARTUP] MT5 connecting...")
 
-        # Auto start bot
         user = db.query(User).filter(User.username == "admin").first()
         if user and not active_bots.get(user.id):
             active_bots[user.id] = True
