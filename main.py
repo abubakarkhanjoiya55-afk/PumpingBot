@@ -56,6 +56,14 @@ TRAILING_LEVELS = [
     (25.0, 20.0), (30.0, 25.0), (40.0, 33.0), (50.0, 42.0),
 ]
 
+# ─── FIX: Global threading.Event for proper thread synchronization ────────────
+# Bot thread waits on this event — set ONLY when MetaApi _ready=True
+metaapi_ready_event = threading.Event()
+active_bots         = {}
+last_close_times    = {}
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def get_profit_target(score, atr, symbol):
     info = mt5_manager.symbol_info(symbol)
     if info is None or atr == 0:
@@ -81,6 +89,7 @@ def get_locked_profit(current_profit):
 
 def is_scalp_trade(score):
     return score < STRONG_SCORE
+
 
 class User(Base):
     __tablename__ = "users"
@@ -127,6 +136,7 @@ class Signal(Base):
 
 Base.metadata.create_all(bind=engine)
 
+
 class UserCreate(BaseModel):
     username: str
     email: str
@@ -140,6 +150,7 @@ class MT5Credentials(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
 
 def get_db():
     db = SessionLocal()
@@ -172,6 +183,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
+
+# ─── Technical Indicators ─────────────────────────────────────────────────────
 
 def ema(prices, period):
     if len(prices) < period:
@@ -440,9 +454,6 @@ def sync_manual_closes(user_id, balance):
     finally:
         db.close()
 
-active_bots      = {}
-last_close_times = {}
-
 def close_all_positions(user_id, reason, balance):
     positions = mt5_manager.positions_get()
     if not positions: return
@@ -455,22 +466,33 @@ def close_all_positions(user_id, reason, balance):
                 update_trade_closed(user_id, pos.symbol, profit, cp, pos.ticket)
                 last_close_times[(user_id, pos.symbol)] = datetime.now()
 
+
+# ─── FIX: Bot thread now waits on threading.Event (not polling loop) ──────────
 def run_user_bot(user_id, login, password, server):
-    print("="*60)
-    print(f"[BOT] THREAD STARTED - Ready={mt5_manager._ready}")
-    print("="*60)
+    print("=" * 60)
+    print(f"[BOT] Thread started — waiting for MetaApi ready event...")
+    print("=" * 60)
 
-    for i in range(30):
-        if mt5_manager._ready:
-            break
-        print(f"[BOT] Waiting MetaApi... {i+1}/30")
-        time.sleep(2)
+    # FIX: Use threading.Event.wait() — reliable, no missed signals
+    # Waits up to 120 seconds for startup_event to set metaapi_ready_event
+    is_ready = metaapi_ready_event.wait(timeout=120)
 
-    if not mt5_manager._ready:
-        print("[BOT] MetaApi timeout - stopping")
+    if not is_ready or not mt5_manager._ready:
+        print("[BOT] MetaApi NOT ready after 120s timeout — aborting bot thread")
+        active_bots[user_id] = False
+        db = SessionLocal()
+        try:
+            u = db.query(User).filter(User.id == user_id).first()
+            if u:
+                u.bot_active = False
+                db.commit()
+        finally:
+            db.close()
         return
 
-    print("[BOT] PumpingBot Started!")
+    print(f"[BOT] MetaApi ready! _ready={mt5_manager._ready} — PumpingBot Starting!")
+    # ──────────────────────────────────────────────────────────────────────────
+
     daily_start_balance = None
     last_date           = None
     high_water_mark     = None
@@ -499,7 +521,7 @@ def run_user_bot(user_id, login, password, server):
                 day_locked_out      = False
                 locked_profits      = {}
                 peak_profits        = {}
-                print(f"[DAY] Naya din! Balance: ${balance:.2f}")
+                print(f"[DAY] New day! Balance: ${balance:.2f}")
 
             if daily_start_balance is None:
                 daily_start_balance = balance
@@ -508,7 +530,7 @@ def run_user_bot(user_id, login, password, server):
 
             if first_cycle:
                 first_cycle = False
-                print(f"[BOT] First cycle - baseline set. Balance: ${balance:.2f}, Equity: ${equity:.2f}")
+                print(f"[BOT] First cycle — Balance: ${balance:.2f}, Equity: ${equity:.2f}")
                 time.sleep(5)
                 continue
 
@@ -528,14 +550,14 @@ def run_user_bot(user_id, login, password, server):
                 current_lock = daily_peak_pnl - DAILY_TRAIL_GAP
 
             if not day_locked_out and current_lock > 0 and daily_pnl_equity < current_lock:
-                print(f"[LOCK] Profit lock! Closing all!")
+                print(f"[LOCK] Profit lock triggered! Closing all positions!")
                 close_all_positions(user_id, "ProfitLock", balance)
                 day_locked_out = True
                 time.sleep(60)
                 continue
 
             if daily_pnl_equity <= -DAILY_MAX_LOSS_PCT:
-                print(f"[STOP] Max loss hit!")
+                print(f"[STOP] Daily max loss hit! Closing all positions!")
                 close_all_positions(user_id, "MaxLoss", balance)
                 day_locked_out = True
                 time.sleep(600)
@@ -680,7 +702,7 @@ def run_user_bot(user_id, login, password, server):
                 tick     = mt5_manager.symbol_info_tick(symbol)
                 sym_info = mt5_manager.symbol_info(symbol)
                 if tick is None or sym_info is None:
-                    print(f"[NO TICK] {symbol}")
+                    print(f"[NO TICK] {symbol} — skipping (weekend/market closed?)")
                     continue
 
                 spread = (tick.ask - tick.bid) / sym_info.point
@@ -692,7 +714,7 @@ def run_user_bot(user_id, login, password, server):
                 rates5 = mt5_manager.copy_rates_from_pos(
                     symbol, mt5_manager.TIMEFRAME_M5, 0, 100)
                 if rates5 is None or len(rates5) < 30:
-                    print(f"[NO DATA] {symbol} - got: {len(rates5) if rates5 else 'None'}")
+                    print(f"[NO DATA] {symbol} — got: {len(rates5) if rates5 else 'None'}")
                     continue
 
                 opens5  = [r['open']  for r in rates5]
@@ -763,7 +785,8 @@ def run_user_bot(user_id, login, password, server):
                 result = mt5_manager.order_send(request)
                 if result.retcode == mt5_manager.TRADE_RETCODE_DONE:
                     target = get_profit_target(score, atr, symbol)
-                    print(f"[{trade_mode}] {symbol} {trend} Score:{score} Target:${target} Lot:{lot}")
+                    print(f"[{trade_mode}] TRADE PLACED! {symbol} {trend} "
+                          f"Score:{score} Target:${target} Lot:{lot}")
                     db = SessionLocal()
                     trade = Trade(
                         user_id=user_id, symbol=symbol, trade_type=trend,
@@ -773,7 +796,7 @@ def run_user_bot(user_id, login, password, server):
                     all_pos = mt5_manager.positions_get()
                     bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
                 else:
-                    print(f"[FAIL] {symbol}: {result.retcode}")
+                    print(f"[FAIL] {symbol}: retcode={result.retcode}")
 
                 time.sleep(1)
 
@@ -785,7 +808,10 @@ def run_user_bot(user_id, login, password, server):
             print(f"[ERROR] {e}")
             time.sleep(10)
 
-    print("[BOT] Stopped")
+    print("[BOT] Stopped cleanly")
+
+
+# ─── API Endpoints ─────────────────────────────────────────────────────────────
 
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
@@ -812,6 +838,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         "username":      current_user.username,
         "email":         current_user.email,
         "mt5_connected": current_user.mt5_login is not None,
+        "mt5_ready":     mt5_manager._ready,          # FIX: expose _ready to frontend
         "mt5_login":     current_user.mt5_login,
         "mt5_server":    current_user.mt5_server,
         "bot_active":    current_user.bot_active,
@@ -820,28 +847,66 @@ def get_me(current_user: User = Depends(get_current_user)):
         "equity":        info.equity  if info else 0,
     }
 
+# FIX: connect_mt5 is now async — so MetaApi await works properly
 @app.post("/connect-mt5")
-def connect_mt5(creds: MT5Credentials,
-                current_user: User = Depends(get_current_user),
-                db: Session = Depends(get_db)):
-    if not mt5_manager.initialize(login=creds.mt5_login,
-                                   password=creds.mt5_password,
-                                   server=creds.mt5_server):
-        raise HTTPException(400, "MT5 connection failed")
+async def connect_mt5(creds: MT5Credentials,
+                      current_user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    # FIX: Clear the ready event before re-initializing
+    metaapi_ready_event.clear()
+
+    success = mt5_manager.initialize(
+        login=creds.mt5_login,
+        password=creds.mt5_password,
+        server=creds.mt5_server
+    )
+    if not success:
+        raise HTTPException(400, "MT5 connection failed — check credentials")
+
+    # FIX: Wait for _ready in async context (up to 90 seconds)
+    print(f"[CONNECT] Waiting for MetaApi _ready after connect...")
+    for i in range(45):
+        if mt5_manager._ready:
+            metaapi_ready_event.set()   # FIX: Set event so bot thread unblocks
+            print(f"[CONNECT] MetaApi _ready=True after {i*2}s")
+            break
+        await asyncio.sleep(2)
+
+    if not mt5_manager._ready:
+        print("[CONNECT] MetaApi NOT ready after 90s — credentials saved, retry later")
+        # Still save credentials even if not ready yet
+        current_user.mt5_login    = creds.mt5_login
+        current_user.mt5_password = creds.mt5_password
+        current_user.mt5_server   = creds.mt5_server
+        db.commit()
+        raise HTTPException(400, "MT5 connected but MetaApi stream timeout — try /bot/start in 30s")
+
     info = mt5_manager.account_info()
     current_user.mt5_login    = creds.mt5_login
     current_user.mt5_password = creds.mt5_password
     current_user.mt5_server   = creds.mt5_server
     db.commit()
-    return {"message": f"Connected: {info.name if info else 'pending'}", "balance": info.balance if info else 0}
+    return {
+        "message": f"Connected: {info.name if info else 'OK'}",
+        "balance": info.balance if info else 0,
+        "mt5_ready": True
+    }
 
+# FIX: start_bot checks _ready before launching thread
 @app.post("/bot/start")
 def start_bot(current_user: User = Depends(get_current_user),
               db: Session = Depends(get_db)):
     if not current_user.mt5_login:
         raise HTTPException(400, "Connect MT5 first")
+    if not mt5_manager._ready:
+        raise HTTPException(400, "MetaApi not ready — reconnect MT5 first")
     if active_bots.get(current_user.id):
         return {"message": "Bot already running"}
+
+    # FIX: Ensure the event is set before starting thread
+    if mt5_manager._ready:
+        metaapi_ready_event.set()
+
     active_bots[current_user.id] = True
     current_user.bot_active = True
     db.commit()
@@ -882,6 +947,20 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
         for p in positions if p.magic == 888888
     ]
 
+# FIX: New endpoint to debug connection status
+@app.get("/status")
+def get_status(current_user: User = Depends(get_current_user)):
+    info = mt5_manager.account_info()
+    return {
+        "metaapi_ready":    mt5_manager._ready,
+        "event_set":        metaapi_ready_event.is_set(),
+        "bot_active":       active_bots.get(current_user.id, False),
+        "account_info_ok":  info is not None,
+        "balance":          info.balance if info else None,
+    }
+
+
+# ─── FIX: Startup Event — passes credentials, sets metaapi_ready_event ────────
 @app.on_event("startup")
 async def startup_event():
     db = SessionLocal()
@@ -900,16 +979,42 @@ async def startup_event():
             db.commit()
             print("[STARTUP] Admin user created!")
         else:
-            print("[STARTUP] Admin user exists!")
+            print("[STARTUP] Admin user already exists!")
 
-        mt5_manager.initialize()
+        # FIX: Get admin user and pass credentials to initialize()
+        # (previously called with no args — this was the root cause!)
+        user = db.query(User).filter(User.username == "admin").first()
+        if user and user.mt5_login:
+            print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
+            mt5_manager.initialize(
+                login=user.mt5_login,
+                password=user.mt5_password,
+                server=user.mt5_server
+            )
+        else:
+            print("[STARTUP] No credentials found — calling initialize() without args")
+            mt5_manager.initialize()
 
+        # FIX: Wait up to 90 seconds (was 45 iterations of 2s = 90s)
+        print("[STARTUP] Waiting for MetaApi _ready...")
         for i in range(45):
             if mt5_manager._ready:
                 break
             await asyncio.sleep(2)
-        print(f"[STARTUP] MetaApi ready = {mt5_manager._ready}")
+            if i % 5 == 0:
+                print(f"[STARTUP] Still waiting... {i*2}s elapsed")
 
+        print(f"[STARTUP] MetaApi _ready = {mt5_manager._ready}")
+
+        if mt5_manager._ready:
+            # FIX: Set the threading.Event so bot thread can proceed
+            metaapi_ready_event.set()
+            print("[STARTUP] metaapi_ready_event SET ✓")
+        else:
+            print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
+            print("[STARTUP] Go to MT5 page → Connect → then Start Bot manually")
+
+        # Auto-start bot only when MetaApi is confirmed ready
         user = db.query(User).filter(User.username == "admin").first()
         if user and mt5_manager._ready and not active_bots.get(user.id):
             active_bots[user.id] = True
@@ -920,14 +1025,23 @@ async def startup_event():
                 args=(user.id, user.mt5_login,
                       user.mt5_password, user.mt5_server),
                 daemon=True).start()
-            print("[STARTUP] Bot auto-started!")
+            print("[STARTUP] PumpingBot auto-started!")
         elif not mt5_manager._ready:
-            print("[STARTUP] MetaApi NOT ready - bot NOT started. Use /bot/start after /connect-mt5.")
+            print("[STARTUP] Auto-start skipped — MetaApi not ready")
+            print("[STARTUP] Use /connect-mt5 then /bot/start after deployment")
+
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[STARTUP] Error: {e}")
     finally:
         db.close()
 
+
 @app.get("/")
 def root():
-    return {"message": "PumpingBot Smart API"}
+    return {
+        "message":       "PumpingBot Smart API",
+        "metaapi_ready": mt5_manager._ready,
+        "event_set":     metaapi_ready_event.is_set(),
+    }
