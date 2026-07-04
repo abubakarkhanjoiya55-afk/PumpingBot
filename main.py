@@ -709,6 +709,10 @@ def run_user_bot(user_id, login, password, server):
                 if spread > MAX_SPREAD_POINTS:
                     continue
 
+                if spread > MAX_SPREAD_POINTS:
+                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f}")
+                    continue
+
                 trend, adx_4h, adx_1h = get_trend(symbol)
 
                 rates5 = mt5_manager.copy_rates_from_pos(
