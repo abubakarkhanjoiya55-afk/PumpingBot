@@ -11,7 +11,11 @@ import bcrypt as _bcrypt
 import threading
 import time
 import asyncio
-from mt5_manager import mt5_manager
+import smtplib
+import uuid
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager
 
 SECRET_KEY = "goldbot-secret-key-2024"
 ALGORITHM = "HS256"
@@ -19,6 +23,11 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
 import os
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./goldbot.db")
+
+# Email config — Railway environment variables se
+EMAIL_USER  = os.environ.get("EMAIL_USER",  "pumpingbot333@gmail.com")
+EMAIL_PASS  = os.environ.get("EMAIL_PASS",  "")
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "pumpingbot333@gmail.com")
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
@@ -43,6 +52,7 @@ DAILY_TRAIL_GAP      = 0.01
 RISK_PER_TRADE_PCT   = 0.002
 MAX_OPEN_TRADES      = 5
 MIN_SCORE            = 55
+MASTER_USER_ID       = 1   # Admin = Master account (copy trading hub)
 STRONG_SCORE         = 75
 MAX_SPREAD_POINTS    = 2000
 SYMBOL_MAX_SPREAD = {
@@ -56,13 +66,13 @@ SYMBOL_MAX_SPREAD = {
     "USDJPYm":  2000,
     "AUDUSDm":  2000,
     "USDCADm":  2000,
-    "GBPJPYm":  2000,
+    "GBPJPYm":  8000,
     "NZDUSDm":  2000,
 }
 MIN_COOLDOWN_SEC     = 300
 SCALP_ATR_MULT       = 0.5
 HOLD_MIN_PROFIT      = 10.0
-HOLD_TRAIL_PCT       = 0.5
+HOLD_TRAIL_PCT       = 0.70
 
 TRAILING_LEVELS = [
     (2.0,  1.0), (5.0,  3.0), (8.0,  5.0), (10.0, 7.0),
@@ -75,6 +85,40 @@ TRAILING_LEVELS = [
 metaapi_ready_event = threading.Event()
 active_bots         = {}
 last_close_times    = {}
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─── CONNECTION POOL: Har user ka alag MT5 connection ─────────────────────────
+# user_id → mt5_connection_object
+# Master (user_id=1) = mt5_manager (existing singleton)
+# Followers = unka apna connection object (same class as mt5_manager)
+user_connections     = {}   # {user_id: connection_object}
+user_ready_events    = {}   # {user_id: threading.Event}
+
+def pool_get(user_id):
+    """User ka connection lo — master ke liye mt5_manager use karo"""
+    if user_id == MASTER_USER_ID:
+        return mt5_manager   # Master ka singleton
+    return user_connections.get(user_id)  # Follower ka pool connection
+
+def pool_add(user_id, connection):
+    """Naya user connected — uska connection pool mein add karo"""
+    user_connections[user_id] = connection
+    ev = threading.Event()
+    user_ready_events[user_id] = ev
+    print(f"[POOL] User {user_id} connection added. Pool size: {len(user_connections)+1}")
+
+def pool_remove(user_id):
+    """User disconnect hua — pool se hata do"""
+    user_connections.pop(user_id, None)
+    user_ready_events.pop(user_id, None)
+    print(f"[POOL] User {user_id} connection removed. Pool size: {len(user_connections)+1}")
+
+def pool_is_ready(user_id):
+    """Check karo user ka connection ready hai ya nahi"""
+    conn = pool_get(user_id)
+    if conn is None:
+        return False
+    return getattr(conn, '_ready', False)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -114,9 +158,18 @@ class User(Base):
     mt5_login        = Column(Integer, nullable=True)
     mt5_password     = Column(String, nullable=True)
     mt5_server       = Column(String, nullable=True)
-    bot_active       = Column(Boolean, default=False)
-    high_water_mark  = Column(Float, nullable=True)
-    created_at       = Column(DateTime, default=datetime.utcnow)
+    bot_active          = Column(Boolean, default=False)
+    high_water_mark     = Column(Float, nullable=True)
+    metaapi_account_id  = Column(String, nullable=True)
+    # Referral system
+    referral_code       = Column(String, nullable=True, unique=True)
+    referred_by         = Column(Integer, nullable=True)   # user_id jo refer kiya
+    # Payment tracking
+    daily_profit_owed   = Column(Float, default=0.0)       # 25% admin share pending
+    referral_owed       = Column(Float, default=0.0)       # 5% referrer commission
+    payment_status      = Column(String, default="clear")  # clear / pending / overdue
+    last_payment_at     = Column(DateTime, nullable=True)
+    created_at          = Column(DateTime, default=datetime.utcnow)
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -155,6 +208,7 @@ class UserCreate(BaseModel):
     username: str
     email: str
     password: str
+    referral_code: str = None   # Refer karne wale ka code (optional)
 
 class MT5Credentials(BaseModel):
     mt5_login: int
@@ -374,9 +428,18 @@ def calc_score(trend, adx_4h, adx_1h, rsi, stoch_k, stoch_d,
         score += pattern_bonus
     return min(score, 100)
 
-def calculate_lot(balance, atr, symbol):
+def get_risk_multiplier(score):
+    """Score jitna strong — margin zyada, risk bhi proportional"""
+    if score >= 90: return 3.0
+    elif score >= 80: return 2.5
+    elif score >= 70: return 2.0
+    elif score >= 65: return 1.5
+    else: return 1.0   # score 55-64: base risk
+
+def calculate_lot(balance, atr, symbol, score=55):
     try:
-        risk_amount = balance * RISK_PER_TRADE_PCT
+        mult        = get_risk_multiplier(score)
+        risk_amount = balance * RISK_PER_TRADE_PCT * mult
         info = mt5_manager.symbol_info(symbol)
         if info is None: return None
         tick_value = info.trade_tick_value
@@ -456,7 +519,7 @@ def sync_manual_closes(user_id, balance):
         if not open_trades: return
         for trade in open_trades:
             sym_pos = mt5_manager.positions_get(symbol=trade.symbol)
-            has_pos = any(p.magic == 888888 or "PB_" in getattr(p, 'comment', '') for p in sym_pos) if sym_pos else False
+            has_pos = any(p.magic == 888888 or "PB_" in getattr(p, "comment", "") for p in sym_pos) if sym_pos else False
             if not has_pos:
                 trade.status    = "closed"
                 trade.profit    = 0.0
@@ -472,7 +535,7 @@ def close_all_positions(user_id, reason, balance):
     positions = mt5_manager.positions_get()
     if not positions: return
     for pos in positions:
-        if pos.magic == 888888:
+        if pos.magic == 888888 or "PB_" in getattr(pos, "comment", ""):
             tick = mt5_manager.symbol_info_tick(pos.symbol)
             done, profit = close_pos(pos, reason)
             if done and tick:
@@ -482,6 +545,87 @@ def close_all_positions(user_id, reason, balance):
 
 
 # ─── FIX: Bot thread now waits on threading.Event (not polling loop) ──────────
+def copy_to_followers(master_user_id, symbol, trend, score, atr, master_lot, master_balance, entry, sl, trade_mode):
+    """Master trade ko sab active followers ke connections par copy karo"""
+    db = SessionLocal()
+    try:
+        followers = db.query(User).filter(
+            User.bot_active == True,
+            User.id != master_user_id,
+            User.mt5_login != None
+        ).all()
+
+        if not followers:
+            return
+
+        print(f"[COPY] Copying {symbol} {trend} to {len(followers)} follower(s)...")
+
+        for follower in followers:
+            try:
+                # Connection pool se follower ka connection lo
+                conn = pool_get(follower.id)
+
+                if conn is None or not pool_is_ready(follower.id):
+                    print(f"[COPY] ⚠️ {follower.username} not connected — skipping MT5, recording DB only")
+                    # Sirf DB record karo
+                    trade = Trade(
+                        user_id=follower.id, symbol=symbol, trade_type=trend,
+                        lot=master_lot, open_price=entry, score=score,
+                        mt5_ticket=None, status="pending_copy")
+                    db.add(trade); db.commit()
+                    continue
+
+                # Follower ka balance lo — proportional lot calculate karo
+                follower_info = conn.account_info()
+                if follower_info:
+                    ratio = follower_info.balance / master_balance if master_balance > 0 else 1.0
+                    follower_lot = max(0.01, round(master_lot * ratio, 2))
+                else:
+                    follower_lot = master_lot
+
+                # Follower ke account par actual trade lagao
+                tick = conn.symbol_info_tick(symbol)
+                if tick is None:
+                    print(f"[COPY] ⚠️ {follower.username} no tick for {symbol}")
+                    continue
+
+                f_entry = tick.ask if trend == "BUY" else tick.bid
+                f_sl    = f_entry - atr if trend == "BUY" else f_entry + atr
+
+                request = {
+                    "action":       conn.TRADE_ACTION_DEAL,
+                    "symbol":       symbol,
+                    "volume":       follower_lot,
+                    "type":         conn.ORDER_TYPE_BUY if trend == "BUY" else conn.ORDER_TYPE_SELL,
+                    "price":        f_entry,
+                    "sl":           f_sl,
+                    "deviation":    50,
+                    "magic":        888888,
+                    "comment":      f"PB_COPY_{trade_mode}_S{score}",
+                    "type_time":    conn.ORDER_TIME_GTC,
+                    "type_filling": conn.ORDER_FILLING_IOC,
+                }
+
+                result = conn.order_send(request)
+                if result.retcode == conn.TRADE_RETCODE_DONE:
+                    trade = Trade(
+                        user_id=follower.id, symbol=symbol, trade_type=trend,
+                        lot=follower_lot, open_price=f_entry, score=score,
+                        mt5_ticket=result.order, status="open")
+                    db.add(trade); db.commit()
+                    print(f"[COPY] ✅ {follower.username} {symbol} {trend} Lot:{follower_lot} Ticket:{result.order}")
+                else:
+                    print(f"[COPY] ❌ {follower.username} order failed: {result.retcode}")
+
+            except Exception as e:
+                print(f"[COPY] ❌ {follower.username} error: {e}")
+
+    except Exception as e:
+        print(f"[COPY] Error: {e}")
+    finally:
+        db.close()
+
+
 def run_user_bot(user_id, login, password, server):
     print("=" * 60)
     print(f"[BOT] Thread started — waiting for MetaApi ready event...")
@@ -578,7 +722,7 @@ def run_user_bot(user_id, login, password, server):
                 continue
 
             all_pos = mt5_manager.positions_get()
-            bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
+            bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
 
             for pos in bot_pos:
                 current_profit = pos.profit
@@ -631,6 +775,27 @@ def run_user_bot(user_id, login, password, server):
                 profit_target = get_profit_target(score, atr, pos.symbol)
 
                 if is_scalp_trade(score):
+                    # Peak track karo scalp ke liye bhi
+                    if current_profit > peak_profits.get(ticket, 0):
+                        peak_profits[ticket] = current_profit
+                    peak = peak_profits.get(ticket, 0)
+
+                    # $10+ profit par 70% trail (scalp bhi HOLD jaisa behave kare)
+                    if peak >= HOLD_MIN_PROFIT:
+                        trail_lock = peak * HOLD_TRAIL_PCT   # 70% lock
+                        if current_profit < trail_lock:
+                            tick = mt5_manager.symbol_info_tick(pos.symbol)
+                            done, profit = close_pos(pos, "ScalpTrail70")
+                            if done and tick:
+                                cp = tick.bid if pos.type == 0 else tick.ask
+                                update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                                last_close_times[(user_id, pos.symbol)] = now
+                                get_platform_fee(max(0, profit), user_id, balance)
+                                print(f"[SCALP TRAIL 70%] {pos.symbol} Peak:${peak:.2f} Close:${profit:.2f}")
+                                peak_profits.pop(ticket, None)
+                                locked_profits.pop(ticket, None)
+                            continue
+
                     if current_profit >= profit_target:
                         tick = mt5_manager.symbol_info_tick(pos.symbol)
                         done, profit = close_pos(pos, "ScalpTP")
@@ -640,6 +805,7 @@ def run_user_bot(user_id, login, password, server):
                             last_close_times[(user_id, pos.symbol)] = now
                             get_platform_fee(profit, user_id, balance)
                             print(f"[SCALP TP] {pos.symbol} ${profit:.2f}")
+                            peak_profits.pop(ticket, None)
                         continue
                     locked = get_locked_profit(current_profit)
                     if locked is not None:
@@ -656,6 +822,7 @@ def run_user_bot(user_id, login, password, server):
                                 last_close_times[(user_id, pos.symbol)] = now
                                 print(f"[SCALP TRAIL] {pos.symbol} ${profit:.2f}")
                                 locked_profits.pop(ticket, None)
+                                peak_profits.pop(ticket, None)
                             continue
                 else:
                     if current_profit > peak_profits.get(ticket, 0):
@@ -693,7 +860,7 @@ def run_user_bot(user_id, login, password, server):
                 continue
 
             all_pos = mt5_manager.positions_get()
-            bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
+            bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
 
             if len(bot_pos) >= MAX_OPEN_TRADES:
                 time.sleep(5)
@@ -776,7 +943,7 @@ def run_user_bot(user_id, login, password, server):
                     print(f"[SKIP] {symbol} pattern conflict")
                     continue
 
-                lot = calculate_lot(balance, atr, symbol)
+                lot = calculate_lot(balance, atr, symbol, score)
                 if lot is None:
                     continue
 
@@ -809,10 +976,21 @@ def run_user_bot(user_id, login, password, server):
                         lot=lot, open_price=entry, score=score,
                         mt5_ticket=result.order, status="open")
                     db.add(trade); db.commit(); db.close()
+
+                    # COPY TRADING: Master trade ko sab followers ke pass bhejo
+                    if user_id == MASTER_USER_ID:
+                        threading.Thread(
+                            target=copy_to_followers,
+                            args=(user_id, symbol, trend, score, atr,
+                                  lot, balance, entry, sl, trade_mode),
+                            daemon=True
+                        ).start()
+
                     all_pos = mt5_manager.positions_get()
-                    bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
+                    bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
                 else:
                     print(f"[FAIL] {symbol}: retcode={result.retcode}")
+                    last_close_times[(user_id, symbol)] = now
 
                 time.sleep(1)
 
@@ -827,7 +1005,304 @@ def run_user_bot(user_id, login, password, server):
     print("[BOT] Stopped cleanly")
 
 
+def run_user_bot_watchdog(user_id, login, password, server):
+    """24/7 watchdog — bot crash ho toh 30s baad restart kare"""
+    while active_bots.get(user_id, False):
+        try:
+            run_user_bot(user_id, login, password, server)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[WATCHDOG] Bot crashed: {e} — restarting in 30s...")
+            time.sleep(30)
+        if not active_bots.get(user_id, False):
+            break
+    print("[WATCHDOG] Bot fully stopped")
+
+
 # ─── API Endpoints ─────────────────────────────────────────────────────────────
+
+# ─── EMAIL FUNCTION ───────────────────────────────────────────────────────────
+def send_email(to_email, subject, html_body):
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = EMAIL_USER
+        msg["To"]      = to_email
+        msg.attach(MIMEText(html_body, "html"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, to_email, msg.as_string())
+        print(f"[EMAIL] Sent to {to_email}: {subject}")
+        return True
+    except Exception as e:
+        print(f"[EMAIL] Failed: {e}")
+        return False
+
+
+# ─── DAILY PROFIT CALCULATOR ──────────────────────────────────────────────────
+def calculate_daily_profits():
+    """Har user ka daily profit calculate karo — 25% admin + 5% referrer"""
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(
+            User.bot_active == True,
+            User.id != MASTER_USER_ID
+        ).all()
+
+        for user in users:
+            # Aaj ki closed trades se profit nikalo
+            today = datetime.utcnow().date()
+            today_trades = db.query(Trade).filter(
+                Trade.user_id == user.id,
+                Trade.status  == "closed",
+                Trade.profit  > 0,
+            ).all()
+
+            # Sirf aaj ki trades
+            today_profit = sum(
+                t.profit for t in today_trades
+                if t.closed_at and t.closed_at.date() == today
+            )
+
+            if today_profit <= 0:
+                continue
+
+            admin_share    = round(today_profit * 0.25, 2)
+            referrer_share = 0.0
+
+            # 5% referrer commission
+            if user.referred_by:
+                referrer_share = round(today_profit * 0.05, 2)
+
+            user.daily_profit_owed += admin_share
+            user.referral_owed     += referrer_share
+            user.payment_status     = "pending"
+
+            print(f"[PROFIT] {user.username}: Profit=${today_profit:.2f} "
+                  f"Admin={admin_share:.2f} Referrer={referrer_share:.2f}")
+
+        db.commit()
+    except Exception as e:
+        print(f"[PROFIT CALC] Error: {e}")
+    finally:
+        db.close()
+
+
+def send_payment_notifications():
+    """8 PM PKT — sab pending users ko notification bhejo"""
+    db = SessionLocal()
+    try:
+        pending_users = db.query(User).filter(
+            User.payment_status == "pending",
+            User.daily_profit_owed > 0
+        ).all()
+
+        for user in pending_users:
+            total_owed = round(user.daily_profit_owed + user.referral_owed, 2)
+            html = f"""
+            <div style="font-family:Arial;max-width:600px;margin:auto;padding:20px;
+                        background:#1a1a2e;color:#fff;border-radius:10px;">
+                <h2 style="color:#f0b90b;">⚠️ PumpingBot — Payment Required</h2>
+                <p>Hello <b>{user.username}</b>,</p>
+                <p>Aaj ki trading ke liye payment pending hai:</p>
+                <table style="width:100%;border-collapse:collapse;margin:15px 0;">
+                    <tr style="background:#16213e;">
+                        <td style="padding:10px;border:1px solid #333;">Admin Share (25%)</td>
+                        <td style="padding:10px;border:1px solid #333;color:#f0b90b;">
+                            <b>${user.daily_profit_owed:.2f}</b></td>
+                    </tr>
+                    <tr>
+                        <td style="padding:10px;border:1px solid #333;">Referrer Commission (5%)</td>
+                        <td style="padding:10px;border:1px solid #333;">
+                            ${user.referral_owed:.2f}</td>
+                    </tr>
+                    <tr style="background:#16213e;">
+                        <td style="padding:10px;border:1px solid #333;"><b>Total</b></td>
+                        <td style="padding:10px;border:1px solid #333;color:#00ff88;">
+                            <b>${total_owed:.2f}</b></td>
+                    </tr>
+                </table>
+                <p style="color:#ff4444;font-weight:bold;">
+                    ⏰ 9 PM PKT tak payment nahi ki toh bot pause ho jayega!
+                </p>
+                <p>Admin ko payment karein: <b>{ADMIN_EMAIL}</b></p>
+                <p style="color:#888;font-size:12px;">PumpingBot Trading Platform</p>
+            </div>"""
+            send_email(user.email, "⚠️ PumpingBot Payment Due — Bot paused at 9 PM", html)
+
+            # Admin ko bhi notify karo
+            admin_html = f"""
+            <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+                <h3 style="color:#f0b90b;">💰 Payment Pending: {user.username}</h3>
+                <p>User: <b>{user.email}</b></p>
+                <p>Amount: <b>${total_owed:.2f}</b></p>
+                <p>Admin Share: ${user.daily_profit_owed:.2f}</p>
+                <p>Referrer Share: ${user.referral_owed:.2f}</p>
+            </div>"""
+            send_email(ADMIN_EMAIL, f"💰 Payment Pending: {user.username} — ${total_owed:.2f}", admin_html)
+
+    except Exception as e:
+        print(f"[NOTIFY] Error: {e}")
+    finally:
+        db.close()
+
+
+def pause_unpaid_bots():
+    """9 PM PKT — payment pending users ka bot pause karo"""
+    db = SessionLocal()
+    try:
+        overdue_users = db.query(User).filter(
+            User.payment_status == "pending",
+            User.daily_profit_owed > 0
+        ).all()
+
+        for user in overdue_users:
+            user.bot_active     = False
+            user.payment_status = "overdue"
+            active_bots[user.id] = False
+
+            # Sab positions close karo
+            conn = pool_get(user.id)
+            if conn and conn._ready:
+                positions = conn.positions_get()
+                for pos in (positions or []):
+                    if pos.magic == 888888:
+                        conn.order_send({
+                            "action":       conn.TRADE_ACTION_DEAL,
+                            "symbol":       pos.symbol,
+                            "volume":       pos.volume,
+                            "type":         conn.ORDER_TYPE_SELL if pos.type == 0 else conn.ORDER_TYPE_BUY,
+                            "position":     pos.ticket,
+                            "price":        0,
+                            "deviation":    50,
+                            "magic":        888888,
+                            "comment":      "PB_PaymentOverdue",
+                            "type_time":    conn.ORDER_TIME_GTC,
+                            "type_filling": conn.ORDER_FILLING_IOC,
+                        })
+
+            print(f"[PAUSE] {user.username} bot paused — payment overdue")
+
+            # User ko final warning email
+            html = f"""
+            <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+                <h2 style="color:#ff4444;">🚫 Bot Paused — Payment Overdue</h2>
+                <p>Hello <b>{user.username}</b>,</p>
+                <p>Payment time pe nahi mili — aapka bot pause kar diya gaya hai.</p>
+                <p>Amount due: <b>${(user.daily_profit_owed + user.referral_owed):.2f}</b></p>
+                <p>Payment karne ke baad admin se contact karein bot resume karne ke liye.</p>
+                <p>Admin: <b>{ADMIN_EMAIL}</b></p>
+            </div>"""
+            send_email(user.email, "🚫 PumpingBot — Bot Paused (Payment Overdue)", html)
+
+        db.commit()
+    except Exception as e:
+        print(f"[PAUSE] Error: {e}")
+    finally:
+        db.close()
+
+
+def daily_scheduler():
+    """24/7 background scheduler — PKT time check karta hai"""
+    print("[SCHEDULER] Started — watching for 8 PM and 9 PM PKT")
+    notified_today  = None
+    paused_today    = None
+
+    while True:
+        try:
+            # PKT = UTC + 5
+            now_pkt = datetime.utcnow() + timedelta(hours=5)
+            today   = now_pkt.date()
+
+            # 8 PM PKT — profit calculate + notification
+            if now_pkt.hour == 20 and now_pkt.minute < 5 and notified_today != today:
+                print("[SCHEDULER] 8 PM PKT — calculating profits and sending notifications")
+                calculate_daily_profits()
+                send_payment_notifications()
+                notified_today = today
+
+            # 9 PM PKT — unpaid bots pause
+            if now_pkt.hour == 21 and now_pkt.minute < 5 and paused_today != today:
+                print("[SCHEDULER] 9 PM PKT — pausing unpaid bots")
+                pause_unpaid_bots()
+                paused_today = today
+
+        except Exception as e:
+            print(f"[SCHEDULER] Error: {e}")
+
+        time.sleep(60)  # Har minute check karo
+
+
+# ─── PAYMENT CONFIRM ENDPOINT ─────────────────────────────────────────────────
+@app.post("/admin/confirm-payment/{user_id}")
+def confirm_payment(user_id: int,
+                    current_user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    """Admin payment confirm kare — bot resume ho jata hai"""
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    paid_amount = user.daily_profit_owed + user.referral_owed
+
+    # Referrer ko commission transfer karo
+    if user.referred_by and user.referral_owed > 0:
+        referrer = db.query(User).filter(User.id == user.referred_by).first()
+        if referrer:
+            print(f"[COMMISSION] {referrer.username} ko ${user.referral_owed:.2f} commission")
+
+    user.daily_profit_owed = 0.0
+    user.referral_owed     = 0.0
+    user.payment_status    = "clear"
+    user.last_payment_at   = datetime.utcnow()
+    user.bot_active        = True
+    db.commit()
+
+    # Bot restart karo
+    active_bots[user.id] = True
+    threading.Thread(
+        target=run_user_bot_watchdog,
+        args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
+        daemon=True
+    ).start()
+
+    # User ko confirmation email
+    html = f"""
+    <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+        <h2 style="color:#00ff88;">✅ Payment Confirmed — Bot Resumed!</h2>
+        <p>Hello <b>{user.username}</b>,</p>
+        <p>Aapki payment confirm ho gayi — bot dobara active ho gaya hai!</p>
+        <p>Amount paid: <b>${paid_amount:.2f}</b></p>
+        <p>Happy Trading! 🚀</p>
+    </div>"""
+    send_email(user.email, "✅ PumpingBot — Payment Confirmed, Bot Resumed!", html)
+
+    return {"message": f"Payment confirmed for {user.username}, bot resumed!"}
+
+
+@app.get("/admin/pending-payments")
+def get_pending_payments(current_user: User = Depends(get_current_user),
+                         db: Session = Depends(get_db)):
+    """Admin sab pending payments dekhe"""
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+
+    users = db.query(User).filter(User.daily_profit_owed > 0).all()
+    return [{
+        "user_id":       u.id,
+        "username":      u.username,
+        "email":         u.email,
+        "admin_share":   round(u.daily_profit_owed, 2),
+        "referrer_comm": round(u.referral_owed, 2),
+        "total_owed":    round(u.daily_profit_owed + u.referral_owed, 2),
+        "status":        u.payment_status,
+        "bot_active":    u.bot_active,
+    } for u in users]
+
 
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
@@ -835,10 +1310,40 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(400, "Username already exists")
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(400, "Email already exists")
-    db.add(User(username=user.username, email=user.email,
-                hashed_password=get_password_hash(user.password)))
+
+    # Referral code check
+    referred_by_id = None
+    if user.referral_code:
+        referrer = db.query(User).filter(User.referral_code == user.referral_code).first()
+        if referrer:
+            referred_by_id = referrer.id
+            print(f"[REFERRAL] {user.username} referred by {referrer.username}")
+
+    # Naye user ka unique referral code generate karo
+    new_code = str(uuid.uuid4())[:8].upper()
+
+    new_user = User(
+        username      = user.username,
+        email         = user.email,
+        hashed_password = get_password_hash(user.password),
+        referral_code = new_code,
+        referred_by   = referred_by_id,
+    )
+    db.add(new_user)
     db.commit()
-    return {"message": "User created successfully"}
+
+    # Welcome email
+    html = f"""
+    <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;border-radius:10px;">
+        <h2 style="color:#f0b90b;">🚀 Welcome to PumpingBot!</h2>
+        <p>Hello <b>{user.username}</b>, account ban gaya!</p>
+        <p>Apna referral code share karo — har referred user ki profit ka <b>5% commission</b> milega:</p>
+        <h3 style="color:#00ff88;letter-spacing:3px;">{new_code}</h3>
+        <p>Steps: MT5 connect karo → Bot start karo → Profits kamao!</p>
+    </div>"""
+    send_email(user.email, "🚀 Welcome to PumpingBot!", html)
+
+    return {"message": "User created successfully", "referral_code": new_code}
 
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -863,50 +1368,83 @@ def get_me(current_user: User = Depends(get_current_user)):
         "equity":        info.equity  if info else 0,
     }
 
-# FIX: connect_mt5 is now async — so MetaApi await works properly
 @app.post("/connect-mt5")
 async def connect_mt5(creds: MT5Credentials,
                       current_user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
-    # FIX: Clear the ready event before re-initializing
-    metaapi_ready_event.clear()
+    """
+    Master (admin): existing MetaApi account use karta hai
+    Follower: MetaApi mein unka account dhundta hai ya naya banata hai
+    Har bar file update karne ki zaroorat nahi!
+    """
+    print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login}")
 
-    success = mt5_manager.initialize(
-        login=creds.mt5_login,
-        password=creds.mt5_password,
-        server=creds.mt5_server
-    )
-    if not success:
-        raise HTTPException(400, "MT5 connection failed — check credentials")
+    if current_user.id == MASTER_USER_ID:
+        # ── Master: existing connection use karo ──────────────────────────
+        metaapi_ready_event.clear()
+        mt5_manager.initialize()
 
-    # FIX: Wait for _ready in async context (up to 90 seconds)
-    print(f"[CONNECT] Waiting for MetaApi _ready after connect...")
-    for i in range(45):
-        if mt5_manager._ready:
-            metaapi_ready_event.set()   # FIX: Set event so bot thread unblocks
-            print(f"[CONNECT] MetaApi _ready=True after {i*2}s")
-            break
-        await asyncio.sleep(2)
+        for i in range(45):
+            if mt5_manager._ready:
+                metaapi_ready_event.set()
+                break
+            await asyncio.sleep(2)
 
-    if not mt5_manager._ready:
-        print("[CONNECT] MetaApi NOT ready after 90s — credentials saved, retry later")
-        # Still save credentials even if not ready yet
-        current_user.mt5_login    = creds.mt5_login
-        current_user.mt5_password = creds.mt5_password
-        current_user.mt5_server   = creds.mt5_server
+        if not mt5_manager._ready:
+            raise HTTPException(400, "MetaApi timeout — try again in 30s")
+
+        info = mt5_manager.account_info()
+        current_user.mt5_login           = creds.mt5_login
+        current_user.mt5_password        = creds.mt5_password
+        current_user.mt5_server          = creds.mt5_server
+        current_user.metaapi_account_id  = MASTER_ACCOUNT_ID
         db.commit()
-        raise HTTPException(400, "MT5 connected but MetaApi stream timeout — try /bot/start in 30s")
+        return {
+            "message":   f"Master connected: {info.name if info else 'OK'}",
+            "balance":   info.balance if info else 0,
+            "mt5_ready": True,
+            "role":      "master"
+        }
 
-    info = mt5_manager.account_info()
-    current_user.mt5_login    = creds.mt5_login
-    current_user.mt5_password = creds.mt5_password
-    current_user.mt5_server   = creds.mt5_server
-    db.commit()
-    return {
-        "message": f"Connected: {info.name if info else 'OK'}",
-        "balance": info.balance if info else 0,
-        "mt5_ready": True
-    }
+    else:
+        # ── Follower: MetaApi mein find/create karo ───────────────────────
+        print(f"[CONNECT] Finding/creating MetaApi account for follower {current_user.username}")
+        account_id = await find_or_create_metaapi_account(
+            creds.mt5_login, creds.mt5_password, creds.mt5_server
+        )
+
+        if not account_id:
+            raise HTTPException(400, "Could not register MT5 account with MetaApi")
+
+        # Follower ka connection banao aur pool mein add karo
+        conn = create_user_manager(account_id)
+        print(f"[CONNECT] Waiting for follower {current_user.username} to be ready...")
+        for i in range(45):
+            if conn._ready:
+                break
+            await asyncio.sleep(2)
+
+        if not conn._ready:
+            raise HTTPException(400, "Follower MetaApi timeout — try again in 30s")
+
+        # Pool mein add karo
+        pool_add(current_user.id, conn)
+
+        info = conn.account_info()
+        current_user.mt5_login          = creds.mt5_login
+        current_user.mt5_password       = creds.mt5_password
+        current_user.mt5_server         = creds.mt5_server
+        current_user.metaapi_account_id = account_id
+        db.commit()
+
+        print(f"[CONNECT] ✅ Follower {current_user.username} connected! Pool size: {len(user_connections)+1}")
+        return {
+            "message":    f"Follower connected: {info.name if info else 'OK'}",
+            "balance":    info.balance if info else 0,
+            "mt5_ready":  True,
+            "role":       "follower",
+            "account_id": account_id
+        }
 
 # FIX: start_bot checks _ready before launching thread
 @app.post("/bot/start")
@@ -927,7 +1465,7 @@ def start_bot(current_user: User = Depends(get_current_user),
     current_user.bot_active = True
     db.commit()
     threading.Thread(
-        target=run_user_bot,
+        target=run_user_bot_watchdog,
         args=(current_user.id, current_user.mt5_login,
               current_user.mt5_password, current_user.mt5_server),
         daemon=True).start()
@@ -951,17 +1489,44 @@ def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     return db.query(Trade).filter(
         Trade.user_id == current_user.id
-    ).order_by(Trade.opened_at.desc()).all()
+    ).order_by(Trade.opened_at.desc()).limit(100).all()
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
     positions = mt5_manager.positions_get()
     if not positions: return []
-    return [
-        {"ticket": p.ticket, "symbol": p.symbol,
-         "profit": p.profit, "type": "BUY" if p.type == 0 else "SELL"}
-        for p in positions if p.magic == 888888 or "PB_" in getattr(p, 'comment', '')
-    ]
+    result = []
+    for p in positions:
+        is_bot = (
+            p.magic == 888888 or
+            "PB_" in getattr(p, "comment", "") or
+            getattr(p, "magic", 0) == 888888
+        )
+        if not is_bot:
+            continue
+        # DB se extra info lo
+        db = SessionLocal()
+        tr = db.query(Trade).filter(Trade.mt5_ticket == p.ticket).first()
+        score = tr.score if tr else 0
+        open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
+        db.close()
+
+        tick = mt5_manager.symbol_info_tick(p.symbol)
+        current_price = (tick.bid if p.type == 0 else tick.ask) if tick else 0
+
+        result.append({
+            "ticket":      p.ticket,
+            "symbol":      p.symbol,
+            "profit":      round(p.profit, 2),
+            "type":        "BUY" if p.type == 0 else "SELL",
+            "lot":         getattr(p, "volume", 0),
+            "open_price":  open_price,
+            "current_price": current_price,
+            "score":       score,
+            "magic":       getattr(p, "magic", 0),
+            "comment":     getattr(p, "comment", ""),
+        })
+    return result
 
 # FIX: New endpoint to debug connection status
 @app.get("/status")
@@ -979,6 +1544,10 @@ def get_status(current_user: User = Depends(get_current_user)):
 # ─── FIX: Startup Event — passes credentials, sets metaapi_ready_event ────────
 @app.on_event("startup")
 async def startup_event():
+    # Background scheduler start karo
+    threading.Thread(target=daily_scheduler, daemon=True).start()
+    print("[STARTUP] Daily scheduler started (8 PM notify, 9 PM pause)")
+
     db = SessionLocal()
     try:
         existing = db.query(User).filter(User.username == "admin").first()
@@ -1037,7 +1606,7 @@ async def startup_event():
             user.bot_active = True
             db.commit()
             threading.Thread(
-                target=run_user_bot,
+                target=run_user_bot_watchdog,
                 args=(user.id, user.mt5_login,
                       user.mt5_password, user.mt5_server),
                 daemon=True).start()
@@ -1045,6 +1614,22 @@ async def startup_event():
         elif not mt5_manager._ready:
             print("[STARTUP] Auto-start skipped — MetaApi not ready")
             print("[STARTUP] Use /connect-mt5 then /bot/start after deployment")
+
+        # ── Followers ko bhi reconnect karo (restart ke baad) ─────────────
+        followers = db.query(User).filter(
+            User.bot_active == True,
+            User.id != MASTER_USER_ID,
+            User.metaapi_account_id != None
+        ).all()
+
+        for follower in followers:
+            try:
+                print(f"[STARTUP] Reconnecting follower: {follower.username}")
+                conn = create_user_manager(follower.metaapi_account_id)
+                pool_add(follower.id, conn)
+                print(f"[STARTUP] Follower {follower.username} reconnected ✅")
+            except Exception as fe:
+                print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
 
     except Exception as e:
         import traceback
