@@ -82,6 +82,11 @@ class MT5Manager:
             return future.result(timeout=60)
         except Exception as e:
             print(f"[MetaApi] {e}")
+            self._ready = False
+            try:
+                asyncio.run_coroutine_threadsafe(self._async_init(), self._loop)
+            except:
+                pass
             return None
 
     def initialize(self, login=None, password=None, server=None):
