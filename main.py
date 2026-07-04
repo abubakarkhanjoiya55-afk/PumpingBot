@@ -709,6 +709,7 @@ def run_user_bot(user_id, login, password, server):
 
                 spread = (tick.ask - tick.bid) / sym_info.point
                 if spread > MAX_SPREAD_POINTS:
+                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f}")
                     continue
 
                 if spread > MAX_SPREAD_POINTS:
