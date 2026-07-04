@@ -157,18 +157,17 @@ class MT5Manager:
         result = self._run(self._async_order(request))
         return TradeResult(result)
 
-    async def _async_order(self, request):
+  async def _async_order(self, request):
         try:
             symbol  = request['symbol']
             volume  = request['volume']
             sl      = request.get('sl', None)
-            comment = request.get('comment', '')
             if request['type'] == ORDER_TYPE_BUY:
                 await self._connection.create_market_buy_order(
-                    symbol, volume, stop_loss=sl, comment=comment)
+                    symbol, volume, stop_loss=sl)
             else:
                 await self._connection.create_market_sell_order(
-                    symbol, volume, stop_loss=sl, comment=comment)
+                    symbol, volume, stop_loss=sl)
             return True
         except Exception as e:
             print(f"[Order] {e}")
