@@ -110,7 +110,7 @@ class MT5Manager:
             await self._account.wait_connected()
             self._connection = self._account.get_rpc_connection()
             await self._connection.connect()
-            await self._connection.wait_synchronized()
+            await self._connection.wait_synchronized(timeout_in_seconds=60)
             self._ready = True
             print("[MetaApi] Connected!")
             return True
