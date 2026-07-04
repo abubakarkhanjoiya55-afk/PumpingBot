@@ -141,17 +141,9 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 # ═══════════════════════════════════
 active_bots = {}
 
-def run_user_bot(user_id: int, login: int, password: str, server: str):
-    import pandas as pd
-    
-    SYMBOL = "XAUUSDm"
-    LOT = 0.01
-    EMA_FAST = 20
-    EMA_SLOW = 50
-    RSI_PERIOD = 14
-
-    if not mt5.initialize(login=login, password=password, server=server):
-        print(f"❌ User {user_id} MT5 connect failed")
+def run_user_bot(user_id, login, password, server):
+    if not mt5_manager.initialize(login=login, password=password, server=server):
+        print("[BOT] MT5 init failed")
         return
 
     print(f"✅ Bot started for user {user_id}")

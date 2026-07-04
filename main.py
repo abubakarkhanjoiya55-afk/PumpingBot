@@ -32,7 +32,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 SYMBOLS = [
-    "BTCUSDm", "ETHUSDm", "SOLUSDm",
+    "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
+    "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
 DAILY_MAX_LOSS_PCT   = 0.02
@@ -454,15 +455,15 @@ def close_all_positions(user_id, reason, balance):
                 last_close_times[(user_id, pos.symbol)] = datetime.now()
 
 def run_user_bot(user_id, login, password, server):
-    # Wait until MetaApi ready (startup event ne initialize kiya hai)
+    # Startup event ne already initialize kiya hai — sirf wait karo
     for i in range(60):
         if mt5_manager._ready:
             break
-        print(f"[BOT] Waiting for MetaApi... {i+1}/60")
+        print(f"[BOT] Waiting MetaApi... {i+1}/60")
         time.sleep(5)
 
     if not mt5_manager._ready:
-        print("[BOT] MetaApi timeout - stopping")
+        print("[BOT] MetaApi timeout")
         return
 
     print("[BOT] PumpingBot Started!")
@@ -523,7 +524,6 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(600)
                 continue
 
-            # ---- MANAGE OPEN POSITIONS ----
             all_pos = mt5_manager.positions_get()
             bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
 
@@ -639,7 +639,6 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(30)
                 continue
 
-            # ---- NEW ENTRIES ----
             all_pos = mt5_manager.positions_get()
             bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
 
@@ -676,8 +675,8 @@ def run_user_bot(user_id, login, password, server):
                 rates5 = mt5_manager.copy_rates_from_pos(
                     symbol, mt5_manager.TIMEFRAME_M5, 0, 100)
                 if rates5 is None or len(rates5) < 30:
-                 print(f"[NO DATA] {symbol} - candles nahi mile, got: {len(rates5) if rates5 else 'None'}")
-                 continue
+                    print(f"[NO DATA] {symbol} - got: {len(rates5) if rates5 else 'None'}")
+                    continue
 
                 opens5  = [r['open']  for r in rates5]
                 highs5  = [r['high']  for r in rates5]
@@ -771,7 +770,6 @@ def run_user_bot(user_id, login, password, server):
 
     print("[BOT] Stopped")
 
-# ---- API ----
 @app.post("/register")
 def register(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.username == user.username).first():
@@ -893,6 +891,9 @@ async def startup_event():
             server="Exness-MT5Trial15"
         )
         print("[STARTUP] MT5 connecting...")
+
+        print("[STARTUP] MT5 connecting...")
+        time.sleep(30)  # MetaApi connect hone do
 
         user = db.query(User).filter(User.username == "admin").first()
         if user and not active_bots.get(user.id):

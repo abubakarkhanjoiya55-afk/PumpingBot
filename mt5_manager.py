@@ -68,6 +68,7 @@ class MT5Manager:
         self._loop       = None
         self._thread     = None
         self._ready      = False
+        self._lock       = threading.Lock()
 
     def _start_loop(self):
         self._loop = asyncio.new_event_loop()
@@ -79,12 +80,12 @@ class MT5Manager:
             return None
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            return future.result(timeout=60)
+            return future.result(timeout=120)
         except Exception as e:
             print(f"[MetaApi] {e}")
             self._ready = False
             try:
-                asyncio.run_coroutine_threadsafe(self._async_init(), self._loop)
+                asyncio.run_coroutine_threadsafe(self._async_reconnect(), self._loop)
             except:
                 pass
             return None
@@ -95,7 +96,9 @@ class MT5Manager:
                 self._thread = threading.Thread(target=self._start_loop, daemon=True)
                 self._thread.start()
                 time.sleep(1)
-            return self._run(self._async_init())
+            if not self._ready:
+                asyncio.run_coroutine_threadsafe(self._async_init(), self._loop)
+            return True
         except Exception as e:
             print(f"[Init] {e}")
             return False
@@ -113,10 +116,13 @@ class MT5Manager:
             await self._connection.wait_synchronized(timeout_in_seconds=60)
             self._ready = True
             print("[MetaApi] Connected!")
-            return True
         except Exception as e:
-            print(f"[MetaApi] {e}")
-            return False
+            print(f"[MetaApi] Init error: {e}")
+            self._ready = False
+
+    async def _async_reconnect(self):
+        print("[MetaApi] Reconnecting...")
+        await self._async_init()
 
     def account_info(self):
         if not self._ready:
