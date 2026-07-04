@@ -681,8 +681,8 @@ def run_user_bot(user_id, login, password, server):
                 rates5 = mt5_manager.copy_rates_from_pos(
                     symbol, mt5_manager.TIMEFRAME_M5, 0, 100)
                 if rates5 is None or len(rates5) < 30:
-                    print(f"[NO DATA] {symbol} - candles nahi mile")
-                    continue
+                 print(f"[NO DATA] {symbol} - candles nahi mile, got: {len(rates5) if rates5 else 'None'}")
+                 continue
 
                 opens5  = [r['open']  for r in rates5]
                 highs5  = [r['high']  for r in rates5]
