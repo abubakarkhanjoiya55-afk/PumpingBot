@@ -797,6 +797,7 @@ def run_user_bot(user_id, login, password, server):
                     bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
                 else:
                     print(f"[FAIL] {symbol}: retcode={result.retcode}")
+                    last_close_times[(user_id, symbol)] = now
 
                 time.sleep(1)
 
