@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import bcrypt as _bcrypt
 import threading
 import time
+import asyncio
 from mt5_manager import mt5_manager
 
 SECRET_KEY = "goldbot-secret-key-2024"
@@ -455,15 +456,18 @@ def close_all_positions(user_id, reason, balance):
                 last_close_times[(user_id, pos.symbol)] = datetime.now()
 
 def run_user_bot(user_id, login, password, server):
-    # Startup event ne already initialize kiya hai — sirf wait karo
-    for i in range(60):
+    print("="*60)
+    print(f"[BOT] THREAD STARTED - Ready={mt5_manager._ready}")
+    print("="*60)
+
+    for i in range(30):
         if mt5_manager._ready:
             break
-        print(f"[BOT] Waiting MetaApi... {i+1}/60")
-        time.sleep(5)
+        print(f"[BOT] Waiting MetaApi... {i+1}/30")
+        time.sleep(2)
 
     if not mt5_manager._ready:
-        print("[BOT] MetaApi timeout")
+        print("[BOT] MetaApi timeout - stopping")
         return
 
     print("[BOT] PumpingBot Started!")
@@ -816,7 +820,7 @@ def connect_mt5(creds: MT5Credentials,
     current_user.mt5_password = creds.mt5_password
     current_user.mt5_server   = creds.mt5_server
     db.commit()
-    return {"message": f"Connected: {info.name}", "balance": info.balance}
+    return {"message": f"Connected: {info.name if info else 'pending'}", "balance": info.balance if info else 0}
 
 @app.post("/bot/start")
 def start_bot(current_user: User = Depends(get_current_user),
@@ -885,18 +889,18 @@ async def startup_event():
         else:
             print("[STARTUP] Admin user exists!")
 
-        mt5_manager.initialize(
-            login=474114625,
-            password="Tradingdemo.123",
-            server="Exness-MT5Trial15"
-        )
-        print("[STARTUP] MT5 connecting...")
+        # Start the background event loop thread + schedule connection
+        mt5_manager.initialize()
 
-        print("[STARTUP] MT5 connecting...")
-        await asyncio.sleep(60)
+        # Poll until ready (max 90 seconds), without blocking the loop
+        for i in range(45):
+            if mt5_manager._ready:
+                break
+            await asyncio.sleep(2)
+        print(f"[STARTUP] MetaApi ready = {mt5_manager._ready}")
 
         user = db.query(User).filter(User.username == "admin").first()
-        if user and not active_bots.get(user.id):
+        if user and mt5_manager._ready and not active_bots.get(user.id):
             active_bots[user.id] = True
             user.bot_active = True
             db.commit()
@@ -906,6 +910,8 @@ async def startup_event():
                       user.mt5_password, user.mt5_server),
                 daemon=True).start()
             print("[STARTUP] Bot auto-started!")
+        elif not mt5_manager._ready:
+            print("[STARTUP] MetaApi NOT ready - bot NOT started. Use /bot/start after /connect-mt5.")
     except Exception as e:
         print(f"[STARTUP] Error: {e}")
     finally:
@@ -914,6 +920,3 @@ async def startup_event():
 @app.get("/")
 def root():
     return {"message": "PumpingBot Smart API"}
-
-    print("[STARTUP] MT5 connecting...")
-    time.sleep(60)  # 30 se 60 karo
