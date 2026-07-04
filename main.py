@@ -893,7 +893,7 @@ async def startup_event():
         print("[STARTUP] MT5 connecting...")
 
         print("[STARTUP] MT5 connecting...")
-        time.sleep(30)  # MetaApi connect hone do
+        await asyncio.sleep(60)
 
         user = db.query(User).filter(User.username == "admin").first()
         if user and not active_bots.get(user.id):
