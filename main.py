@@ -884,6 +884,52 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
         for p in positions if p.magic == 888888
     ]
 
+@app.on_event("startup")
+async def startup_event():
+    db = SessionLocal()
+    try:
+        # Auto create admin user
+        existing = db.query(User).filter(User.username == "admin").first()
+        if not existing:
+            new_user = User(
+                username="admin",
+                email="test123@gmail.com",
+                hashed_password=get_password_hash("Test123"),
+                mt5_login=474114625,
+                mt5_password="Tradingdemo.123",
+                mt5_server="Exness-MT5Trial15"
+            )
+            db.add(new_user)
+            db.commit()
+            print("[STARTUP] Admin user created!")
+        else:
+            print("[STARTUP] Admin user exists!")
+
+        # Auto connect MT5
+        mt5_manager.initialize(
+            login=474114625,
+            password="Tradingdemo.123",
+            server="Exness-MT5Trial15"
+        )
+        print("[STARTUP] MT5 connecting...")
+
+        # Auto start bot
+        user = db.query(User).filter(User.username == "admin").first()
+        if user and not active_bots.get(user.id):
+            active_bots[user.id] = True
+            user.bot_active = True
+            db.commit()
+            threading.Thread(
+                target=run_user_bot,
+                args=(user.id, user.mt5_login,
+                      user.mt5_password, user.mt5_server),
+                daemon=True).start()
+            print("[STARTUP] Bot auto-started!")
+    except Exception as e:
+        print(f"[STARTUP] Error: {e}")
+    finally:
+        db.close()
+
 @app.get("/")
 def root():
     return {"message": "PumpingBot Smart API"}
