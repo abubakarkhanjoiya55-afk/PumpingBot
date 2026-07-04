@@ -478,6 +478,7 @@ def run_user_bot(user_id, login, password, server):
     peak_profits        = {}
     daily_peak_pnl      = 0.0
     day_locked_out      = False
+    first_cycle         = True
 
     while active_bots.get(user_id, False):
         try:
@@ -504,6 +505,18 @@ def run_user_bot(user_id, login, password, server):
                 daily_start_balance = balance
             if high_water_mark is None or balance > high_water_mark:
                 high_water_mark = balance
+
+            if first_cycle:
+                first_cycle = False
+                print(f"[BOT] First cycle - baseline set. Balance: ${balance:.2f}, Equity: ${equity:.2f}")
+                time.sleep(5)
+                continue
+
+            print("=" * 60)
+            print(f"Balance: {balance}")
+            print(f"Equity : {equity}")
+            print(f"Daily Start Balance: {daily_start_balance}")
+            print("=" * 60)
 
             daily_pnl_equity = (equity - daily_start_balance) / daily_start_balance
 
@@ -889,10 +902,8 @@ async def startup_event():
         else:
             print("[STARTUP] Admin user exists!")
 
-        # Start the background event loop thread + schedule connection
         mt5_manager.initialize()
 
-        # Poll until ready (max 90 seconds), without blocking the loop
         for i in range(45):
             if mt5_manager._ready:
                 break
