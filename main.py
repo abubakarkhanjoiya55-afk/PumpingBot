@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, text
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from jose import JWTError, jwt
@@ -202,27 +202,6 @@ class Signal(Base):
     created_at  = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
-
-def run_migrations():
-    """Naye columns add karo agar exist nahi karte"""
-    migrations = [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS metaapi_account_id VARCHAR",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR UNIQUE",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by INTEGER",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_profit_owed FLOAT DEFAULT 0.0",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_owed FLOAT DEFAULT 0.0",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR DEFAULT 'clear'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_at TIMESTAMP",
-    ]
-    with engine.connect() as conn:
-        for sql in migrations:
-            try:
-                conn.execute(text(sql))
-                conn.commit()
-            except Exception as e:
-                print(f"[MIGRATION] {e}")
-
-run_migrations()
 
 
 class UserCreate(BaseModel):
@@ -1323,6 +1302,119 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
         "status":        u.payment_status,
         "bot_active":    u.bot_active,
     } for u in users]
+
+
+@app.get("/admin/users")
+def get_all_users(current_user: User = Depends(get_current_user),
+                  db: Session = Depends(get_db)):
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+    users = db.query(User).all()
+    result = []
+    for u in users:
+        conn = pool_get(u.id)
+        info = conn.account_info() if conn and conn._ready else None
+        result.append({
+            "user_id":       u.id,
+            "username":      u.username,
+            "email":         u.email,
+            "mt5_login":     u.mt5_login,
+            "mt5_server":    u.mt5_server,
+            "bot_active":    u.bot_active,
+            "balance":       info.balance if info else 0,
+            "equity":        info.equity if info else 0,
+            "payment_status": u.payment_status,
+            "amount_owed":   round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2),
+            "referral_code": u.referral_code,
+            "referred_by":   u.referred_by,
+            "joined":        u.created_at.isoformat() if u.created_at else None,
+        })
+    return result
+
+
+@app.get("/admin/stats")
+def get_admin_stats(current_user: User = Depends(get_current_user),
+                    db: Session = Depends(get_db)):
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+
+    total_users    = db.query(User).count()
+    active_bots    = db.query(User).filter(User.bot_active == True).count()
+    pending_pay    = db.query(User).filter(User.payment_status == "pending").count()
+    overdue_pay    = db.query(User).filter(User.payment_status == "overdue").count()
+    total_trades   = db.query(Trade).count()
+    open_trades    = db.query(Trade).filter(Trade.status == "open").count()
+    closed_trades  = db.query(Trade).filter(Trade.status == "closed").count()
+
+    total_profit   = db.query(Trade).filter(Trade.status == "closed", Trade.profit > 0).all()
+    gross_profit   = sum(t.profit for t in total_profit)
+    admin_earned   = gross_profit * 0.25
+
+    pending_users  = db.query(User).filter(User.daily_profit_owed > 0).all()
+    total_pending  = sum((u.daily_profit_owed or 0) + (u.referral_owed or 0) for u in pending_users)
+
+    master_info = mt5_manager.account_info()
+
+    return {
+        "total_users":    total_users,
+        "active_bots":    active_bots,
+        "pending_payment": pending_pay,
+        "overdue_payment": overdue_pay,
+        "total_trades":   total_trades,
+        "open_trades":    open_trades,
+        "closed_trades":  closed_trades,
+        "gross_profit":   round(gross_profit, 2),
+        "admin_earned":   round(admin_earned, 2),
+        "pending_amount": round(total_pending, 2),
+        "master_balance": master_info.balance if master_info else 0,
+        "master_equity":  master_info.equity if master_info else 0,
+    }
+
+
+@app.post("/admin/toggle-bot/{user_id}")
+def admin_toggle_bot(user_id: int,
+                     current_user: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    """Admin kisi bhi user ka bot start/stop kare"""
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.bot_active:
+        active_bots[user.id] = False
+        user.bot_active = False
+        db.commit()
+        return {"message": f"{user.username} bot stopped"}
+    else:
+        active_bots[user.id] = True
+        user.bot_active = True
+        db.commit()
+        threading.Thread(
+            target=run_user_bot_watchdog,
+            args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
+            daemon=True
+        ).start()
+        return {"message": f"{user.username} bot started"}
+
+
+@app.delete("/admin/delete-user/{user_id}")
+def admin_delete_user(user_id: int,
+                      current_user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    if current_user.id != MASTER_USER_ID:
+        raise HTTPException(403, "Admin only")
+    if user_id == MASTER_USER_ID:
+        raise HTTPException(400, "Admin ko delete nahi kar sakte")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    active_bots[user_id] = False
+    pool_remove(user_id)
+    db.query(Trade).filter(Trade.user_id == user_id).delete()
+    db.delete(user)
+    db.commit()
+    return {"message": f"{user.username} deleted"}
 
 
 @app.post("/register")
