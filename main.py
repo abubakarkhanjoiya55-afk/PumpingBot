@@ -45,6 +45,20 @@ MAX_OPEN_TRADES      = 5
 MIN_SCORE            = 55
 STRONG_SCORE         = 75
 MAX_SPREAD_POINTS    = 2000
+SYMBOL_MAX_SPREAD = {
+    "XAUUSDm":  30000,
+    "XAGUSDm":  5000,
+    "BTCUSDm":  2000000,
+    "ETHUSDm":  200000,
+    "SOLUSDm":  200000,
+    "EURUSDm":  2000,
+    "GBPUSDm":  2000,
+    "USDJPYm":  2000,
+    "AUDUSDm":  2000,
+    "USDCADm":  2000,
+    "GBPJPYm":  2000,
+    "NZDUSDm":  2000,
+}
 MIN_COOLDOWN_SEC     = 300
 SCALP_ATR_MULT       = 0.5
 HOLD_MIN_PROFIT      = 10.0
@@ -688,8 +702,6 @@ def run_user_bot(user_id, login, password, server):
             print(f"[SCAN] Scanning {len(SYMBOLS)} symbols...")
 
             for symbol in SYMBOLS:
-                
-                print(f"[CHECK] {symbol}")
                 if len(bot_pos) >= MAX_OPEN_TRADES:
                     break
 
@@ -708,12 +720,9 @@ def run_user_bot(user_id, login, password, server):
                     continue
 
                 spread = (tick.ask - tick.bid) / sym_info.point
-                if spread > MAX_SPREAD_POINTS:
-                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f}")
-                    continue
-
-                if spread > MAX_SPREAD_POINTS:
-                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f}")
+                max_spread = SYMBOL_MAX_SPREAD.get(symbol, MAX_SPREAD_POINTS)
+                if spread > max_spread:
+                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f} max={max_spread}")
                     continue
 
                 trend, adx_4h, adx_1h = get_trend(symbol)
@@ -804,7 +813,6 @@ def run_user_bot(user_id, login, password, server):
                     bot_pos = [p for p in all_pos if p.magic == 888888] if all_pos else []
                 else:
                     print(f"[FAIL] {symbol}: retcode={result.retcode}")
-                    last_close_times[(user_id, symbol)] = now
 
                 time.sleep(1)
 
