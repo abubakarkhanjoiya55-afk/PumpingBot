@@ -914,3 +914,6 @@ async def startup_event():
 @app.get("/")
 def root():
     return {"message": "PumpingBot Smart API"}
+
+    print("[STARTUP] MT5 connecting...")
+    time.sleep(60)  # 30 se 60 karo
