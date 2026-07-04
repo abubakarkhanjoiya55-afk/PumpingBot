@@ -7,3 +7,4 @@ metaapi-cloud-sdk
 requests
 python-multipart==0.0.9
 psycopg2-binary
+# rebuild
