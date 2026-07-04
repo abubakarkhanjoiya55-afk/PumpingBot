@@ -474,8 +474,20 @@ def close_all_positions(user_id, reason, balance):
                 last_close_times[(user_id, pos.symbol)] = datetime.now()
 
 def run_user_bot(user_id, login, password, server):
-    if not mt5_manager.initialize(login=login, password=password, server=server):
-        print("[BOT] MT5 init failed")
+    if not mt5_manager._ready:
+        if not mt5_manager.initialize(login=login, password=password, server=server):
+            print("[BOT] MT5 init failed")
+            return
+    
+    # Wait until ready
+    for i in range(30):
+        if mt5_manager._ready:
+            break
+        print(f"[BOT] Waiting for MetaApi... {i+1}/30")
+        time.sleep(5)
+    
+    if not mt5_manager._ready:
+        print("[BOT] MetaApi timeout - stopping")
         return
 
     print("[BOT] PumpingBot Started!")
