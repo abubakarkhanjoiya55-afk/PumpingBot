@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from jose import JWTError, jwt
@@ -202,6 +202,27 @@ class Signal(Base):
     created_at  = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
+
+def run_migrations():
+    """Naye columns add karo agar exist nahi karte"""
+    migrations = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS metaapi_account_id VARCHAR",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_code VARCHAR UNIQUE",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by INTEGER",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_profit_owed FLOAT DEFAULT 0.0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_owed FLOAT DEFAULT 0.0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS payment_status VARCHAR DEFAULT 'clear'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_payment_at TIMESTAMP",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception as e:
+                print(f"[MIGRATION] {e}")
+
+run_migrations()
 
 
 class UserCreate(BaseModel):
