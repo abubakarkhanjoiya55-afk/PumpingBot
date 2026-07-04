@@ -687,6 +687,8 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(5)
                 continue
 
+            print(f"[SCAN] Scanning {len(SYMBOLS)} symbols...")
+
             for symbol in SYMBOLS:
                 if len(bot_pos) >= MAX_OPEN_TRADES:
                     break
