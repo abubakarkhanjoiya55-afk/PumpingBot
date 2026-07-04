@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 
 METAAPI_TOKEN      = "eyJhbGciOiJSUzUxMiIsInR5cCI6IkpXVCJ9.eyJfaWQiOiI0YjI1NjU3N2M1ZDk4NzIzMzAwNTcwMWM0ODY0OTkwMiIsImFjY2Vzc1J1bGVzIjpbeyJpZCI6InRyYWRpbmctYWNjb3VudC1tYW5hZ2VtZW50LWFwaSIsIm1ldGhvZHMiOlsidHJhZGluZy1hY2NvdW50LW1hbmFnZW1lbnQtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcmVzdC1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcnBjLWFwaSIsIm1ldGhvZHMiOlsibWV0YWFwaS1hcGk6d3M6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6Im1ldGFhcGktcmVhbC10aW1lLXN0cmVhbWluZy1hcGkiLCJtZXRob2RzIjpbIm1ldGFhcGktYXBpOndzOnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyIqOiRVU0VSX0lEJDoqIl19LHsiaWQiOiJtZXRhc3RhdHMtYXBpIiwibWV0aG9kcyI6WyJtZXRhc3RhdHMtYXBpOnJlc3Q6cHVibGljOio6KiJdLCJyb2xlcyI6WyJyZWFkZXIiLCJ3cml0ZXIiXSwicmVzb3VyY2VzIjpbIio6JFVTRVJfSUQkOioiXX0seyJpZCI6InJpc2stbWFuYWdlbWVudC1hcGkiLCJtZXRob2RzIjpbInJpc2stbWFuYWdlbWVudC1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfSx7ImlkIjoiY29weWZhY3RvcnktYXBpIiwibWV0aG9kcyI6WyJjb3B5ZmFjdG9yeS1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciIsIndyaXRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfSx7ImlkIjoibXQtbWFuYWdlci1hcGkiLCJtZXRob2RzIjpbIm10LW1hbmFnZXItYXBpOnJlc3Q6ZGVhbGluZzoqOioiLCJtdC1tYW5hZ2VyLWFwaTpyZXN0OnB1YmxpYzoqOioiXSwicm9sZXMiOlsicmVhZGVyIiwid3JpdGVyIl0sInJlc291cmNlcyI6WyIqOiRVU0VSX0lEJDoqIl19LHsiaWQiOiJiaWxsaW5nLWFwaSIsIm1ldGhvZHMiOlsiYmlsbGluZy1hcGk6cmVzdDpwdWJsaWM6KjoqIl0sInJvbGVzIjpbInJlYWRlciJdLCJyZXNvdXJjZXMiOlsiKjokVVNFUl9JRCQ6KiJdfV0sImlnbm9yZVJhdGVMaW1pdHMiOmZhbHNlLCJ0b2tlbklkIjoiMjAyMTAyMTMiLCJpbXBlcnNvbmF0ZWQiOmZhbHNlLCJyZWFsVXNlcklkIjoiNGIyNTY1NzdjNWQ5ODcyMzMwMDU3MDFjNDg2NDk5MDIiLCJpYXQiOjE3ODMwMDQ4MTR9.XVk7jkTCPcMuekU-u1sglLoT-4wqHf1-IbAgeaUbc5URn0iJcIGWDWdV0KqEKh6oaUkcNzTSN-hqGBDpCSZl5FtCrNwEBXqEngDlMRokz2csqkwnmsERzpGXhQXBvup5jcVJGGFYid5hZqXYVc1ipSU7v6Y1G0LuO4EAgz-eWbWJ93iqTzUK9zS_voAdh1067VTBRpplTQgpBCPbt8fvwZcJ18w_uvMngEqjNVjRh5P63quYa5sfB9QIyU8yzafTcd8iNrz7H6FXYoRy6LpVon0e92pLLh5Fxo7nwCeNS_VCgavig1SPw6fHIX7xJDjo12ULAWIDgqMqqYfXWG_BWuCGS_fV7BLbNXQcTFwkVKBjOOCS0rfo2d6_4wF0fDEwuBzgSI6Ldv-NdBpPvQpqz-WWexDWpvuap462JTVuzYWOSaQAmQX4trFm3cj0XYK6yBAa0rnzKqkm7B6qV5JK9Z_d30riBSDHTJ5eqzTlSSdsMAsj5lv8KuLTsJbASxI72lF4cYgMGABF-fIcH-DW69bSW9Dcd3-6kiTbQ-CFsvL61TGczMzBZmlU5WWguEXL5VF-azdljuiNJy4dCXup9pfmcdm4GnJIEjhbUd89QW1LG8-NMDxXjV0D4wKr7BCuy7rFHHe2wShqWuaftXHX9Brg7oFwCQBCo0YFCjFouLY"
 METAAPI_ACCOUNT_ID = "5e4d5291-3a52-4e73-9a95-2d6ea449843c"
@@ -72,7 +73,7 @@ class MT5Manager:
             return None
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
         try:
-            return future.result(timeout=30)
+            return future.result(timeout=60)
         except Exception as e:
             print(f"[MetaApi] {e}")
             return None
@@ -144,8 +145,7 @@ class MT5Manager:
 
     async def _async_get_candles(self, symbol, timeframe, count):
         try:
-            from datetime import datetime, timezone
-            start_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            start_time = datetime.now(timezone.utc) - timedelta(days=5)
             data = await self._account.get_historical_candles(symbol, timeframe, start_time, count)
             return data
         except Exception as e:
