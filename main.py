@@ -456,7 +456,7 @@ def sync_manual_closes(user_id, balance):
         if not open_trades: return
         for trade in open_trades:
             sym_pos = mt5_manager.positions_get(symbol=trade.symbol)
-            has_pos = any(p.magic == 888888 or (p.comment and "PB_" in p.comment) for p in sym_pos) if sym_pos else False
+            has_pos = any(p.magic == 888888 or "PB_" in getattr(p, 'comment', '') for p in sym_pos) if sym_pos else False
             if not has_pos:
                 trade.status    = "closed"
                 trade.profit    = 0.0
@@ -960,7 +960,7 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
     return [
         {"ticket": p.ticket, "symbol": p.symbol,
          "profit": p.profit, "type": "BUY" if p.type == 0 else "SELL"}
-        for p in positions if p.magic == 888888 or (p.comment and "PB_" in p.comment)
+        for p in positions if p.magic == 888888 or "PB_" in getattr(p, 'comment', '')
     ]
 
 # FIX: New endpoint to debug connection status
