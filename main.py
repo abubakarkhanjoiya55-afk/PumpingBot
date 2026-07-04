@@ -32,8 +32,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 SYMBOLS = [
-    "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
-    "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
+    "BTCUSDm", "ETHUSDm", "SOLUSDm",
 ]
 
 # ---- RISK SETTINGS ----
