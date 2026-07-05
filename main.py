@@ -1520,43 +1520,21 @@ async def connect_mt5(creds: MT5Credentials,
         }
 
     else:
-        # ── Follower: MetaApi mein find/create karo ───────────────────────
-        print(f"[CONNECT] Finding/creating MetaApi account for follower {current_user.username}")
-        account_id = await find_or_create_metaapi_account(
-            creds.mt5_login, creds.mt5_password, creds.mt5_server
-        )
-
-        if not account_id:
-            raise HTTPException(400, "Could not register MT5 account with MetaApi")
-
-        # Follower ka connection banao aur pool mein add karo
-        conn = create_user_manager(account_id)
-        print(f"[CONNECT] Waiting for follower {current_user.username} to be ready...")
-        for i in range(45):
-            if conn._ready:
-                break
-            await asyncio.sleep(2)
-
-        if not conn._ready:
-            raise HTTPException(400, "Follower MetaApi timeout — try again in 30s")
-
-        # Pool mein add karo
-        pool_add(current_user.id, conn)
-
-        info = conn.account_info()
-        current_user.mt5_login          = creds.mt5_login
-        current_user.mt5_password       = creds.mt5_password
-        current_user.mt5_server         = creds.mt5_server
-        current_user.metaapi_account_id = account_id
+        # ── Follower: credentials save karo, master connection use hoga ───
+        print(f"[CONNECT] Follower {current_user.username} connecting...")
+        current_user.mt5_login    = creds.mt5_login
+        current_user.mt5_password = creds.mt5_password
+        current_user.mt5_server   = creds.mt5_server
         db.commit()
 
-        print(f"[CONNECT] ✅ Follower {current_user.username} connected! Pool size: {len(user_connections)+1}")
+        # Master connection se info lo
+        info = mt5_manager.account_info()
+        print(f"[CONNECT] ✅ Follower {current_user.username} credentials saved!")
         return {
-            "message":    f"Follower connected: {info.name if info else 'OK'}",
-            "balance":    info.balance if info else 0,
-            "mt5_ready":  True,
-            "role":       "follower",
-            "account_id": account_id
+            "message":   "MT5 Connected successfully!",
+            "balance":   info.balance if info else 0,
+            "mt5_ready": mt5_manager._ready,
+            "role":      "follower"
         }
 
 # FIX: start_bot checks _ready before launching thread
