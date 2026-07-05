@@ -206,10 +206,10 @@ class MT5Manager:
             comment = request.get('comment', 'PB')
             if request['type'] == ORDER_TYPE_BUY:
                 res = await self._connection.create_market_buy_order(
-                    symbol, volume, stop_loss=sl, comment=comment)
+                    symbol, volume, stop_loss=sl)
             else:
                 res = await self._connection.create_market_sell_order(
-                    symbol, volume, stop_loss=sl, comment=comment)
+                    symbol, volume, stop_loss=sl)
             # order ID return karo
             order_id = res.get('orderId', 0) if isinstance(res, dict) else 0
             return (True, order_id)
