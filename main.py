@@ -65,6 +65,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
+API_VERSION = "3.0.1"   # Railway deploy verify — curl / should show this version
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -1498,10 +1499,13 @@ def get_trades(current_user: User = Depends(get_current_user),
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
+  # Frontend ke liye HAMESHA saari live MT5 positions — koi filter nahi
     conn = mt5_manager if is_master_user(current_user) else pool_get(current_user.id)
     if conn is None:
         conn = mt5_manager
-    positions = get_live_positions(current_user.id, conn)
+    positions = conn.positions_get() if conn else []
+    if not positions:
+        positions = []
     return [_position_to_api_dict(p, conn, current_user.id) for p in positions]
 
 # FIX: New endpoint to debug connection status
@@ -1629,6 +1633,7 @@ async def startup_event():
 def api_root():
     return {
         "message":       "PumpingBot Smart API",
+        "version":       API_VERSION,
         "metaapi_ready": mt5_manager._ready,
         "event_set":     metaapi_ready_event.is_set(),
     }
@@ -1644,6 +1649,7 @@ def serve_frontend():
         return FileResponse(index)
     return {
         "message":       "PumpingBot Smart API",
+        "version":       API_VERSION,
         "metaapi_ready": mt5_manager._ready,
         "event_set":     metaapi_ready_event.is_set(),
     }
