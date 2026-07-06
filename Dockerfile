@@ -16,7 +16,9 @@ RUN cd client && npm ci
 COPY . .
 RUN cd client && npm run build
 
+RUN chmod +x start.sh
+
 ENV PORT=8000
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["./start.sh"]
