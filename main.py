@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -63,7 +65,10 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-MASTER_USER_ID = 1   # Admin = Master account (copy trading hub)
+MASTER_USER_ID = None   # Set at startup from admin username
+
+def is_master_user(user):
+    return user is not None and user.username == "admin"
 
 # ─── FIX: Global threading.Event for proper thread synchronization ────────────
 # Bot thread waits on this event — set ONLY when MetaApi _ready=True
@@ -81,9 +86,9 @@ user_ready_events    = {}   # {user_id: threading.Event}
 
 def pool_get(user_id):
     """User ka connection lo — master ke liye mt5_manager use karo"""
-    if user_id == MASTER_USER_ID:
-        return mt5_manager   # Master ka singleton
-    return user_connections.get(user_id)  # Follower ka pool connection
+    if MASTER_USER_ID is not None and user_id == MASTER_USER_ID:
+        return mt5_manager
+    return user_connections.get(user_id)
 
 def pool_add(user_id, connection):
     """Naya user connected — uska connection pool mein add karo"""
@@ -178,6 +183,49 @@ class MT5Credentials(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str
+
+class SignalOut(BaseModel):
+    id: int
+    symbol: str
+    signal_type: str
+    score: float
+    ema_fast: float
+    ema_slow: float
+    macd: float
+    rsi: float
+    adx: float
+    price: float
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TradeOut(BaseModel):
+    id: int
+    user_id: int
+    symbol: str
+    trade_type: str
+    lot: float
+    open_price: float
+    close_price: float | None = None
+    profit: float
+    score: float
+    mt5_ticket: int | None = None
+    master_ticket: int | None = None
+    status: str
+    opened_at: datetime
+    closed_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
+
+
+def user_connection(user):
+    """Har user ka apna MT5 connection — master ya follower."""
+    if is_master_user(user):
+        return mt5_manager
+    conn = pool_get(user.id)
+    return conn if conn else mt5_manager
 
 
 def get_db():
@@ -820,7 +868,7 @@ def calculate_daily_profits():
     try:
         users = db.query(User).filter(
             User.bot_active == True,
-            User.id != MASTER_USER_ID
+            User.username != "admin"
         ).all()
 
         for user in users:
@@ -1012,7 +1060,7 @@ def confirm_payment(user_id: int,
                     current_user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
     """Admin payment confirm kare — bot resume ho jata hai"""
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
     user = db.query(User).filter(User.id == user_id).first()
@@ -1036,7 +1084,7 @@ def confirm_payment(user_id: int,
 
     # Bot restart — master only runs trading engine
     active_bots[user.id] = True
-    if user.id == MASTER_USER_ID and user.mt5_login:
+    if is_master_user(user) and user.mt5_login:
         threading.Thread(
             target=run_user_bot_watchdog,
             args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
@@ -1061,7 +1109,7 @@ def confirm_payment(user_id: int,
 def get_pending_payments(current_user: User = Depends(get_current_user),
                          db: Session = Depends(get_db)):
     """Admin sab pending payments dekhe"""
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
     users = db.query(User).filter(User.daily_profit_owed > 0).all()
@@ -1080,7 +1128,7 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
 @app.get("/admin/users")
 def get_all_users(current_user: User = Depends(get_current_user),
                   db: Session = Depends(get_db)):
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
     users = db.query(User).all()
     result = []
@@ -1108,7 +1156,7 @@ def get_all_users(current_user: User = Depends(get_current_user),
 @app.get("/admin/stats")
 def get_admin_stats(current_user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
     total_users    = db.query(User).count()
@@ -1149,7 +1197,7 @@ def admin_toggle_bot(user_id: int,
                      current_user: User = Depends(get_current_user),
                      db: Session = Depends(get_db)):
     """Admin kisi bhi user ka bot start/stop kare"""
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -1162,7 +1210,7 @@ def admin_toggle_bot(user_id: int,
     active_bots[user.id] = True
     user.bot_active = True
     db.commit()
-    if user.id == MASTER_USER_ID and user.mt5_login:
+    if is_master_user(user) and user.mt5_login:
         threading.Thread(
             target=run_user_bot_watchdog,
             args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
@@ -1174,13 +1222,13 @@ def admin_toggle_bot(user_id: int,
 def admin_delete_user(user_id: int,
                       current_user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
-    if current_user.id != MASTER_USER_ID:
+    if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
-    if user_id == MASTER_USER_ID:
-        raise HTTPException(400, "Admin ko delete nahi kar sakte")
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+    if is_master_user(user):
+        raise HTTPException(400, "Admin ko delete nahi kar sakte")
     active_bots[user_id] = False
     pool_remove(user_id)
     db.query(Trade).filter(Trade.user_id == user_id).delete()
@@ -1239,18 +1287,27 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 
 @app.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
-    info = mt5_manager.account_info()
+    conn = user_connection(current_user)
+    info = conn.account_info() if conn and conn._ready else None
+    role = "master" if is_master_user(current_user) else "follower"
+    amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
     return {
-        "username":      current_user.username,
-        "email":         current_user.email,
-        "mt5_connected": current_user.mt5_login is not None,
-        "mt5_ready":     mt5_manager._ready,          # FIX: expose _ready to frontend
-        "mt5_login":     current_user.mt5_login,
-        "mt5_server":    current_user.mt5_server,
-        "bot_active":    current_user.bot_active,
-        "balance":       info.balance if info else 0,
-        "profit":        info.profit  if info else 0,
-        "equity":        info.equity  if info else 0,
+        "username":       current_user.username,
+        "email":          current_user.email,
+        "user_id":        current_user.id,
+        "is_admin":       is_master_user(current_user),
+        "role":           role,
+        "mt5_connected":  current_user.mt5_login is not None,
+        "mt5_ready":      mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id),
+        "mt5_login":      current_user.mt5_login,
+        "mt5_server":     current_user.mt5_server,
+        "bot_active":     current_user.bot_active,
+        "balance":        info.balance if info else 0,
+        "profit":         info.profit  if info else 0,
+        "equity":         info.equity  if info else 0,
+        "referral_code":  current_user.referral_code,
+        "payment_status": current_user.payment_status or "clear",
+        "amount_owed":    amount_owed,
     }
 
 @app.post("/connect-mt5")
@@ -1264,7 +1321,7 @@ async def connect_mt5(creds: MT5Credentials,
     """
     print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login}")
 
-    if current_user.id == MASTER_USER_ID:
+    if is_master_user(current_user):
         # ── Master: existing connection use karo ──────────────────────────
         metaapi_ready_event.clear()
         mt5_manager.initialize()
@@ -1334,7 +1391,7 @@ def start_bot(current_user: User = Depends(get_current_user),
     current_user.bot_active = True
     db.commit()
 
-    if current_user.id == MASTER_USER_ID:
+    if is_master_user(current_user):
         if not mt5_manager._ready:
             raise HTTPException(400, "MetaApi not ready — reconnect MT5 first")
         if mt5_manager._ready:
@@ -1361,12 +1418,12 @@ def stop_bot(current_user: User = Depends(get_current_user),
     db.commit()
     return {"message": "Bot stopped"}
 
-@app.get("/signals")
+@app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
                 db: Session = Depends(get_db)):
     return db.query(Signal).order_by(Signal.created_at.desc()).limit(50).all()
 
-@app.get("/trades")
+@app.get("/trades", response_model=list[TradeOut])
 def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     return db.query(Trade).filter(
@@ -1375,7 +1432,7 @@ def get_trades(current_user: User = Depends(get_current_user),
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
-    conn = pool_get(current_user.id) if current_user.id != MASTER_USER_ID else mt5_manager
+    conn = mt5_manager if is_master_user(current_user) else pool_get(current_user.id)
     if conn is None:
         conn = mt5_manager
     positions = get_bot_positions(current_user.id, conn)
@@ -1409,13 +1466,16 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
 # FIX: New endpoint to debug connection status
 @app.get("/status")
 def get_status(current_user: User = Depends(get_current_user)):
-    info = mt5_manager.account_info()
+    conn = user_connection(current_user)
+    ready = mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id)
+    info = conn.account_info() if conn and ready else None
     return {
-        "metaapi_ready":    mt5_manager._ready,
+        "metaapi_ready":    ready,
         "event_set":        metaapi_ready_event.is_set(),
         "bot_active":       active_bots.get(current_user.id, False),
         "account_info_ok":  info is not None,
         "balance":          info.balance if info else None,
+        "role":             "master" if is_master_user(current_user) else "follower",
     }
 
 
@@ -1444,6 +1504,12 @@ async def startup_event():
             print("[STARTUP] Admin user created!")
         else:
             print("[STARTUP] Admin user already exists!")
+
+        global MASTER_USER_ID
+        admin_user = db.query(User).filter(User.username == "admin").first()
+        if admin_user:
+            MASTER_USER_ID = admin_user.id
+            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin)")
 
         # FIX: Get admin user and pass credentials to initialize()
         # (previously called with no args — this was the root cause!)
@@ -1497,7 +1563,7 @@ async def startup_event():
         # ── Followers ko bhi reconnect karo (restart ke baad) ─────────────
         followers = db.query(User).filter(
             User.bot_active == True,
-            User.id != MASTER_USER_ID,
+            User.username != "admin",
             User.metaapi_account_id != None
         ).all()
 
@@ -1518,10 +1584,28 @@ async def startup_event():
         db.close()
 
 
-@app.get("/")
-def root():
+@app.get("/api")
+def api_root():
     return {
         "message":       "PumpingBot Smart API",
         "metaapi_ready": mt5_manager._ready,
         "event_set":     metaapi_ready_event.is_set(),
     }
+
+
+import os as _os
+_FRONTEND_DIR = _os.path.join(_os.path.dirname(__file__), "frontend")
+
+@app.get("/")
+def serve_frontend():
+    index = _os.path.join(_FRONTEND_DIR, "index.html")
+    if _os.path.isfile(index):
+        return FileResponse(index)
+    return {
+        "message":       "PumpingBot Smart API",
+        "metaapi_ready": mt5_manager._ready,
+        "event_set":     metaapi_ready_event.is_set(),
+    }
+
+if _os.path.isdir(_FRONTEND_DIR):
+    app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")

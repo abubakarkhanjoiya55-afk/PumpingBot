@@ -8,7 +8,6 @@ from datetime import datetime
 
 from mt5_manager import mt5_manager, create_user_manager
 
-MASTER_USER_ID = 1
 BOT_MAGIC = 888888
 
 # master_ticket -> {symbol, type, volume, copied_at}
@@ -19,7 +18,8 @@ _copy_lock = threading.Lock()
 def _get_pool_helpers():
     """Import pool helpers from main at runtime to avoid circular import."""
     import main
-    return main.pool_get, main.pool_is_ready, main.SessionLocal, main.Trade, main.User
+    return (main.pool_get, main.pool_is_ready, main.SessionLocal,
+            main.Trade, main.User, main.MASTER_USER_ID, main.is_master_user)
 
 
 def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
@@ -32,7 +32,7 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
     try:
         followers = db.query(User).filter(
             User.bot_active == True,
-            User.id != master_user_id,
+            User.username != "admin",
             User.mt5_login != None,
         ).all()
 
@@ -192,10 +192,13 @@ def _get_master_bot_tickets():
     hamesha reliable hota hai.
     """
     import main
+    master_id = main.MASTER_USER_ID
+    if not master_id:
+        return set()
     db = main.SessionLocal()
     try:
         rows = db.query(main.Trade.mt5_ticket).filter(
-            main.Trade.user_id == MASTER_USER_ID,
+            main.Trade.user_id == master_id,
             main.Trade.status == "open",
             main.Trade.mt5_ticket != None,
         ).all()
@@ -214,7 +217,8 @@ def manual_copy_watcher():
 
     while True:
         try:
-            if not main.active_bots.get(MASTER_USER_ID, False):
+            master_id = main.MASTER_USER_ID
+            if not master_id or not main.active_bots.get(master_id, False):
                 time.sleep(5)
                 continue
 
@@ -271,7 +275,7 @@ def manual_copy_watcher():
                         threading.Thread(
                             target=copy_trade_to_followers,
                             args=(
-                                MASTER_USER_ID, pos.symbol, trend, 80, atr,
+                                master_id, pos.symbol, trend, 80, atr,
                                 pos.volume, balance, entry, sl, "MANUAL",
                                 pos.ticket, "MANUAL",
                             ),

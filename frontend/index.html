@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PumpingBot — Smart Trading</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="app">
+  <!-- Auth Screen -->
+  <div id="auth-screen" class="screen">
+    <div class="auth-card">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <h1>PumpingBot</h1>
+        <p class="tagline">Automated MT5 Trading & Copy Trading</p>
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Login</button>
+        <button class="tab" data-tab="register">Register</button>
+      </div>
+
+      <form id="login-form" class="auth-form">
+        <label>Username</label>
+        <input type="text" id="login-username" required autocomplete="username" />
+        <label>Password</label>
+        <input type="password" id="login-password" required autocomplete="current-password" />
+        <button type="submit" class="btn btn-primary">Login</button>
+      </form>
+
+      <form id="register-form" class="auth-form hidden">
+        <label>Username</label>
+        <input type="text" id="reg-username" required />
+        <label>Email</label>
+        <input type="email" id="reg-email" required />
+        <label>Password</label>
+        <input type="password" id="reg-password" required minlength="6" />
+        <label>Referral Code <span class="optional">(optional)</span></label>
+        <input type="text" id="reg-referral" placeholder="ABC12345" />
+        <button type="submit" class="btn btn-primary">Create Account</button>
+      </form>
+
+      <div id="auth-error" class="error-msg hidden"></div>
+    </div>
+  </div>
+
+  <!-- Dashboard Screen -->
+  <div id="dashboard-screen" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="logo-sm">⚡ PumpingBot</span>
+        <span id="conn-badge" class="badge badge-off">Disconnected</span>
+      </div>
+      <div class="topbar-right">
+        <span id="user-label" class="user-label"></span>
+        <button id="btn-logout" class="btn btn-ghost">Logout</button>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <!-- Stats Row -->
+      <section class="stats-row">
+        <div class="stat-card">
+          <span class="stat-label">Balance</span>
+          <span id="stat-balance" class="stat-value">$0.00</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Equity</span>
+          <span id="stat-equity" class="stat-value">$0.00</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Floating P/L</span>
+          <span id="stat-profit" class="stat-value">$0.00</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Bot Status</span>
+          <span id="stat-bot" class="stat-value stat-bot-off">OFF</span>
+        </div>
+      </section>
+
+      <!-- Payment warning -->
+      <div id="payment-banner" class="payment-banner hidden">
+        ⚠️ Payment pending: <strong id="payment-amount">$0.00</strong> — Bot may pause at 9 PM PKT if unpaid.
+      </div>
+
+      <!-- Action Panel -->
+      <section class="panel action-panel">
+        <h2>Controls</h2>
+        <div class="action-grid">
+          <div class="action-block">
+            <h3>MT5 Connection</h3>
+            <form id="mt5-form" class="mt5-form">
+              <input type="number" id="mt5-login" placeholder="MT5 Login" required />
+              <input type="password" id="mt5-password" placeholder="MT5 Password" required />
+              <input type="text" id="mt5-server" placeholder="Server (e.g. Exness-MT5Trial15)" required />
+              <button type="submit" class="btn btn-secondary">Connect MT5</button>
+            </form>
+            <p id="mt5-status" class="hint"></p>
+          </div>
+          <div class="action-block">
+            <h3>Trading Bot</h3>
+            <p id="role-hint" class="hint"></p>
+            <div class="btn-row">
+              <button id="btn-start" class="btn btn-success" disabled>Start Bot</button>
+              <button id="btn-stop" class="btn btn-danger" disabled>Stop Bot</button>
+            </div>
+          </div>
+          <div class="action-block">
+            <h3>Referral</h3>
+            <p class="hint">Share your code — earn 5% commission on referred users' profits.</p>
+            <div class="referral-box">
+              <code id="referral-code">—</code>
+              <button id="btn-copy-ref" class="btn btn-ghost btn-sm">Copy</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Open Positions -->
+      <section class="panel">
+        <h2>Open Positions <span id="pos-count" class="count-badge">0</span></h2>
+        <div class="table-wrap">
+          <table id="positions-table">
+            <thead>
+              <tr>
+                <th>Symbol</th><th>Type</th><th>Lot</th><th>Open</th><th>Current</th><th>Score</th><th>P/L</th>
+              </tr>
+            </thead>
+            <tbody id="positions-body">
+              <tr><td colspan="7" class="empty">No open positions</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Trades & Signals -->
+      <div class="two-col">
+        <section class="panel">
+          <h2>Recent Trades</h2>
+          <div class="table-wrap">
+            <table id="trades-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th><th>Type</th><th>Lot</th><th>Profit</th><th>Status</th><th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="trades-body">
+                <tr><td colspan="6" class="empty">No trades yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Signals</h2>
+          <div class="table-wrap">
+            <table id="signals-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th><th>Signal</th><th>Score</th><th>RSI</th><th>ADX</th><th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="signals-body">
+                <tr><td colspan="6" class="empty">No signals yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <!-- Admin Panel -->
+      <section id="admin-panel" class="panel admin-panel hidden">
+        <h2>🛡️ Admin Panel</h2>
+        <div class="admin-stats" id="admin-stats"></div>
+        <h3>Pending Payments</h3>
+        <div class="table-wrap">
+          <table id="payments-table">
+            <thead>
+              <tr>
+                <th>User</th><th>Email</th><th>Admin Share</th><th>Referral</th><th>Total</th><th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="payments-body">
+              <tr><td colspan="6" class="empty">No pending payments</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>All Users</h3>
+        <div class="table-wrap">
+          <table id="users-table">
+            <thead>
+              <tr>
+                <th>User</th><th>MT5</th><th>Balance</th><th>Bot</th><th>Payment</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="users-body">
+              <tr><td colspan="6" class="empty">Loading...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/api.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
