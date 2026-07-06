@@ -1,25 +1,29 @@
 #!/bin/bash
-# PumpingBot one-command deploy — tokens env mein set karo phir run karo:
-#   export RAILWAY_TOKEN="..."
-#   export VERCEL_TOKEN="..."
+# PumpingBot one-command deploy
+#   export RAILWAY_TOKEN="..."   # Railway → Project → Settings → Tokens
 #   ./scripts/deploy.sh
 
 set -e
 API_URL="${VITE_API_URL:-https://web-production-6a35f.up.railway.app}"
+RAILWAY_SERVICE_ID="${RAILWAY_SERVICE_ID:-c2f246da-a5ec-4432-ad4e-925438b85982}"
 
 echo "=== PumpingBot Deploy ==="
 
 # ── Railway ──────────────────────────────────────────────────────────────────
-if [ -n "$RAILWAY_TOKEN" ] && [ -n "$RAILWAY_SERVICE_ID" ]; then
-  echo "[Railway] Triggering deploy..."
-  curl -s -X POST https://backboard.railway.com/graphql/v2 \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $RAILWAY_TOKEN" \
-    -d "{\"query\":\"mutation { serviceInstanceDeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\") }\"}" \
-    | python3 -m json.tool
+if [ -n "$RAILWAY_TOKEN" ]; then
+  echo "[Railway] Deploying service $RAILWAY_SERVICE_ID ..."
+  if command -v railway >/dev/null 2>&1; then
+    RAILWAY_TOKEN="$RAILWAY_TOKEN" railway up --service "$RAILWAY_SERVICE_ID" --detach -y
+  else
+    curl -s -X POST https://backboard.railway.com/graphql/v2 \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer $RAILWAY_TOKEN" \
+      -d "{\"query\":\"mutation { serviceInstanceDeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\") }\"}" \
+      | python3 -m json.tool
+  fi
   echo "[Railway] Deploy triggered. Wait 2-3 min then check: $API_URL"
 else
-  echo "[Railway] SKIP — set RAILWAY_TOKEN + RAILWAY_SERVICE_ID"
+  echo "[Railway] SKIP — set RAILWAY_TOKEN (Project → Settings → Tokens)"
 fi
 
 # ── Vercel ───────────────────────────────────────────────────────────────────

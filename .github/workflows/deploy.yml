@@ -3,12 +3,33 @@ name: Deploy PumpingBot
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  RAILWAY_SERVICE_ID: c2f246da-a5ec-4432-ad4e-925438b85982
+  VITE_API_URL: https://web-production-6a35f.up.railway.app
 
 jobs:
-  # Vercel frontend — VERCEL_TOKEN repo secret chahiye (ek dafa add karo)
+  railway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+
+      - name: Deploy backend to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN secret missing — add it in GitHub repo Settings → Secrets"
+            exit 0
+          fi
+          railway up --service "$RAILWAY_SERVICE_ID" --detach -y
+
   vercel:
     runs-on: ubuntu-latest
-    if: ${{ secrets.VERCEL_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,38 +44,35 @@ jobs:
         run: npm install -g vercel@latest
 
       - name: Pull Vercel settings
-        working-directory: client
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: client
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN secret missing — skipping Vercel deploy"
+            exit 0
+          fi
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Build
-        working-directory: client
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          VITE_API_URL: https://web-production-6a35f.up.railway.app
+          VITE_API_URL: ${{ env.VITE_API_URL }}
+        working-directory: client
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then exit 0; fi
+          vercel build --prod --token="$VERCEL_TOKEN"
 
       - name: Deploy to Vercel
-        working-directory: client
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-
-  # Railway backend — RAILWAY_TOKEN secret se auto redeploy
-  railway:
-    runs-on: ubuntu-latest
-    if: ${{ secrets.RAILWAY_TOKEN != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli
-
-      - name: Deploy to Railway
-        run: railway up --service pumpingbot --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        working-directory: client
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then exit 0; fi
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"

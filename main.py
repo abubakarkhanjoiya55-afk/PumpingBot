@@ -36,11 +36,11 @@ MARGIN_PROFIT_MULT   = 2.0    # profit >= margin * 2 → jaldi book (score < 90)
 ELITE_SL_LOCK_PCT    = 0.70   # score >= 90: peak profit ka 70% broker SL par lock
 ELITE_MIN_PEAK       = 5.0    # itna peak profit banne ke baad hi SL lock start ho
 
-SECRET_KEY = "goldbot-secret-key-2024"
+import os
+SECRET_KEY = os.environ.get("SECRET_KEY", "goldbot-secret-key-2024")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
-import os
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./goldbot.db")
 
 # Email config — Railway environment variables se
