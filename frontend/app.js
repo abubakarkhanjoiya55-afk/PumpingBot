@@ -159,8 +159,8 @@
     $('#stat-balance').textContent = fmtMoney(m.balance);
     $('#stat-equity').textContent = fmtMoney(m.equity);
     const profitEl = $('#stat-profit');
-    profitEl.textContent = fmtMoney(m.profit);
-    profitEl.className = 'stat-value ' + profitClass(m.profit);
+    profitEl.textContent = (m.floating_pl != null ? m.floating_pl : m.profit);
+    profitEl.className = 'stat-value ' + profitClass(m.floating_pl ?? m.profit);
 
     const botEl = $('#stat-bot');
     botEl.textContent = m.bot_active ? 'ON' : 'OFF';

@@ -360,6 +360,57 @@ def get_bot_positions(user_id, mgr):
     return [p for p in all_pos if is_bot_position(p, bot_tickets)]
 
 
+def get_live_positions(user_id, conn):
+    """Live MT5 positions for API — DB tickets se match, warna sab live positions."""
+    all_pos = conn.positions_get() if conn else []
+    if not all_pos:
+        return []
+
+    bot_tickets = get_open_bot_tickets(user_id)
+    matched = [p for p in all_pos if is_bot_position(p, bot_tickets)]
+    if matched:
+        return matched
+
+    db = SessionLocal()
+    try:
+        db_open = db.query(Trade).filter(
+            Trade.user_id == user_id, Trade.status == "open"
+        ).count()
+    finally:
+        db.close()
+
+    # MetaApi kai brokers par magic/comment 0 hota hai — DB mein open trades hon to sab dikhao
+    if db_open > 0 or len(all_pos) > 0:
+        return all_pos
+    return []
+
+
+def _position_to_api_dict(p, conn, user_id):
+    db = SessionLocal()
+    try:
+        tr = db.query(Trade).filter(Trade.mt5_ticket == _as_int_ticket(p.ticket)).first()
+        score = tr.score if tr else 0
+        open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
+    finally:
+        db.close()
+
+    tick = conn.symbol_info_tick(p.symbol) if conn else None
+    current_price = (tick.bid if p.type == 0 else tick.ask) if tick else 0
+
+    return {
+        "ticket":        p.ticket,
+        "symbol":        p.symbol,
+        "profit":        round(p.profit, 2),
+        "type":          "BUY" if p.type == 0 else "SELL",
+        "lot":           getattr(p, "volume", 0),
+        "open_price":    open_price,
+        "current_price": current_price,
+        "score":         score,
+        "magic":         getattr(p, "magic", 0),
+        "comment":       getattr(p, "comment", ""),
+    }
+
+
 def sync_manual_closes(user_id, balance):
     db = SessionLocal()
     try:
@@ -1286,28 +1337,43 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 @app.get("/me")
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(current_user: User = Depends(get_current_user),
+           db: Session = Depends(get_db)):
     conn = user_connection(current_user)
     info = conn.account_info() if conn and conn._ready else None
     role = "master" if is_master_user(current_user) else "follower"
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
+
+    balance = info.balance if info else 0
+    equity  = info.equity  if info else 0
+    # MetaApi profit field aksar 0 hota hai — floating P/L = equity - balance
+    floating_pl = round(equity - balance, 2) if info else 0
+
+    open_trades_db = db.query(Trade).filter(
+        Trade.user_id == current_user.id, Trade.status == "open"
+    ).count()
+    live_positions = get_live_positions(current_user.id, conn) if conn else []
+    open_trades_count = max(open_trades_db, len(live_positions))
+
     return {
-        "username":       current_user.username,
-        "email":          current_user.email,
-        "user_id":        current_user.id,
-        "is_admin":       is_master_user(current_user),
-        "role":           role,
-        "mt5_connected":  current_user.mt5_login is not None,
-        "mt5_ready":      mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id),
-        "mt5_login":      current_user.mt5_login,
-        "mt5_server":     current_user.mt5_server,
-        "bot_active":     current_user.bot_active,
-        "balance":        info.balance if info else 0,
-        "profit":         info.profit  if info else 0,
-        "equity":         info.equity  if info else 0,
-        "referral_code":  current_user.referral_code,
-        "payment_status": current_user.payment_status or "clear",
-        "amount_owed":    amount_owed,
+        "username":          current_user.username,
+        "email":             current_user.email,
+        "user_id":           current_user.id,
+        "is_admin":          is_master_user(current_user),
+        "role":              role,
+        "mt5_connected":     current_user.mt5_login is not None,
+        "mt5_ready":         mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id),
+        "mt5_login":         current_user.mt5_login,
+        "mt5_server":        current_user.mt5_server,
+        "bot_active":        current_user.bot_active,
+        "balance":           balance,
+        "profit":            floating_pl,
+        "floating_pl":       floating_pl,
+        "equity":            equity,
+        "open_trades_count": open_trades_count,
+        "referral_code":     current_user.referral_code,
+        "payment_status":    current_user.payment_status or "clear",
+        "amount_owed":       amount_owed,
     }
 
 @app.post("/connect-mt5")
@@ -1435,33 +1501,8 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
     conn = mt5_manager if is_master_user(current_user) else pool_get(current_user.id)
     if conn is None:
         conn = mt5_manager
-    positions = get_bot_positions(current_user.id, conn)
-    if not positions: return []
-    result = []
-    for p in positions:
-        # DB se extra info lo
-        db = SessionLocal()
-        tr = db.query(Trade).filter(Trade.mt5_ticket == _as_int_ticket(p.ticket)).first()
-        score = tr.score if tr else 0
-        open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
-        db.close()
-
-        tick = conn.symbol_info_tick(p.symbol)
-        current_price = (tick.bid if p.type == 0 else tick.ask) if tick else 0
-
-        result.append({
-            "ticket":      p.ticket,
-            "symbol":      p.symbol,
-            "profit":      round(p.profit, 2),
-            "type":        "BUY" if p.type == 0 else "SELL",
-            "lot":         getattr(p, "volume", 0),
-            "open_price":  open_price,
-            "current_price": current_price,
-            "score":       score,
-            "magic":       getattr(p, "magic", 0),
-            "comment":     getattr(p, "comment", ""),
-        })
-    return result
+    positions = get_live_positions(current_user.id, conn)
+    return [_position_to_api_dict(p, conn, current_user.id) for p in positions]
 
 # FIX: New endpoint to debug connection status
 @app.get("/status")
