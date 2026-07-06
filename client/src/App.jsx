@@ -106,6 +106,8 @@ export default function App() {
   const openCount = Math.max(me?.open_trades_count ?? 0, openTrades.length, positions.length);
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
+  const isFollower = me?.role === 'follower';
+  const canStartBot = me?.mt5_connected && (me?.mt5_ready || isFollower);
 
   const posProfit = (trade) => {
     const byTicket = positions.find(x => x.ticket === trade.mt5_ticket);
@@ -152,6 +154,16 @@ export default function App() {
         {page === 'dashboard' && (
           <>
             <h1>Dashboard</h1>
+            <div style={{ display: 'flex', gap: '.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              <span className={me?.mt5_ready ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
+                {me?.mt5_ready ? 'MT5 Live' : me?.mt5_connected ? 'MT5 Syncing…' : 'MT5 Not Connected'}
+              </span>
+              {me?.role && (
+                <span style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem', background: '#222', color: '#ccc' }}>
+                  {me.role === 'master' ? 'Master — trades copy to followers' : 'Follower — master trades mirror here'}
+                </span>
+              )}
+            </div>
             <div className="stats-grid">
               <div className="stat-card">
                 <div className="stat-label">Balance</div>
@@ -194,7 +206,16 @@ export default function App() {
               </div>
               {me?.bot_active
                 ? <button className="btn-stop" onClick={async () => { await stopBot(); refresh(); }}>⏹ Stop Bot</button>
-                : <button className="btn-start" onClick={async () => { await startBot(); refresh(); }}>▶ Start Bot</button>
+                : (
+                  <button
+                    className="btn-start"
+                    disabled={!canStartBot}
+                    title={!canStartBot ? 'Connect MT5 first (master must show MT5 Live)' : ''}
+                    onClick={async () => { await startBot(); refresh(); }}
+                  >
+                    ▶ Start Bot
+                  </button>
+                )
               }
             </div>
           </>
@@ -292,8 +313,18 @@ export default function App() {
             <h1>MT5 Connection</h1>
             {me?.mt5_connected && (
               <div className="connected-card">
-                ✅ Connected: {me.mt5_login} @ {me.mt5_server}
+                {me.mt5_ready ? '✅' : '⏳'} {me.mt5_ready ? 'Connected' : 'Syncing'}: {me.mt5_login} @ {me.mt5_server}
+                {!me.mt5_ready && (
+                  <p style={{ margin: '.5rem 0 0', fontSize: '.85rem', color: '#f0b90b' }}>
+                    MetaApi is connecting your account — balance may show $0 for 1–2 minutes.
+                  </p>
+                )}
               </div>
+            )}
+            {isFollower && (
+              <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
+                After connecting, press <strong>Start Bot</strong> on the dashboard to receive copied trades from the master account.
+              </p>
             )}
             <form className="mt5-form" onSubmit={async (e) => {
               e.preventDefault();

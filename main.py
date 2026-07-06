@@ -221,12 +221,24 @@ class TradeOut(BaseModel):
         from_attributes = True
 
 
-def user_connection(user):
-    """Har user ka apna MT5 connection — master ya follower."""
+def ensure_user_connection(user):
+    """Har user ka apna MT5 connection — follower ke liye pool se, warna reconnect."""
     if is_master_user(user):
         return mt5_manager
     conn = pool_get(user.id)
-    return conn if conn else mt5_manager
+    if conn is not None:
+        return conn
+    if user.metaapi_account_id:
+        print(f"[POOL] Reconnecting follower {user.username} from saved MetaApi id")
+        conn = create_user_manager(user.metaapi_account_id)
+        pool_add(user.id, conn)
+        return conn
+    return None
+
+
+def user_connection(user):
+    """Har user ka apna MT5 connection — master ya follower (no master fallback)."""
+    return ensure_user_connection(user)
 
 
 def get_db():
@@ -1485,11 +1497,18 @@ async def connect_mt5(creds: MT5Credentials,
         current_user.metaapi_account_id = account_id
         db.commit()
 
-        print(f"[CONNECT] ✅ Follower {current_user.username} connected! MetaApi={account_id[:8]}...")
+        print(f"[CONNECT] ✅ Follower {current_user.username} connected! MetaApi={account_id[:8]}... ready={conn._ready}")
+        if not conn._ready:
+            return {
+                "message":   "Account linked — MetaApi is still syncing (1–2 min). Refresh dashboard shortly.",
+                "balance":   follower_info.balance if follower_info else 0,
+                "mt5_ready": False,
+                "role":      "follower",
+            }
         return {
             "message":   f"Connected: {follower_info.name if follower_info else 'OK'}",
             "balance":   follower_info.balance if follower_info else 0,
-            "mt5_ready": conn._ready,
+            "mt5_ready": True,
             "role":      "follower",
         }
 
@@ -1558,9 +1577,7 @@ def get_trades(current_user: User = Depends(get_current_user),
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
-    conn = mt5_manager if is_master_user(current_user) else pool_get(current_user.id)
-    if conn is None:
-        conn = mt5_manager
+    conn = user_connection(current_user)
     reconcile_trades_with_mt5(current_user.id, conn)
     positions = conn.positions_get() if conn else []
     if not positions:
