@@ -184,6 +184,26 @@ def copy_close_to_followers(master_ticket, symbol):
         db.close()
 
 
+def _get_master_bot_tickets():
+    """
+    Master account ki apni bot-placed open trades ke tickets — DB se, kyunki
+    kai brokers/MetaApi accounts magic number aur comment field preserve
+    nahi karte (position data mein magic hamesha 0 wapas aata hai). Ticket
+    hamesha reliable hota hai.
+    """
+    import main
+    db = main.SessionLocal()
+    try:
+        rows = db.query(main.Trade.mt5_ticket).filter(
+            main.Trade.user_id == MASTER_USER_ID,
+            main.Trade.status == "open",
+            main.Trade.mt5_ticket != None,
+        ).all()
+        return {r[0] for r in rows}
+    finally:
+        db.close()
+
+
 def manual_copy_watcher():
     """
     Background thread: when master bot is ON, detect new manual trades
@@ -204,6 +224,7 @@ def manual_copy_watcher():
 
             positions = mt5_manager.positions_get() or []
             current_tickets = set()
+            bot_tickets = _get_master_bot_tickets()
 
             for pos in positions:
                 current_tickets.add(pos.ticket)
@@ -214,13 +235,14 @@ def manual_copy_watcher():
                         continue
 
                     is_bot = (
+                        pos.ticket in bot_tickets or
                         pos.magic == BOT_MAGIC or
                         "PB_" in getattr(pos, "comment", "")
                     )
                     source = "BOT" if is_bot else "MANUAL"
 
                     # Bot trades already copied in run_user_bot — skip duplicates
-                    if is_bot and "PB_COPY" not in getattr(pos, "comment", ""):
+                    if is_bot:
                         _known_master_positions[pos.ticket] = {
                             "symbol": pos.symbol, "type": trend,
                             "volume": pos.volume, "source": source,

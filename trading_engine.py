@@ -250,6 +250,57 @@ def detect_candle_pattern(opens, highs, lows, closes):
     return None, None, 0
 
 
+def get_htf_atr(symbol, mt5_manager, period=14):
+    """
+    SL/TP ka basis entry timeframe (M5/M15) ki jagah 1H volatility par rakho —
+    isse SL trade lagte hi tight hit nahi hota, market ke real breathing room ke
+    hisab se set hota hai.
+    """
+    rates = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H1, 0, period + 20)
+    if rates is None or len(rates) < period + 1:
+        return None
+    highs = [r["high"] for r in rates]
+    lows = [r["low"] for r in rates]
+    closes = [r["close"] for r in rates]
+    atr = calc_atr(highs, lows, closes, period)
+    return atr if atr and atr > 0 else None
+
+
+def calc_margin_used(lot, symbol, price, mt5_manager):
+    """Approximate broker margin used for this position (lot * contract_size * price / leverage)."""
+    try:
+        sym_info = mt5_manager.symbol_info(symbol)
+        acc_info = mt5_manager.account_info()
+        if sym_info is None or acc_info is None:
+            return None
+        leverage = getattr(acc_info, "leverage", 0) or 100
+        contract_size = getattr(sym_info, "contract_size", 0) or 100000
+        if leverage <= 0 or lot <= 0 or price <= 0:
+            return None
+        return (lot * contract_size * price) / leverage
+    except Exception:
+        return None
+
+
+def profit_to_price(entry_price, trade_type, target_profit, lot, symbol, mt5_manager):
+    """Convert a target dollar profit into the equivalent price level (for broker-side SL lock)."""
+    try:
+        info = mt5_manager.symbol_info(symbol)
+        if info is None or lot <= 0:
+            return None
+        tick_value = info.trade_tick_value
+        tick_size = info.trade_tick_size
+        if tick_value == 0 or tick_size == 0:
+            return None
+        profit_per_price_unit = (lot * tick_value) / tick_size
+        if profit_per_price_unit == 0:
+            return None
+        distance = target_profit / profit_per_price_unit
+        return entry_price + distance if trade_type == "BUY" else entry_price - distance
+    except Exception:
+        return None
+
+
 def get_trend(symbol, mt5_manager):
     r1h = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H1, 0, 200)
     r4h = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H4, 0, 100)
@@ -482,7 +533,9 @@ def analyze_symbol(symbol, mt5_manager):
     e200_l = ema(closes5, min(200, len(closes5) - 1))
     rsi = calc_rsi(closes5)
     stk, std = calc_stoch_rsi(closes5)
-    atr = calc_atr(highs5, lows5, closes5)
+    atr_m5 = calc_atr(highs5, lows5, closes5)
+    # SL/TP 1H volatility ke hisab se — M5 ka tight ATR sirf scoring ke liye
+    atr = get_htf_atr(symbol, mt5_manager) or atr_m5
     mh, mhp = calc_macd(closes5)
     bbu, bbm, bbl = calc_bollinger(closes5)
     st_dir, _ = calc_supertrend(highs5, lows5, closes5)
@@ -506,6 +559,7 @@ def analyze_symbol(symbol, mt5_manager):
         "score": score,
         "trade_mode": trade_mode,
         "atr": atr,
+        "atr_m5": atr_m5,
         "adx_4h": adx_4h,
         "adx_1h": adx_1h,
         "rsi": rsi,

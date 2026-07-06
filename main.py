@@ -26,7 +26,13 @@ from trading_engine import (
     ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
     get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
     calculate_lot, analyze_symbol, should_take_trade,
+    get_htf_atr, calc_margin_used, profit_to_price,
 )
+
+ELITE_SCORE          = 90     # is se upar: TP ka wait, sirf SL trail ho
+MARGIN_PROFIT_MULT   = 2.0    # profit >= margin * 2 → jaldi book (score < 90)
+ELITE_SL_LOCK_PCT    = 0.70   # score >= 90: peak profit ka 70% broker SL par lock
+ELITE_MIN_PEAK       = 5.0    # itna peak profit banne ke baad hi SL lock start ho
 
 SECRET_KEY = "goldbot-secret-key-2024"
 ALGORITHM = "HS256"
@@ -266,37 +272,83 @@ def get_platform_fee(profit, user_id, current_balance):
     finally:
         db.close()
 
+# ─── Bot position identification ────────────────────────────────────────────
+# NOTE: kai brokers/MetaApi demo accounts magic number aur comment field
+# preserve NAHI karte (position data mein magic hamesha 0 aata hai, comment
+# missing hota hai). Isliye magic/comment par bharosa nahi kar sakte — apni
+# trades ko humesha DB ke mt5_ticket se identify karo (reliable, broker-agnostic).
+def _as_int_ticket(ticket):
+    """MetaApi position ids arrive as strings, DB stores ints — normalize both sides."""
+    try:
+        return int(ticket)
+    except (TypeError, ValueError):
+        return None
+
+def get_open_bot_tickets(user_id):
+    db = SessionLocal()
+    try:
+        rows = db.query(Trade.mt5_ticket).filter(
+            Trade.user_id == user_id,
+            Trade.status == "open",
+            Trade.mt5_ticket != None,
+        ).all()
+        return {r[0] for r in rows}
+    finally:
+        db.close()
+
+def is_bot_position(pos, bot_tickets):
+    ticket_int = _as_int_ticket(pos.ticket)
+    return (
+        (ticket_int is not None and ticket_int in bot_tickets) or
+        pos.magic == 888888 or
+        "PB_" in getattr(pos, "comment", "")
+    )
+
+def get_bot_positions(user_id, mgr):
+    all_pos = mgr.positions_get()
+    if not all_pos:
+        return []
+    bot_tickets = get_open_bot_tickets(user_id)
+    return [p for p in all_pos if is_bot_position(p, bot_tickets)]
+
+
 def sync_manual_closes(user_id, balance):
     db = SessionLocal()
     try:
         open_trades = db.query(Trade).filter(
             Trade.user_id == user_id, Trade.status == "open").all()
         if not open_trades: return
+        live_positions = mt5_manager.positions_get() or []
+        live_tickets = {t for t in (_as_int_ticket(p.ticket) for p in live_positions) if t is not None}
         for trade in open_trades:
-            sym_pos = mt5_manager.positions_get(symbol=trade.symbol)
-            has_pos = any(p.magic == 888888 or "PB_" in getattr(p, "comment", "") for p in sym_pos) if sym_pos else False
-            if not has_pos:
-                trade.status    = "closed"
-                trade.profit    = 0.0
-                trade.closed_at = datetime.utcnow()
-                db.commit()
-                last_close_times[(user_id, trade.symbol)] = datetime.now()
+            if trade.mt5_ticket and trade.mt5_ticket in live_tickets:
+                continue
+            if not trade.mt5_ticket:
+                # Legacy rows without a ticket — fall back to symbol scan
+                sym_pos = [p for p in live_positions if p.symbol == trade.symbol]
+                bot_tickets = get_open_bot_tickets(user_id)
+                if any(is_bot_position(p, bot_tickets) for p in sym_pos):
+                    continue
+            trade.status    = "closed"
+            trade.profit    = 0.0
+            trade.closed_at = datetime.utcnow()
+            db.commit()
+            last_close_times[(user_id, trade.symbol)] = datetime.now()
     except Exception as e:
         print(f"[SYNC] {e}")
     finally:
         db.close()
 
 def close_all_positions(user_id, reason, balance):
-    positions = mt5_manager.positions_get()
+    positions = get_bot_positions(user_id, mt5_manager)
     if not positions: return
     for pos in positions:
-        if pos.magic == 888888 or "PB_" in getattr(pos, "comment", ""):
-            tick = mt5_manager.symbol_info_tick(pos.symbol)
-            done, profit = close_pos(pos, reason)
-            if done and tick:
-                cp = tick.bid if pos.type == 0 else tick.ask
-                update_trade_closed(user_id, pos.symbol, profit, cp, pos.ticket)
-                last_close_times[(user_id, pos.symbol)] = datetime.now()
+        tick = mt5_manager.symbol_info_tick(pos.symbol)
+        done, profit = close_pos(pos, reason)
+        if done and tick:
+            cp = tick.bid if pos.type == 0 else tick.ask
+            update_trade_closed(user_id, pos.symbol, profit, cp, _as_int_ticket(pos.ticket))
+            last_close_times[(user_id, pos.symbol)] = datetime.now()
 
 
 # ─── Bot thread waits on threading.Event ──────────────────────────────────────
@@ -331,6 +383,7 @@ def run_user_bot(user_id, login, password, server):
     high_water_mark     = None
     locked_profits      = {}
     peak_profits        = {}
+    elite_sl_locked     = {}   # ticket -> last broker-side SL price we set (score>=90 trades)
     daily_peak_pnl      = 0.0
     day_locked_out      = False
     first_cycle         = True
@@ -396,27 +449,31 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(600)
                 continue
 
-            all_pos = mt5_manager.positions_get()
-            bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
+            bot_pos = get_bot_positions(user_id, mt5_manager)
 
             for pos in bot_pos:
                 current_profit = pos.profit
-                ticket         = pos.ticket
+                ticket         = _as_int_ticket(pos.ticket)
                 trade_type     = "BUY" if pos.type == 0 else "SELL"
 
                 db = SessionLocal()
                 tr = db.query(Trade).filter(Trade.mt5_ticket == ticket).first()
-                score = tr.score if tr else 60
+                score      = tr.score if tr else 60
+                trade_lot  = tr.lot if tr else getattr(pos, "volume", 0)
+                open_price = tr.open_price if tr else getattr(pos, "openPrice", 0)
                 db.close()
 
-                rates5 = mt5_manager.copy_rates_from_pos(
-                    pos.symbol, mt5_manager.TIMEFRAME_M5, 0, 50)
-                atr = 0
-                if rates5 is not None and len(rates5) > 14:
-                    h5 = [r['high']  for r in rates5]
-                    l5 = [r['low']   for r in rates5]
-                    c5 = [r['close'] for r in rates5]
-                    atr = calc_atr(h5, l5, c5)
+                # SL/TP ab 1H volatility ke hisab se — entry timeframe ka tight ATR nahi
+                atr = get_htf_atr(pos.symbol, mt5_manager)
+                if atr is None:
+                    rates5 = mt5_manager.copy_rates_from_pos(
+                        pos.symbol, mt5_manager.TIMEFRAME_M5, 0, 50)
+                    atr = 0
+                    if rates5 is not None and len(rates5) > 14:
+                        h5 = [r['high']  for r in rates5]
+                        l5 = [r['low']   for r in rates5]
+                        c5 = [r['close'] for r in rates5]
+                        atr = calc_atr(h5, l5, c5)
 
                 current_trend, current_adx_4h, current_adx_1h, _ = get_trend(pos.symbol, mt5_manager)
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
@@ -433,6 +490,7 @@ def run_user_bot(user_id, login, password, server):
                         print(f"[TREND EXIT] {pos.symbol} {status}: ${profit:.2f}")
                         locked_profits.pop(ticket, None)
                         peak_profits.pop(ticket, None)
+                        elite_sl_locked.pop(ticket, None)
                     continue
 
                 if current_profit < 0 and current_adx_1h < 15 and current_adx_4h < 15:
@@ -445,9 +503,71 @@ def run_user_bot(user_id, login, password, server):
                         print(f"[DEAD EXIT] {pos.symbol} Loss cut: ${profit:.2f}")
                         locked_profits.pop(ticket, None)
                         peak_profits.pop(ticket, None)
+                        elite_sl_locked.pop(ticket, None)
                     continue
 
+                # ── Munasib profit rule: agar profit margin se double ho jaye to book karo ──
+                # (score >= 90 wali "elite" trades ke liye ye rule skip — unko TP tak wait karne do)
+                if score < ELITE_SCORE and current_profit > 0:
+                    margin_used = calc_margin_used(trade_lot, pos.symbol, open_price, mt5_manager)
+                    if margin_used and margin_used > 0 and current_profit >= margin_used * MARGIN_PROFIT_MULT:
+                        tick = mt5_manager.symbol_info_tick(pos.symbol)
+                        done, profit = close_pos(pos, "DoubleMarginTP")
+                        if done and tick:
+                            cp = tick.bid if pos.type == 0 else tick.ask
+                            update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                            last_close_times[(user_id, pos.symbol)] = now
+                            get_platform_fee(profit, user_id, balance)
+                            print(f"[DOUBLE MARGIN TP] {pos.symbol} Margin:${margin_used:.2f} "
+                                  f"Profit:${profit:.2f} (2x+ margin — booked)")
+                            peak_profits.pop(ticket, None)
+                            locked_profits.pop(ticket, None)
+                            elite_sl_locked.pop(ticket, None)
+                        continue
+
+                # ── Elite trades (score >= 90): TP ka wait karo, sirf SL upar trail karo ──
+                if score >= ELITE_SCORE:
+                    if current_profit > peak_profits.get(ticket, 0):
+                        peak_profits[ticket] = current_profit
+                    peak = peak_profits.get(ticket, 0)
+
+                    if peak >= ELITE_MIN_PEAK:
+                        target_lock = peak * ELITE_SL_LOCK_PCT
+                        new_sl = profit_to_price(open_price, trade_type, target_lock,
+                                                  trade_lot, pos.symbol, mt5_manager)
+                        if new_sl is not None:
+                            last_sl = elite_sl_locked.get(ticket)
+                            improves = (
+                                last_sl is None or
+                                (trade_type == "BUY"  and new_sl > last_sl) or
+                                (trade_type == "SELL" and new_sl < last_sl)
+                            )
+                            if improves:
+                                ok = mt5_manager.modify_position(ticket, sl=new_sl)
+                                if ok:
+                                    elite_sl_locked[ticket] = new_sl
+                                    print(f"[ELITE SL LOCK] {pos.symbol} ticket={ticket} "
+                                          f"SL→{new_sl:.5f} (locking 70% of peak ${peak:.2f})")
+
+                    # TP hit ho jaye to normal HoldTP se close ho jayega (neeche common logic)
+
                 profit_target = get_profit_target(score, atr, pos.symbol, mt5_manager)
+
+                if score >= ELITE_SCORE:
+                    # Elite: sirf real TP ya trend/dead-momentum exit — koi internal early trail nahi
+                    if current_profit >= profit_target:
+                        tick = mt5_manager.symbol_info_tick(pos.symbol)
+                        done, profit = close_pos(pos, "EliteTP")
+                        if done and tick:
+                            cp = tick.bid if pos.type == 0 else tick.ask
+                            update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                            last_close_times[(user_id, pos.symbol)] = now
+                            get_platform_fee(profit, user_id, balance)
+                            print(f"[ELITE TP] {pos.symbol} ${profit:.2f}")
+                            peak_profits.pop(ticket, None)
+                            elite_sl_locked.pop(ticket, None)
+                        continue
+                    continue
 
                 if is_scalp_trade(score):
                     # Peak track karo scalp ke liye bhi
@@ -534,8 +654,7 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(30)
                 continue
 
-            all_pos = mt5_manager.positions_get()
-            bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
+            bot_pos = get_bot_positions(user_id, mt5_manager)
 
             if len(bot_pos) >= MAX_OPEN_TRADES:
                 time.sleep(5)
@@ -641,8 +760,7 @@ def run_user_bot(user_id, login, password, server):
                             daemon=True
                         ).start()
 
-                    all_pos = mt5_manager.positions_get()
-                    bot_pos = [p for p in all_pos if p.magic == 888888 or "PB_" in getattr(p, "comment", "")] if all_pos else []
+                    bot_pos = get_bot_positions(user_id, mt5_manager)
                 else:
                     print(f"[FAIL] {symbol}: retcode={result.retcode}")
                     last_close_times[(user_id, symbol)] = now
@@ -820,22 +938,21 @@ def pause_unpaid_bots():
             # Sab positions close karo
             conn = pool_get(user.id)
             if conn and conn._ready:
-                positions = conn.positions_get()
-                for pos in (positions or []):
-                    if pos.magic == 888888:
-                        conn.order_send({
-                            "action":       conn.TRADE_ACTION_DEAL,
-                            "symbol":       pos.symbol,
-                            "volume":       pos.volume,
-                            "type":         conn.ORDER_TYPE_SELL if pos.type == 0 else conn.ORDER_TYPE_BUY,
-                            "position":     pos.ticket,
-                            "price":        0,
-                            "deviation":    50,
-                            "magic":        888888,
-                            "comment":      "PB_PaymentOverdue",
-                            "type_time":    conn.ORDER_TIME_GTC,
-                            "type_filling": conn.ORDER_FILLING_IOC,
-                        })
+                positions = get_bot_positions(user.id, conn)
+                for pos in positions:
+                    conn.order_send({
+                        "action":       conn.TRADE_ACTION_DEAL,
+                        "symbol":       pos.symbol,
+                        "volume":       pos.volume,
+                        "type":         conn.ORDER_TYPE_SELL if pos.type == 0 else conn.ORDER_TYPE_BUY,
+                        "position":     pos.ticket,
+                        "price":        0,
+                        "deviation":    50,
+                        "magic":        888888,
+                        "comment":      "PB_PaymentOverdue",
+                        "type_time":    conn.ORDER_TIME_GTC,
+                        "type_filling": conn.ORDER_FILLING_IOC,
+                    })
 
             print(f"[PAUSE] {user.username} bot paused — payment overdue")
 
@@ -1261,20 +1378,13 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
     conn = pool_get(current_user.id) if current_user.id != MASTER_USER_ID else mt5_manager
     if conn is None:
         conn = mt5_manager
-    positions = conn.positions_get()
+    positions = get_bot_positions(current_user.id, conn)
     if not positions: return []
     result = []
     for p in positions:
-        is_bot = (
-            p.magic == 888888 or
-            "PB_" in getattr(p, "comment", "") or
-            getattr(p, "magic", 0) == 888888
-        )
-        if not is_bot:
-            continue
         # DB se extra info lo
         db = SessionLocal()
-        tr = db.query(Trade).filter(Trade.mt5_ticket == p.ticket).first()
+        tr = db.query(Trade).filter(Trade.mt5_ticket == _as_int_ticket(p.ticket)).first()
         score = tr.score if tr else 0
         open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
         db.close()

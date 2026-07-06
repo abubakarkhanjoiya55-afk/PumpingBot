@@ -19,11 +19,12 @@ TRADE_RETCODE_DONE = "TRADE_RETCODE_DONE"
 
 class AccountInfo:
     def __init__(self, data):
-        self.balance = data.get('balance', 0)
-        self.equity  = data.get('equity', 0)
-        self.profit  = data.get('profit', 0)
-        self.margin  = data.get('margin', 0)
-        self.name    = data.get('name', '')
+        self.balance  = data.get('balance', 0)
+        self.equity   = data.get('equity', 0)
+        self.profit   = data.get('profit', 0)
+        self.margin   = data.get('margin', 0)
+        self.name     = data.get('name', '')
+        self.leverage = data.get('leverage', 100) or 100
 
 
 class SymbolInfo:
@@ -34,6 +35,7 @@ class SymbolInfo:
         self.volume_max       = data.get('maxVolume', 100)
         self.volume_step      = data.get('volumeStep', 0.01)
         self.point            = data.get('point', 0.00001)
+        self.contract_size    = data.get('contractSize', 100000) or 100000
 
 
 class SymbolTick:
@@ -42,9 +44,19 @@ class SymbolTick:
         self.ask = data.get('ask', 0)
 
 
+def _to_int_ticket(value):
+    """MetaApi returns position/order ids as strings — normalize to int
+    everywhere so DB storage (Integer column) and comparisons stay consistent
+    across brokers/DB backends (SQLite is forgiving about str/int, Postgres is not)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 class Position:
     def __init__(self, data):
-        self.ticket  = data.get('id', 0)
+        self.ticket  = _to_int_ticket(data.get('id', 0))
         self.symbol  = data.get('symbol', '')
         self.profit  = data.get('profit', 0)
         self.volume  = data.get('volume', 0)
@@ -56,7 +68,7 @@ class Position:
 class TradeResult:
     def __init__(self, success, order_id=0):
         self.retcode = TRADE_RETCODE_DONE if success else "FAILED"
-        self.order   = order_id   # ← actual ticket ID
+        self.order   = _to_int_ticket(order_id)   # ← actual ticket ID, normalized to int
         self.comment = "done" if success else "failed"
 
 
@@ -198,18 +210,49 @@ class MT5Manager:
             return TradeResult(False)
         return TradeResult(result[0], result[1])
 
+    def modify_position(self, ticket, sl=None, tp=None):
+        """Move SL/TP of an already-open position (broker-side trailing stop)."""
+        if not self._ready:
+            return False
+        result = self._run(self._async_modify(ticket, sl, tp))
+        return bool(result)
+
+    async def _async_modify(self, ticket, sl, tp):
+        try:
+            kwargs = {}
+            if sl is not None:
+                kwargs['stop_loss'] = sl
+            if tp is not None:
+                kwargs['take_profit'] = tp
+            await self._connection.modify_position(str(ticket), **kwargs)
+            return True
+        except Exception as e:
+            print(f"[Modify] {e}")
+            return False
+
     async def _async_order(self, request):
         try:
+            position_id = request.get('position')
+
+            # ── FIX: "position" key means CLOSE an existing position — earlier
+            # this incorrectly opened a brand-new opposite-direction order
+            # instead of actually closing the ticket (so TP/SL/trail exits
+            # never really closed anything — they just added hedge positions).
+            if position_id is not None:
+                res = await self._connection.close_position(str(position_id))
+                order_id = res.get('orderId', position_id) if isinstance(res, dict) else position_id
+                return (True, order_id)
+
             symbol = request['symbol']
             volume = request['volume']
             sl     = request.get('sl', None)
-            comment = request.get('comment', 'PB')
+            tp     = request.get('tp', None)
             if request['type'] == ORDER_TYPE_BUY:
                 res = await self._connection.create_market_buy_order(
-                    symbol, volume, stop_loss=sl)
+                    symbol, volume, stop_loss=sl, take_profit=tp)
             else:
                 res = await self._connection.create_market_sell_order(
-                    symbol, volume, stop_loss=sl)
+                    symbol, volume, stop_loss=sl, take_profit=tp)
             # order ID return karo
             order_id = res.get('orderId', 0) if isinstance(res, dict) else 0
             return (True, order_id)
