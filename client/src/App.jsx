@@ -103,7 +103,7 @@ export default function App() {
   const openTrades = trades.filter(t => t.status === 'open');
   const closedTrades = trades.filter(t => t.status === 'closed');
   const floatingPl = getFloatingPl(me);
-  const openCount = Math.max(openTrades.length, positions.length);
+  const openCount = Math.max(me?.open_trades_count ?? 0, openTrades.length, positions.length);
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
 

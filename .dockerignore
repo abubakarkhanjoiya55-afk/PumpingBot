@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.db
+.env
+client/node_modules
+client/dist
+*.md
+.github
+scripts
+terminals

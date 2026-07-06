@@ -9,8 +9,10 @@ https://web-production-6a35f.up.railway.app/  →  "PumpingBot Smart API v2"
 
 Naya code deploy hone ke baad yeh dikhega:
 ```json
-{"message":"PumpingBot Smart API","version":"3.2.0",...}
+{"message":"PumpingBot Smart API","version":"3.3.0",...}
 ```
+
+Build ab **Dockerfile** se hota hai (nixpacks `pip: not found` fix).
 
 GitHub pe sab push ho chuka hai — ab Railway + Vercel connect karna hai.
 
@@ -24,7 +26,7 @@ GitHub pe sab push ho chuka hai — ab Railway + Vercel connect karna hai.
 4. Repo select karo: `abubakarkhanjoiya55-afk/PumpingBot`
 5. Branch: **`main`**
 6. **Deploy** / **Redeploy** dabao
-7. Verify: `https://web-production-6a35f.up.railway.app/` → `"version":"3.2.0"`
+7. Verify: `https://web-production-6a35f.up.railway.app/` → `"version":"3.3.0"`
 
 Railway ab automatically:
 - Python backend install karega
