@@ -65,7 +65,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.1.0"   # Railway deploy verify — curl / should show this version
+API_VERSION = "3.2.0"   # Railway deploy verify — curl / should show this version
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -1699,12 +1699,23 @@ def api_root():
 
 
 import os as _os
+_CLIENT_DIST = _os.path.join(_os.path.dirname(__file__), "client", "dist")
 _FRONTEND_DIR = _os.path.join(_os.path.dirname(__file__), "frontend")
+
+
+def _frontend_index():
+    """React build (client/dist) prefer karo, warna simple frontend/."""
+    for base in (_CLIENT_DIST, _FRONTEND_DIR):
+        index = _os.path.join(base, "index.html")
+        if _os.path.isfile(index):
+            return index, base
+    return None, None
+
 
 @app.get("/")
 def serve_frontend():
-    index = _os.path.join(_FRONTEND_DIR, "index.html")
-    if _os.path.isfile(index):
+    index, _ = _frontend_index()
+    if index:
         return FileResponse(index)
     return {
         "message":       "PumpingBot Smart API",
@@ -1713,5 +1724,11 @@ def serve_frontend():
         "event_set":     metaapi_ready_event.is_set(),
     }
 
-if _os.path.isdir(_FRONTEND_DIR):
+
+_idx, _dist = _frontend_index()
+if _dist == _CLIENT_DIST and _os.path.isdir(_CLIENT_DIST):
+    _assets = _os.path.join(_CLIENT_DIST, "assets")
+    if _os.path.isdir(_assets):
+        app.mount("/assets", StaticFiles(directory=_assets), name="react-assets")
+elif _os.path.isdir(_FRONTEND_DIR):
     app.mount("/static", StaticFiles(directory=_FRONTEND_DIR), name="static")
