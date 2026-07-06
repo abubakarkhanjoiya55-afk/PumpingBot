@@ -15,7 +15,18 @@ import smtplib
 import uuid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager
+from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
+from db_migrate import migrate_schema
+from copy_trading import copy_trade_to_followers, start_copy_watcher
+from trading_engine import (
+    DAILY_MAX_LOSS_PCT, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
+    RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MIN_SCORE, STRONG_SCORE,
+    MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
+    SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
+    ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
+    get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
+    calculate_lot, analyze_symbol, should_take_trade,
+)
 
 SECRET_KEY = "goldbot-secret-key-2024"
 ALGORITHM = "HS256"
@@ -46,39 +57,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-DAILY_MAX_LOSS_PCT   = 0.02
-DAILY_TRAIL_START    = 0.02
-DAILY_TRAIL_GAP      = 0.01
-RISK_PER_TRADE_PCT   = 0.002
-MAX_OPEN_TRADES      = 5
-MIN_SCORE            = 55
-MASTER_USER_ID       = 1   # Admin = Master account (copy trading hub)
-STRONG_SCORE         = 75
-MAX_SPREAD_POINTS    = 2000
-SYMBOL_MAX_SPREAD = {
-    "XAUUSDm":  30000,
-    "XAGUSDm":  5000,
-    "BTCUSDm":  2000000,
-    "ETHUSDm":  200000,
-    "SOLUSDm":  200000,
-    "EURUSDm":  2000,
-    "GBPUSDm":  2000,
-    "USDJPYm":  2000,
-    "AUDUSDm":  2000,
-    "USDCADm":  2000,
-    "GBPJPYm":  8000,
-    "NZDUSDm":  2000,
-}
-MIN_COOLDOWN_SEC     = 300
-SCALP_ATR_MULT       = 0.5
-HOLD_MIN_PROFIT      = 10.0
-HOLD_TRAIL_PCT       = 0.70
-
-TRAILING_LEVELS = [
-    (2.0,  1.0), (5.0,  3.0), (8.0,  5.0), (10.0, 7.0),
-    (12.0, 9.0), (15.0, 12.0), (18.0, 14.0), (20.0, 16.0),
-    (25.0, 20.0), (30.0, 25.0), (40.0, 33.0), (50.0, 42.0),
-]
+MASTER_USER_ID = 1   # Admin = Master account (copy trading hub)
 
 # ─── FIX: Global threading.Event for proper thread synchronization ────────────
 # Bot thread waits on this event — set ONLY when MetaApi _ready=True
@@ -122,33 +101,6 @@ def pool_is_ready(user_id):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def get_profit_target(score, atr, symbol):
-    info = mt5_manager.symbol_info(symbol)
-    if info is None or atr == 0:
-        return 5.0
-    tick_value = info.trade_tick_value
-    tick_size  = info.trade_tick_size
-    if tick_value == 0 or tick_size == 0:
-        return 5.0
-    atr_ticks  = atr / tick_size
-    atr_dollar = atr_ticks * tick_value * 0.01
-    if score >= 75:
-        mult = 2.0 if score >= 85 else 1.5
-    else:
-        mult = SCALP_ATR_MULT
-    return round(max(2.0, min(150.0, atr_dollar * mult)), 2)
-
-def get_locked_profit(current_profit):
-    locked = None
-    for trigger, lock in TRAILING_LEVELS:
-        if current_profit >= trigger:
-            locked = lock
-    return locked
-
-def is_scalp_trade(score):
-    return score < STRONG_SCORE
-
-
 class User(Base):
     __tablename__ = "users"
     id               = Column(Integer, primary_key=True, index=True)
@@ -183,6 +135,7 @@ class Trade(Base):
     profit      = Column(Float, default=0.0)
     score       = Column(Float, default=0.0)
     mt5_ticket  = Column(Integer, nullable=True)
+    master_ticket = Column(Integer, nullable=True)  # master position ticket for copy sync
     status      = Column(String, default="open")
     opened_at   = Column(DateTime, default=datetime.utcnow)
     closed_at   = Column(DateTime, nullable=True)
@@ -202,6 +155,7 @@ class Signal(Base):
     created_at  = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
+migrate_schema(engine)
 
 
 class UserCreate(BaseModel):
@@ -253,206 +207,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     return user
 
 
-# ─── Technical Indicators ─────────────────────────────────────────────────────
-
-def ema(prices, period):
-    if len(prices) < period:
-        return [prices[-1]] * len(prices)
-    k = 2.0 / (period + 1)
-    result = [prices[0]]
-    for p in prices[1:]:
-        result.append(p * k + result[-1] * (1 - k))
-    return result
-
-def calc_rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50
-    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-    gains  = [d if d > 0 else 0 for d in deltas]
-    losses = [-d if d < 0 else 0 for d in deltas]
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
-    if avg_loss == 0:
-        return 100
-    return 100 - (100 / (1 + avg_gain / avg_loss))
-
-def calc_stoch_rsi(closes, period=14, smooth=3):
-    if len(closes) < period * 2:
-        return 50, 50
-    rsi_vals = []
-    for i in range(period, len(closes)):
-        rsi_vals.append(calc_rsi(closes[max(0, i-period):i+1], period))
-    if len(rsi_vals) < period:
-        return 50, 50
-    recent = rsi_vals[-period:]
-    min_r, max_r = min(recent), max(recent)
-    if max_r == min_r:
-        return 50, 50
-    k = (rsi_vals[-1] - min_r) / (max_r - min_r) * 100
-    d = sum([(r - min_r) / (max_r - min_r) * 100 for r in rsi_vals[-smooth:]]) / smooth
-    return k, d
-
-def calc_adx(highs, lows, closes, period=14):
-    try:
-        if len(closes) < period + 1:
-            return 0
-        tr_list, pdm_list, ndm_list = [], [], []
-        for i in range(1, len(closes)):
-            tr  = max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
-            pdm = max(highs[i]-highs[i-1], 0) if highs[i]-highs[i-1] > lows[i-1]-lows[i] else 0
-            ndm = max(lows[i-1]-lows[i], 0)  if lows[i-1]-lows[i] > highs[i]-highs[i-1]  else 0
-            tr_list.append(tr); pdm_list.append(pdm); ndm_list.append(ndm)
-        atr = sum(tr_list[-period:]) / period
-        if atr == 0:
-            return 0
-        pdi = (sum(pdm_list[-period:]) / period) / atr * 100
-        ndi = (sum(ndm_list[-period:]) / period) / atr * 100
-        return abs(pdi-ndi) / (pdi+ndi) * 100 if (pdi+ndi) > 0 else 0
-    except:
-        return 0
-
-def calc_atr(highs, lows, closes, period=14):
-    try:
-        if len(closes) < period + 1:
-            return 0
-        tr_list = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]),
-                       abs(lows[i]-closes[i-1])) for i in range(1, len(closes))]
-        return sum(tr_list[-period:]) / period
-    except:
-        return 0
-
-def calc_macd(closes):
-    if len(closes) < 26:
-        return 0, 0
-    e12  = ema(closes, 12)
-    e26  = ema(closes, 26)
-    macd_line   = [a-b for a, b in zip(e12, e26)]
-    signal_line = ema(macd_line, 9)
-    hist = [m-s for m, s in zip(macd_line, signal_line)]
-    return hist[-1], hist[-2] if len(hist) > 1 else hist[-1]
-
-def calc_bollinger(closes, period=20, std_dev=2):
-    if len(closes) < period:
-        return closes[-1], closes[-1], closes[-1]
-    recent = closes[-period:]
-    mid    = sum(recent) / period
-    std    = (sum((x-mid)**2 for x in recent) / period) ** 0.5
-    return mid + std_dev*std, mid, mid - std_dev*std
-
-def detect_candle_pattern(opens, highs, lows, closes):
-    if len(closes) < 3:
-        return None, None, 0
-    o1,h1,l1,c1 = opens[-1],highs[-1],lows[-1],closes[-1]
-    o2,h2,l2,c2 = opens[-2],highs[-2],lows[-2],closes[-2]
-    o3,h3,l3,c3 = opens[-3],highs[-3],lows[-3],closes[-3]
-    body1  = abs(c1-o1)
-    body2  = abs(c2-o2)
-    range1 = h1-l1 if h1 != l1 else 0.0001
-    range2 = h2-l2 if h2 != l2 else 0.0001
-    uw1 = h1 - max(o1,c1)
-    lw1 = min(o1,c1) - l1
-    if lw1 >= body1*2 and uw1 <= body1*0.3 and c1 > o1:
-        return "Hammer","BUY",15
-    if c2 < o2 and c1 > o1 and c1 > o2 and o1 < c2:
-        return "Bullish Engulfing","BUY",20
-    if c3 < o3 and body2 < range2*0.3 and c1 > o1 and c1 > (o3+c3)/2:
-        return "Morning Star","BUY",18
-    if c1 > o1 and body1 >= range1*0.85:
-        return "Bullish Marubozu","BUY",12
-    if c2 < o2 and c1 > o1 and o1 < l2 and c1 > (o2+c2)/2:
-        return "Piercing Line","BUY",14
-    if uw1 >= body1*2 and lw1 <= body1*0.3 and c1 < o1:
-        return "Shooting Star","SELL",15
-    if c2 > o2 and c1 < o1 and c1 < o2 and o1 > c2:
-        return "Bearish Engulfing","SELL",20
-    if c3 > o3 and body2 < range2*0.3 and c1 < o1 and c1 < (o3+c3)/2:
-        return "Evening Star","SELL",18
-    if c1 < o1 and body1 >= range1*0.85:
-        return "Bearish Marubozu","SELL",12
-    if c2 > o2 and c1 < o1 and o1 > h2 and c1 < (o2+c2)/2:
-        return "Dark Cloud Cover","SELL",14
-    return None, None, 0
-
-def get_trend(symbol):
-    r1h = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H1, 0, 200)
-    r4h = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H4, 0, 100)
-    if r1h is None or len(r1h) < 50:
-        return "BUY", 15, 15
-    closes1h = [r['close'] for r in r1h]
-    highs1h  = [r['high']  for r in r1h]
-    lows1h   = [r['low']   for r in r1h]
-    e100 = ema(closes1h, min(100, len(closes1h)-1))
-    e20  = ema(closes1h, 20)
-    adx_1h = calc_adx(highs1h, lows1h, closes1h)
-    price = closes1h[-1]
-    if price > e100[-1] and e20[-1] > e100[-1]:
-        trend = "BUY"
-    elif price < e100[-1] and e20[-1] < e100[-1]:
-        trend = "SELL"
-    else:
-        trend = "BUY" if e20[-1] > e20[-5] else "SELL"
-    adx_4h = adx_1h
-    if r4h is not None and len(r4h) >= 30:
-        closes4h = [r['close'] for r in r4h]
-        highs4h  = [r['high']  for r in r4h]
-        lows4h   = [r['low']   for r in r4h]
-        adx_4h   = calc_adx(highs4h, lows4h, closes4h)
-    return trend, adx_4h, adx_1h
-
-def calc_score(trend, adx_4h, adx_1h, rsi, stoch_k, stoch_d,
-               macd_h, macd_h_prev, closes, e8, e21, e50,
-               bb_upper, bb_lower, bb_mid, pattern_dir, pattern_bonus):
-    score = 0
-    price = closes[-1]
-    score += 20
-    if adx_4h >= 30:   score += 15
-    elif adx_4h >= 20: score += 10
-    elif adx_4h >= 15: score += 5
-    if adx_1h >= 25:   score += 10
-    elif adx_1h >= 15: score += 5
-    if trend == "BUY"  and e8 > e21 > e50: score += 10
-    elif trend == "SELL" and e8 < e21 < e50: score += 10
-    elif trend == "BUY"  and e8 > e21: score += 5
-    elif trend == "SELL" and e8 < e21: score += 5
-    if trend == "BUY"  and stoch_k < 25 and stoch_k > stoch_d: score += 10
-    elif trend == "SELL" and stoch_k > 75 and stoch_k < stoch_d: score += 10
-    elif trend == "BUY"  and stoch_k < 40: score += 5
-    elif trend == "SELL" and stoch_k > 60: score += 5
-    if trend == "BUY"  and macd_h > 0 and macd_h > macd_h_prev: score += 10
-    elif trend == "SELL" and macd_h < 0 and macd_h < macd_h_prev: score += 10
-    elif trend == "BUY"  and macd_h_prev < 0 < macd_h: score += 7
-    elif trend == "SELL" and macd_h_prev > 0 > macd_h: score += 7
-    if trend == "BUY"  and price <= bb_lower: score += 5
-    elif trend == "SELL" and price >= bb_upper: score += 5
-    if pattern_dir == trend and pattern_bonus > 0:
-        score += pattern_bonus
-    return min(score, 100)
-
-def get_risk_multiplier(score):
-    """Score jitna strong — margin zyada, risk bhi proportional"""
-    if score >= 90: return 3.0
-    elif score >= 80: return 2.5
-    elif score >= 70: return 2.0
-    elif score >= 65: return 1.5
-    else: return 1.0   # score 55-64: base risk
-
-def calculate_lot(balance, atr, symbol, score=55):
-    try:
-        mult        = get_risk_multiplier(score)
-        risk_amount = balance * RISK_PER_TRADE_PCT * mult
-        info = mt5_manager.symbol_info(symbol)
-        if info is None: return None
-        tick_value = info.trade_tick_value
-        tick_size  = info.trade_tick_size
-        if atr == 0 or tick_value == 0 or tick_size == 0:
-            return info.volume_min
-        sl_ticks = atr / tick_size
-        lot = risk_amount / (sl_ticks * tick_value)
-        lot = max(info.volume_min, min(info.volume_max,
-              round(lot / info.volume_step) * info.volume_step))
-        return round(lot, 2)
-    except:
-        return None
+# ─── Position management (indicators in trading_engine.py) ─────────────────────
 
 def close_pos(pos, reason=""):
     try:
@@ -544,87 +299,7 @@ def close_all_positions(user_id, reason, balance):
                 last_close_times[(user_id, pos.symbol)] = datetime.now()
 
 
-# ─── FIX: Bot thread now waits on threading.Event (not polling loop) ──────────
-def copy_to_followers(master_user_id, symbol, trend, score, atr, master_lot, master_balance, entry, sl, trade_mode):
-    """Master trade ko sab active followers ke connections par copy karo"""
-    db = SessionLocal()
-    try:
-        followers = db.query(User).filter(
-            User.bot_active == True,
-            User.id != master_user_id,
-            User.mt5_login != None
-        ).all()
-
-        if not followers:
-            return
-
-        print(f"[COPY] Copying {symbol} {trend} to {len(followers)} follower(s)...")
-
-        for follower in followers:
-            try:
-                # Connection pool se follower ka connection lo
-                conn = pool_get(follower.id)
-
-                if conn is None or not pool_is_ready(follower.id):
-                    print(f"[COPY] ⚠️ {follower.username} not connected — skipping MT5, recording DB only")
-                    # Sirf DB record karo
-                    trade = Trade(
-                        user_id=follower.id, symbol=symbol, trade_type=trend,
-                        lot=master_lot, open_price=entry, score=score,
-                        mt5_ticket=None, status="pending_copy")
-                    db.add(trade); db.commit()
-                    continue
-
-                # Follower ka balance lo — proportional lot calculate karo
-                follower_info = conn.account_info()
-                if follower_info:
-                    ratio = follower_info.balance / master_balance if master_balance > 0 else 1.0
-                    follower_lot = max(0.01, round(master_lot * ratio, 2))
-                else:
-                    follower_lot = master_lot
-
-                # Follower ke account par actual trade lagao
-                tick = conn.symbol_info_tick(symbol)
-                if tick is None:
-                    print(f"[COPY] ⚠️ {follower.username} no tick for {symbol}")
-                    continue
-
-                f_entry = tick.ask if trend == "BUY" else tick.bid
-                f_sl    = f_entry - atr if trend == "BUY" else f_entry + atr
-
-                request = {
-                    "action":       conn.TRADE_ACTION_DEAL,
-                    "symbol":       symbol,
-                    "volume":       follower_lot,
-                    "type":         conn.ORDER_TYPE_BUY if trend == "BUY" else conn.ORDER_TYPE_SELL,
-                    "price":        f_entry,
-                    "sl":           f_sl,
-                    "deviation":    50,
-                    "magic":        888888,
-                    "comment":      f"PB_COPY_{trade_mode}_S{score}",
-                    "type_time":    conn.ORDER_TIME_GTC,
-                    "type_filling": conn.ORDER_FILLING_IOC,
-                }
-
-                result = conn.order_send(request)
-                if result.retcode == conn.TRADE_RETCODE_DONE:
-                    trade = Trade(
-                        user_id=follower.id, symbol=symbol, trade_type=trend,
-                        lot=follower_lot, open_price=f_entry, score=score,
-                        mt5_ticket=result.order, status="open")
-                    db.add(trade); db.commit()
-                    print(f"[COPY] ✅ {follower.username} {symbol} {trend} Lot:{follower_lot} Ticket:{result.order}")
-                else:
-                    print(f"[COPY] ❌ {follower.username} order failed: {result.retcode}")
-
-            except Exception as e:
-                print(f"[COPY] ❌ {follower.username} error: {e}")
-
-    except Exception as e:
-        print(f"[COPY] Error: {e}")
-    finally:
-        db.close()
-
+# ─── Bot thread waits on threading.Event ──────────────────────────────────────
 
 def run_user_bot(user_id, login, password, server):
     print("=" * 60)
@@ -743,7 +418,7 @@ def run_user_bot(user_id, login, password, server):
                     c5 = [r['close'] for r in rates5]
                     atr = calc_atr(h5, l5, c5)
 
-                current_trend, current_adx_4h, current_adx_1h = get_trend(pos.symbol)
+                current_trend, current_adx_4h, current_adx_1h, _ = get_trend(pos.symbol, mt5_manager)
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
                                  (trade_type == "SELL" and current_trend == "BUY")
 
@@ -772,7 +447,7 @@ def run_user_bot(user_id, login, password, server):
                         peak_profits.pop(ticket, None)
                     continue
 
-                profit_target = get_profit_target(score, atr, pos.symbol)
+                profit_target = get_profit_target(score, atr, pos.symbol, mt5_manager)
 
                 if is_scalp_trade(score):
                     # Peak track karo scalp ke liye bhi
@@ -880,70 +555,49 @@ def run_user_bot(user_id, login, password, server):
                 if sym_pos:
                     continue
 
-                tick     = mt5_manager.symbol_info_tick(symbol)
-                sym_info = mt5_manager.symbol_info(symbol)
-                if tick is None or sym_info is None:
-                    print(f"[NO TICK] {symbol} — skipping (weekend/market closed?)")
+                analysis = analyze_symbol(symbol, mt5_manager)
+                if analysis is None or analysis.get("skip"):
+                    reason = analysis.get("reason", "unknown") if analysis else "none"
+                    if reason == "spread":
+                        print(f"[HIGH SPREAD] {symbol} spread={analysis.get('spread', 0):.0f}")
+                    elif reason == "no_data":
+                        print(f"[NO DATA] {symbol}")
+                    else:
+                        print(f"[NO TICK] {symbol}")
                     continue
 
-                spread = (tick.ask - tick.bid) / sym_info.point
-                max_spread = SYMBOL_MAX_SPREAD.get(symbol, MAX_SPREAD_POINTS)
-                if spread > max_spread:
-                    print(f"[HIGH SPREAD] {symbol} spread={spread:.0f} max={max_spread}")
-                    continue
+                trend = analysis["trend"]
+                score = analysis["score"]
+                trade_mode = analysis["trade_mode"]
+                atr = analysis["atr"]
+                adx_4h = analysis["adx_4h"]
+                adx_1h = analysis["adx_1h"]
+                rsi = analysis["rsi"]
+                tick = analysis["tick"]
+                pname = analysis.get("pattern_name")
+                pbonus = analysis.get("pattern_bonus", 0)
 
-                trend, adx_4h, adx_1h = get_trend(symbol)
-
-                rates5 = mt5_manager.copy_rates_from_pos(
-                    symbol, mt5_manager.TIMEFRAME_M5, 0, 100)
-                if rates5 is None or len(rates5) < 30:
-                    print(f"[NO DATA] {symbol} — got: {len(rates5) if rates5 else 'None'}")
-                    continue
-
-                opens5  = [r['open']  for r in rates5]
-                highs5  = [r['high']  for r in rates5]
-                lows5   = [r['low']   for r in rates5]
-                closes5 = [r['close'] for r in rates5]
-
-                e8_l  = ema(closes5, 8)
-                e21_l = ema(closes5, 21)
-                e50_l = ema(closes5, 50)
-                rsi   = calc_rsi(closes5)
-                stk, std = calc_stoch_rsi(closes5)
-                atr   = calc_atr(highs5, lows5, closes5)
-                mh, mhp = calc_macd(closes5)
-                bbu, bbm, bbl = calc_bollinger(closes5)
-                pname, pdir, pbonus = detect_candle_pattern(opens5, highs5, lows5, closes5)
-
-                score = calc_score(
-                    trend, adx_4h, adx_1h, rsi, stk, std,
-                    mh, mhp, closes5,
-                    e8_l[-1], e21_l[-1], e50_l[-1],
-                    bbu, bbl, bbm, pdir, pbonus
-                )
-
-                trade_mode = "SCALP" if score < STRONG_SCORE else "HOLD"
                 pinfo = f"| {pname}+{pbonus}" if pname else ""
                 print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
                       f"ADX4H:{adx_4h:.0f} ADX1H:{adx_1h:.0f} "
-                      f"RSI:{rsi:.0f} Score:{score} {pinfo}")
+                      f"RSI:{rsi:.0f} Score:{score} HTF:{analysis['htf_aligned']} {pinfo}")
 
                 db = SessionLocal()
                 sig = Signal(
                     symbol=symbol,
                     signal_type=trend if score >= MIN_SCORE else "WAIT",
-                    score=score, ema_fast=e8_l[-1], ema_slow=e21_l[-1],
-                    macd=mh, rsi=rsi, adx=adx_4h, price=closes5[-1])
+                    score=score, ema_fast=analysis["e8"], ema_slow=analysis["e21"],
+                    macd=analysis["macd"], rsi=rsi, adx=adx_4h,
+                    price=analysis["closes5"][-1])
                 db.add(sig); db.commit(); db.close()
 
-                if score < MIN_SCORE:
+                ok, skip_reason = should_take_trade(analysis)
+                if not ok:
+                    if skip_reason not in ("skip",):
+                        print(f"[SKIP] {symbol} — {skip_reason}")
                     continue
 
-                if pdir and pdir != trend and score < 70:
-                    print(f"[SKIP] {symbol} pattern conflict")
-                    continue
-
-                lot = calculate_lot(balance, atr, symbol, score)
+                lot = calculate_lot(balance, atr, symbol, score, mt5_manager)
                 if lot is None:
                     continue
 
@@ -967,22 +621,23 @@ def run_user_bot(user_id, login, password, server):
 
                 result = mt5_manager.order_send(request)
                 if result.retcode == mt5_manager.TRADE_RETCODE_DONE:
-                    target = get_profit_target(score, atr, symbol)
+                    target = get_profit_target(score, atr, symbol, mt5_manager)
                     print(f"[{trade_mode}] TRADE PLACED! {symbol} {trend} "
                           f"Score:{score} Target:${target} Lot:{lot}")
                     db = SessionLocal()
                     trade = Trade(
                         user_id=user_id, symbol=symbol, trade_type=trend,
                         lot=lot, open_price=entry, score=score,
-                        mt5_ticket=result.order, status="open")
+                        mt5_ticket=result.order, master_ticket=result.order,
+                        status="open")
                     db.add(trade); db.commit(); db.close()
 
-                    # COPY TRADING: Master trade ko sab followers ke pass bhejo
                     if user_id == MASTER_USER_ID:
                         threading.Thread(
-                            target=copy_to_followers,
+                            target=copy_trade_to_followers,
                             args=(user_id, symbol, trend, score, atr,
-                                  lot, balance, entry, sl, trade_mode),
+                                  lot, balance, entry, sl, trade_mode,
+                                  result.order, "BOT"),
                             daemon=True
                         ).start()
 
@@ -1262,13 +917,14 @@ def confirm_payment(user_id: int,
     user.bot_active        = True
     db.commit()
 
-    # Bot restart karo
+    # Bot restart — master only runs trading engine
     active_bots[user.id] = True
-    threading.Thread(
-        target=run_user_bot_watchdog,
-        args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
-        daemon=True
-    ).start()
+    if user.id == MASTER_USER_ID and user.mt5_login:
+        threading.Thread(
+            target=run_user_bot_watchdog,
+            args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
+            daemon=True
+        ).start()
 
     # User ko confirmation email
     html = f"""
@@ -1386,16 +1042,15 @@ def admin_toggle_bot(user_id: int,
         user.bot_active = False
         db.commit()
         return {"message": f"{user.username} bot stopped"}
-    else:
-        active_bots[user.id] = True
-        user.bot_active = True
-        db.commit()
+    active_bots[user.id] = True
+    user.bot_active = True
+    db.commit()
+    if user.id == MASTER_USER_ID and user.mt5_login:
         threading.Thread(
             target=run_user_bot_watchdog,
             args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
-            daemon=True
-        ).start()
-        return {"message": f"{user.username} bot started"}
+            daemon=True).start()
+    return {"message": f"{user.username} copy trading activated"}
 
 
 @app.delete("/admin/delete-user/{user_id}")
@@ -1520,21 +1175,35 @@ async def connect_mt5(creds: MT5Credentials,
         }
 
     else:
-        # ── Follower: credentials save karo, master connection use hoga ───
-        print(f"[CONNECT] Follower {current_user.username} connecting...")
-        current_user.mt5_login    = creds.mt5_login
+        # ── Follower: MetaApi account create/find + connection pool ───────
+        print(f"[CONNECT] Follower {current_user.username} — setting up MetaApi...")
+        account_id = await find_or_create_metaapi_account(
+            creds.mt5_login, creds.mt5_password, creds.mt5_server)
+        if not account_id:
+            raise HTTPException(400, "MetaApi account setup failed — check credentials")
+
+        pool_remove(current_user.id)
+        conn = create_user_manager(account_id)
+        pool_add(current_user.id, conn)
+
+        for i in range(45):
+            if conn._ready:
+                break
+            await asyncio.sleep(2)
+
+        follower_info = conn.account_info()
+        current_user.mt5_login = creds.mt5_login
         current_user.mt5_password = creds.mt5_password
-        current_user.mt5_server   = creds.mt5_server
+        current_user.mt5_server = creds.mt5_server
+        current_user.metaapi_account_id = account_id
         db.commit()
 
-        # Master connection se info lo
-        info = mt5_manager.account_info()
-        print(f"[CONNECT] ✅ Follower {current_user.username} credentials saved!")
+        print(f"[CONNECT] ✅ Follower {current_user.username} connected! MetaApi={account_id[:8]}...")
         return {
-            "message":   "MT5 Connected successfully!",
-            "balance":   info.balance if info else 0,
-            "mt5_ready": mt5_manager._ready,
-            "role":      "follower"
+            "message":   f"Connected: {follower_info.name if follower_info else 'OK'}",
+            "balance":   follower_info.balance if follower_info else 0,
+            "mt5_ready": conn._ready,
+            "role":      "follower",
         }
 
 # FIX: start_bot checks _ready before launching thread
@@ -1543,24 +1212,29 @@ def start_bot(current_user: User = Depends(get_current_user),
               db: Session = Depends(get_db)):
     if not current_user.mt5_login:
         raise HTTPException(400, "Connect MT5 first")
-    if not mt5_manager._ready:
-        raise HTTPException(400, "MetaApi not ready — reconnect MT5 first")
-    if active_bots.get(current_user.id):
-        return {"message": "Bot already running"}
-
-    # FIX: Ensure the event is set before starting thread
-    if mt5_manager._ready:
-        metaapi_ready_event.set()
 
     active_bots[current_user.id] = True
     current_user.bot_active = True
     db.commit()
-    threading.Thread(
-        target=run_user_bot_watchdog,
-        args=(current_user.id, current_user.mt5_login,
-              current_user.mt5_password, current_user.mt5_server),
-        daemon=True).start()
-    return {"message": "PumpingBot started!"}
+
+    if current_user.id == MASTER_USER_ID:
+        if not mt5_manager._ready:
+            raise HTTPException(400, "MetaApi not ready — reconnect MT5 first")
+        if mt5_manager._ready:
+            metaapi_ready_event.set()
+        threading.Thread(
+            target=run_user_bot_watchdog,
+            args=(current_user.id, current_user.mt5_login,
+                  current_user.mt5_password, current_user.mt5_server),
+            daemon=True).start()
+        return {"message": "Master PumpingBot started — trades will copy to all active users!"}
+
+    # Follower: copy-trading mode only — no independent bot thread
+    conn = pool_get(current_user.id)
+    if conn is None and current_user.metaapi_account_id:
+        conn = create_user_manager(current_user.metaapi_account_id)
+        pool_add(current_user.id, conn)
+    return {"message": "Copy trading activated — master trades will mirror to your account!"}
 
 @app.post("/bot/stop")
 def stop_bot(current_user: User = Depends(get_current_user),
@@ -1584,7 +1258,10 @@ def get_trades(current_user: User = Depends(get_current_user),
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
-    positions = mt5_manager.positions_get()
+    conn = pool_get(current_user.id) if current_user.id != MASTER_USER_ID else mt5_manager
+    if conn is None:
+        conn = mt5_manager
+    positions = conn.positions_get()
     if not positions: return []
     result = []
     for p in positions:
@@ -1602,7 +1279,7 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
         open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
         db.close()
 
-        tick = mt5_manager.symbol_info_tick(p.symbol)
+        tick = conn.symbol_info_tick(p.symbol)
         current_price = (tick.bid if p.type == 0 else tick.ask) if tick else 0
 
         result.append({
@@ -1635,9 +1312,10 @@ def get_status(current_user: User = Depends(get_current_user)):
 # ─── FIX: Startup Event — passes credentials, sets metaapi_ready_event ────────
 @app.on_event("startup")
 async def startup_event():
-    # Background scheduler start karo
+    migrate_schema(engine)
     threading.Thread(target=daily_scheduler, daemon=True).start()
-    print("[STARTUP] Daily scheduler started (8 PM notify, 9 PM pause)")
+    start_copy_watcher()
+    print("[STARTUP] Daily scheduler + copy watcher started")
 
     db = SessionLocal()
     try:
