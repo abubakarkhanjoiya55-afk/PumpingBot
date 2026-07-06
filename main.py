@@ -65,7 +65,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.0.1"   # Railway deploy verify — curl / should show this version
+API_VERSION = "3.1.0"   # Railway deploy verify — curl / should show this version
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -412,32 +412,88 @@ def _position_to_api_dict(p, conn, user_id):
     }
 
 
-def sync_manual_closes(user_id, balance):
+def reconcile_trades_with_mt5(user_id, conn):
+    """
+    DB trades ko live MT5 positions ke saath sync karo.
+    Vercel frontend OPEN TRADES /trades?status=open se count karta hai — isliye zaroori.
+    """
+    if not conn or not getattr(conn, "_ready", False):
+        return
+    live = conn.positions_get() or []
+    if not live:
+        return
+
+    live_tickets = {_as_int_ticket(p.ticket) for p in live}
+    live_by_symbol = {}
+    for p in live:
+        live_by_symbol.setdefault(p.symbol, []).append(p)
+
     db = SessionLocal()
     try:
         open_trades = db.query(Trade).filter(
-            Trade.user_id == user_id, Trade.status == "open").all()
-        if not open_trades: return
-        live_positions = mt5_manager.positions_get() or []
-        live_tickets = {t for t in (_as_int_ticket(p.ticket) for p in live_positions) if t is not None}
+            Trade.user_id == user_id, Trade.status == "open"
+        ).all()
+        matched_live = set()
+
         for trade in open_trades:
-            if trade.mt5_ticket and trade.mt5_ticket in live_tickets:
+            ticket = _as_int_ticket(trade.mt5_ticket)
+            if ticket and ticket in live_tickets:
+                matched_live.add(ticket)
                 continue
-            if not trade.mt5_ticket:
-                # Legacy rows without a ticket — fall back to symbol scan
-                sym_pos = [p for p in live_positions if p.symbol == trade.symbol]
-                bot_tickets = get_open_bot_tickets(user_id)
-                if any(is_bot_position(p, bot_tickets) for p in sym_pos):
-                    continue
-            trade.status    = "closed"
-            trade.profit    = 0.0
+            sym_positions = live_by_symbol.get(trade.symbol, [])
+            unmatched = [p for p in sym_positions
+                         if _as_int_ticket(p.ticket) not in matched_live]
+            if unmatched:
+                p = unmatched[0]
+                new_ticket = _as_int_ticket(p.ticket)
+                trade.mt5_ticket = new_ticket
+                matched_live.add(new_ticket)
+                continue
+            trade.status = "closed"
             trade.closed_at = datetime.utcnow()
-            db.commit()
-            last_close_times[(user_id, trade.symbol)] = datetime.now()
+
+        known_tickets = {_as_int_ticket(t.mt5_ticket) for t in
+                         db.query(Trade).filter(Trade.user_id == user_id,
+                                                Trade.mt5_ticket != None).all()}
+        for p in live:
+            ticket = _as_int_ticket(p.ticket)
+            if not ticket:
+                continue
+            existing = db.query(Trade).filter(Trade.mt5_ticket == ticket).first()
+            if existing:
+                if existing.status != "open":
+                    existing.status = "open"
+                    existing.closed_at = None
+                    existing.profit = round(p.profit, 2)
+                matched_live.add(ticket)
+                continue
+            db.add(Trade(
+                user_id=user_id,
+                symbol=p.symbol,
+                trade_type="BUY" if p.type == 0 else "SELL",
+                lot=getattr(p, "volume", 0.01) or 0.01,
+                open_price=0,
+                profit=round(p.profit, 2),
+                mt5_ticket=ticket,
+                status="open",
+            ))
+            matched_live.add(ticket)
+
+        db.commit()
+        print(f"[RECONCILE] user={user_id} live={len(live)} open_in_db="
+              f"{db.query(Trade).filter(Trade.user_id==user_id, Trade.status=='open').count()}")
     except Exception as e:
-        print(f"[SYNC] {e}")
+        print(f"[RECONCILE] {e}")
+        db.rollback()
     finally:
         db.close()
+
+
+def sync_manual_closes(user_id, balance):
+    conn = pool_get(user_id) if user_id != MASTER_USER_ID else mt5_manager
+    if conn is None:
+        conn = mt5_manager
+    reconcile_trades_with_mt5(user_id, conn)
 
 def close_all_positions(user_id, reason, balance):
     positions = get_bot_positions(user_id, mt5_manager)
@@ -1341,6 +1397,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 def get_me(current_user: User = Depends(get_current_user),
            db: Session = Depends(get_db)):
     conn = user_connection(current_user)
+    reconcile_trades_with_mt5(current_user.id, conn)
     info = conn.account_info() if conn and conn._ready else None
     role = "master" if is_master_user(current_user) else "follower"
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
@@ -1493,16 +1550,18 @@ def get_signals(current_user: User = Depends(get_current_user),
 @app.get("/trades", response_model=list[TradeOut])
 def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
+    conn = user_connection(current_user)
+    reconcile_trades_with_mt5(current_user.id, conn)
     return db.query(Trade).filter(
         Trade.user_id == current_user.id
     ).order_by(Trade.opened_at.desc()).limit(100).all()
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
-  # Frontend ke liye HAMESHA saari live MT5 positions — koi filter nahi
     conn = mt5_manager if is_master_user(current_user) else pool_get(current_user.id)
     if conn is None:
         conn = mt5_manager
+    reconcile_trades_with_mt5(current_user.id, conn)
     positions = conn.positions_get() if conn else []
     if not positions:
         positions = []

@@ -1,0 +1,56 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1117; color: #e8e8e8; }
+
+.login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at top, #1a2332, #0f1117); }
+.login-card { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 12px; padding: 2rem; width: 380px; }
+.login-card h1 { color: #f0b90b; text-align: center; margin-bottom: 1.5rem; }
+.login-card input { width: 100%; padding: .7rem; margin: .4rem 0; background: #0f1117; border: 1px solid #2a2d3a; border-radius: 8px; color: #fff; }
+.login-card button { width: 100%; padding: .8rem; margin-top: 1rem; background: #f0b90b; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+.error { color: #ff4757; font-size: .9rem; margin-top: .5rem; }
+
+.dashboard { display: flex; min-height: 100vh; }
+.sidebar { width: 220px; background: #1a1d27; border-right: 1px solid #2a2d3a; padding: 1.5rem 0; flex-shrink: 0; }
+.logo { padding: 0 1.5rem 1.5rem; font-size: 1.2rem; font-weight: 700; color: #f0b90b; }
+.nav-item { display: flex; align-items: center; gap: .6rem; padding: .75rem 1.5rem; cursor: pointer; color: #aaa; border-left: 3px solid transparent; }
+.nav-item:hover, .nav-item.active { background: #252836; color: #fff; border-left-color: #f0b90b; }
+.nav-divider { padding: .5rem 1.5rem; color: #555; font-size: .75rem; }
+
+.main { flex: 1; padding: 1.5rem 2rem; overflow-y: auto; }
+.main h1 { margin-bottom: 1.5rem; font-size: 1.5rem; }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+.stat-card { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; padding: 1rem 1.2rem; }
+.stat-label { font-size: .75rem; color: #888; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .4rem; }
+.stat-value { font-size: 1.4rem; font-weight: 700; }
+.green { color: #00ff88; }
+.red { color: #ff4757; }
+
+.bot-bar { display: flex; align-items: center; justify-content: space-between; background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; padding: 1rem 1.5rem; margin-bottom: 1.5rem; }
+.bot-status { display: flex; align-items: center; gap: .6rem; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #00ff88; }
+.dot.off { background: #ff4757; }
+.signal-info { font-size: .85rem; color: #888; margin-top: .3rem; }
+.btn-stop { background: #ff4757; color: #fff; border: none; padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600; cursor: pointer; }
+.btn-start { background: #00ff88; color: #000; border: none; padding: .6rem 1.2rem; border-radius: 8px; font-weight: 600; cursor: pointer; }
+.btn-logout { background: transparent; border: 1px solid #444; color: #aaa; padding: .4rem .8rem; border-radius: 6px; cursor: pointer; margin-left: auto; }
+
+.table-container { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; overflow: hidden; }
+.data-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+.data-table th { background: #252836; padding: .75rem 1rem; text-align: left; color: #888; font-weight: 500; }
+.data-table td { padding: .65rem 1rem; border-top: 1px solid #2a2d3a; }
+.row-open:hover td { background: rgba(255,255,255,.02); }
+.empty { text-align: center; padding: 2rem; color: #666; }
+.badge-open { background: rgba(0,255,136,.15); color: #00ff88; padding: .2rem .6rem; border-radius: 4px; font-size: .75rem; }
+.badge-profit { background: rgba(0,255,136,.15); color: #00ff88; padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; }
+.badge-loss { background: rgba(255,71,87,.15); color: #ff4757; padding: .2rem .5rem; border-radius: 4px; font-size: .75rem; }
+
+.mt5-form { display: grid; gap: .75rem; max-width: 400px; }
+.mt5-form input { padding: .7rem; background: #0f1117; border: 1px solid #2a2d3a; border-radius: 8px; color: #fff; }
+.mt5-form button { padding: .8rem; background: #f0b90b; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+.connected-card { background: rgba(0,255,136,.1); border: 1px solid #00ff88; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+
+@media (max-width: 768px) {
+  .dashboard { flex-direction: column; }
+  .sidebar { width: 100%; display: flex; overflow-x: auto; padding: .5rem; }
+  .nav-item { white-space: nowrap; padding: .5rem 1rem; }
+}
