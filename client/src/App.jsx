@@ -107,9 +107,11 @@ export default function App() {
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
 
-  const posProfit = (symbol) => {
-    const p = positions.find(x => x.symbol === symbol);
-    return p ? p.profit : null;
+  const posProfit = (trade) => {
+    const byTicket = positions.find(x => x.ticket === trade.mt5_ticket);
+    if (byTicket) return byTicket.profit;
+    const bySymbol = positions.find(x => x.symbol === trade.symbol);
+    return bySymbol ? bySymbol.profit : (trade.profit ?? null);
   };
 
   const latestSignal = signals[0];
@@ -211,7 +213,7 @@ export default function App() {
                 </thead>
                 <tbody>
                   {openTrades.map(t => {
-                    const pl = posProfit(t.symbol);
+                    const pl = posProfit(t);
                     return (
                       <tr key={t.id} className="row-open">
                         <td>{new Date(t.opened_at).toLocaleTimeString()}</td>

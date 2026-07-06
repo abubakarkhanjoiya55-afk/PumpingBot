@@ -65,7 +65,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.2.0"   # Railway deploy verify — curl / should show this version
+API_VERSION = "3.3.0"   # Railway deploy verify — curl / should show this version
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -391,7 +391,7 @@ def _position_to_api_dict(p, conn, user_id):
     try:
         tr = db.query(Trade).filter(Trade.mt5_ticket == _as_int_ticket(p.ticket)).first()
         score = tr.score if tr else 0
-        open_price = tr.open_price if tr else getattr(p, "openPrice", 0)
+        open_price = tr.open_price if tr else getattr(p, "open_price", 0) or getattr(p, "openPrice", 0) or 0
     finally:
         db.close()
 
@@ -414,74 +414,63 @@ def _position_to_api_dict(p, conn, user_id):
 
 def reconcile_trades_with_mt5(user_id, conn):
     """
-    DB trades ko live MT5 positions ke saath sync karo.
-    Vercel frontend OPEN TRADES /trades?status=open se count karta hai — isliye zaroori.
+  Har live MT5 position ke liye DB mein alag open trade row — ticket primary key.
+    Vercel frontend OPEN TRADES = /trades jahan status=='open'.
     """
     if not conn or not getattr(conn, "_ready", False):
         return
     live = conn.positions_get() or []
-    if not live:
-        return
-
-    live_tickets = {_as_int_ticket(p.ticket) for p in live}
-    live_by_symbol = {}
+    live_map = {}
     for p in live:
-        live_by_symbol.setdefault(p.symbol, []).append(p)
+        ticket = _as_int_ticket(p.ticket)
+        if ticket:
+            live_map[ticket] = p
 
     db = SessionLocal()
     try:
-        open_trades = db.query(Trade).filter(
+        # Har live position → open trade upsert (6 positions = 6 DB rows)
+        for ticket, p in live_map.items():
+            tr = db.query(Trade).filter(
+                Trade.user_id == user_id, Trade.mt5_ticket == ticket
+            ).first()
+            open_price = getattr(p, "open_price", 0) or 0
+            if tr:
+                tr.status = "open"
+                tr.closed_at = None
+                tr.close_price = None
+                tr.symbol = p.symbol
+                tr.trade_type = "BUY" if p.type == 0 else "SELL"
+                tr.lot = getattr(p, "volume", tr.lot) or 0.01
+                tr.profit = round(p.profit, 2)
+                if open_price:
+                    tr.open_price = open_price
+            else:
+                db.add(Trade(
+                    user_id=user_id,
+                    symbol=p.symbol,
+                    trade_type="BUY" if p.type == 0 else "SELL",
+                    lot=getattr(p, "volume", 0.01) or 0.01,
+                    open_price=open_price,
+                    profit=round(p.profit, 2),
+                    mt5_ticket=ticket,
+                    status="open",
+                ))
+
+        # Broker pe nahi — DB open → closed (profit zero mat karo)
+        for tr in db.query(Trade).filter(
             Trade.user_id == user_id, Trade.status == "open"
-        ).all()
-        matched_live = set()
-
-        for trade in open_trades:
-            ticket = _as_int_ticket(trade.mt5_ticket)
-            if ticket and ticket in live_tickets:
-                matched_live.add(ticket)
-                continue
-            sym_positions = live_by_symbol.get(trade.symbol, [])
-            unmatched = [p for p in sym_positions
-                         if _as_int_ticket(p.ticket) not in matched_live]
-            if unmatched:
-                p = unmatched[0]
-                new_ticket = _as_int_ticket(p.ticket)
-                trade.mt5_ticket = new_ticket
-                matched_live.add(new_ticket)
-                continue
-            trade.status = "closed"
-            trade.closed_at = datetime.utcnow()
-
-        known_tickets = {_as_int_ticket(t.mt5_ticket) for t in
-                         db.query(Trade).filter(Trade.user_id == user_id,
-                                                Trade.mt5_ticket != None).all()}
-        for p in live:
-            ticket = _as_int_ticket(p.ticket)
-            if not ticket:
-                continue
-            existing = db.query(Trade).filter(Trade.mt5_ticket == ticket).first()
-            if existing:
-                if existing.status != "open":
-                    existing.status = "open"
-                    existing.closed_at = None
-                    existing.profit = round(p.profit, 2)
-                matched_live.add(ticket)
-                continue
-            db.add(Trade(
-                user_id=user_id,
-                symbol=p.symbol,
-                trade_type="BUY" if p.type == 0 else "SELL",
-                lot=getattr(p, "volume", 0.01) or 0.01,
-                open_price=0,
-                profit=round(p.profit, 2),
-                mt5_ticket=ticket,
-                status="open",
-            ))
-            matched_live.add(ticket)
+        ).all():
+            ticket = _as_int_ticket(tr.mt5_ticket)
+            if ticket not in live_map:
+                tr.status = "closed"
+                if not tr.closed_at:
+                    tr.closed_at = datetime.utcnow()
 
         db.commit()
-        print(f"[RECONCILE] user={user_id} live={len(live)} open_in_db="
-              f"{db.query(Trade).filter(Trade.user_id==user_id, Trade.status=='open').count()}")
+        n_open = db.query(Trade).filter(
+            Trade.user_id == user_id, Trade.status == "open"
+        ).count()
+        print(f"[RECONCILE] user={user_id} live={len(live_map)} db_open={n_open}")
     except Exception as e:
         print(f"[RECONCILE] {e}")
         db.rollback()
@@ -1552,9 +1541,20 @@ def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     conn = user_connection(current_user)
     reconcile_trades_with_mt5(current_user.id, conn)
-    return db.query(Trade).filter(
+    trades = db.query(Trade).filter(
         Trade.user_id == current_user.id
     ).order_by(Trade.opened_at.desc()).limit(100).all()
+
+    # Open trades: live floating profit attach karo (Vercel symbol se match karta hai)
+    if conn and conn._ready:
+        live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
+        for t in trades:
+            if t.status == "open" and t.mt5_ticket:
+                p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                if p:
+                    t.profit = round(p.profit, 2)
+
+    return trades
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):

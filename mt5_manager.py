@@ -63,6 +63,7 @@ class Position:
         self.magic   = data.get('magic', 0)
         self.comment = data.get('comment', '')
         self.type    = 0 if data.get('type') == 'POSITION_TYPE_BUY' else 1
+        self.open_price = data.get('openPrice', data.get('price', 0)) or 0
 
 
 class TradeResult:
