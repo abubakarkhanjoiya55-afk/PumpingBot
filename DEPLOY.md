@@ -1,50 +1,88 @@
 # PumpingBot Deployment Guide
 
-## Problem: Frontend shows 0 open trades
+## ⚠️ IMPORTANT: Railway abhi GitHub se connected NAHI hai
 
-The Vercel frontend counts **OPEN TRADES** from `/trades` where `status === "open"`.
-If DB is out of sync with MT5, it shows 0 even when trades are running.
+Production abhi bhi purana code chala raha hai:
+```
+https://web-production-6a35f.up.railway.app/  →  "PumpingBot Smart API v2"
+```
 
-**Fix in v3.1.0:** Backend now auto-syncs DB with live MT5 on every `/me`, `/trades`, `/open_positions` call.
+Naya code deploy hone ke baad yeh dikhega:
+```json
+{"message":"PumpingBot Smart API","version":"3.2.0",...}
+```
+
+GitHub pe sab push ho chuka hai — ab Railway + Vercel connect karna hai.
 
 ---
 
-## Step 1 — Railway (Backend)
+## Step 1 — Railway Backend (5 min)
 
-1. Railway Dashboard → your service → **Settings** → **Source**
-2. Connect to GitHub repo: `abubakarkhanjoiya55-afk/PumpingBot`
-3. Branch: **`main`**
-4. Click **Redeploy**
+1. [railway.app](https://railway.app) → Login
+2. Apna **PumpingBot** project kholo
+3. **Settings** → **Source** → **Connect GitHub**
+4. Repo select karo: `abubakarkhanjoiya55-afk/PumpingBot`
+5. Branch: **`main`**
+6. **Deploy** / **Redeploy** dabao
+7. Verify: `https://web-production-6a35f.up.railway.app/` → `"version":"3.2.0"`
 
-**Verify deploy worked:**
-```
-https://web-production-6a35f.up.railway.app/
-```
-Should show: `"version": "3.1.0"` (NOT "v2")
+Railway ab automatically:
+- Python backend install karega
+- React frontend build karega (`client/`)
+- Dono ek saath serve karega
 
 ---
 
-## Step 2 — Vercel (Frontend) — NEW fixed frontend
+## Step 2 — Vercel Frontend (5 min)
 
-The old Vercel frontend has bugs. Deploy the new one from this repo:
+### Option A — Existing project update (recommended)
 
-1. Vercel Dashboard → **Add New Project**
-2. Import GitHub repo: `PumpingBot`
-3. **Root Directory:** `client`
-4. Environment Variable:
+1. [vercel.com](https://vercel.com) → `pumping-bot-frontend-two` project
+2. **Settings** → **General** → **Root Directory** → set to: `client`
+3. **Settings** → **Environment Variables**:
    - `VITE_API_URL` = `https://web-production-6a35f.up.railway.app`
-5. Deploy
+4. **Deployments** → **Redeploy**
 
-Or update existing Vercel project:
-- Settings → Root Directory → `client`
-- Redeploy
+### Option B — GitHub auto-deploy (new push se automatic)
+
+1. Vercel → **Add New Project** → Import `PumpingBot` from GitHub
+2. Root Directory: `client`
+3. Env: `VITE_API_URL` = `https://web-production-6a35f.up.railway.app`
+4. Deploy
+
+Root `vercel.json` already configured hai repo mein.
 
 ---
 
-## What the new frontend fixes
+## Step 3 — Verify frontend fix
 
-| Issue | Old Vercel | New client/ |
-|-------|-----------|-------------|
-| Floating P/L shows $0 | Only uses `me.profit` | Falls back to `equity - balance` |
-| Open Trades shows 0 | DB out of sync | Uses `max(trades.open, positions.length)` |
-| Backend sync | None | `reconcile_trades_with_mt5()` on every API call |
+Dashboard pe yeh dikhna chahiye:
+- **OPEN TRADES:** 6 (ya jitni chal rahi hon)
+- **FLOATING P/L:** ~-$4.93 (red) — equity minus balance
+- **Open Trades** page pe har trade ka P&L
+
+---
+
+## Optional — GitHub Actions auto-deploy
+
+Repo secrets add karo (GitHub → Settings → Secrets):
+
+| Secret | Kahan se milega |
+|--------|----------------|
+| `VERCEL_TOKEN` | vercel.com → Account → Tokens |
+| `VERCEL_ORG_ID` | Vercel project settings |
+| `VERCEL_PROJECT_ID` | Vercel project settings |
+| `RAILWAY_TOKEN` | railway.app → Account → Tokens |
+
+Phir har `main` push pe automatic deploy hoga.
+
+---
+
+## Kya fix hua (v3.2.0)
+
+| Fix | Detail |
+|-----|--------|
+| DB sync | Live MT5 positions → DB `open` trades sync |
+| Floating P/L | `equity - balance` calculate hota hai |
+| Open positions | Saari live MT5 positions return hoti hain |
+| New React UI | `client/` — Vercel ke liye fixed frontend |
