@@ -51,8 +51,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .mt5-form input { padding: .7rem; background: #0f1117; border: 1px solid #2a2d3a; border-radius: 8px; color: #fff; }
 .mt5-form button { padding: .8rem; background: #f0b90b; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
 .connected-card { background: rgba(0,255,136,.1); border: 1px solid #00ff88; border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+.mt5-hint { margin-bottom: 1rem; color: #aaa; font-size: .9rem; }
+.mt5-status-card { background: rgba(0,255,136,.08); border: 1px solid #00ff88; border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; max-width: 480px; }
+.mt5-status-off { border-color: #444; background: #1a1d27; }
+.mt5-status-header { display: flex; align-items: center; gap: .75rem; margin-bottom: 1rem; font-size: 1.1rem; }
+.mt5-status-icon { font-size: 1.5rem; }
+.mt5-status-details p { margin: .35rem 0; color: #ddd; }
+.mt5-status-details span { color: #888; display: inline-block; min-width: 4.5rem; }
+.mt5-sync-note { margin: .75rem 0 0; font-size: .85rem; color: #f0b90b; }
+.mt5-form-title { font-size: 1rem; margin: 1rem 0 .75rem; color: #ccc; }
 .btn-disconnect { background: #ff4757; color: #fff; border: none; padding: .5rem 1rem; border-radius: 8px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn-disconnect-lg { width: 100%; margin-top: 1rem; padding: .75rem 1rem; font-size: 1rem; }
 .btn-disconnect:disabled { opacity: .5; cursor: not-allowed; }
+.btn-connect { padding: .8rem; background: #f0b90b; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; color: #000; }
+.btn-connect:disabled { opacity: .5; cursor: not-allowed; }
 .mt5-form button:disabled { opacity: .5; cursor: not-allowed; }
 
 @media (max-width: 768px) {

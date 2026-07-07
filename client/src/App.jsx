@@ -326,52 +326,62 @@ export default function App() {
         {page === 'mt5' && (
           <>
             <h1>MT5 Connection</h1>
-            <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
-              Multiple accounts? Pehle <strong>Disconnect</strong> karo, phir naya login connect karo.
+            <p className="mt5-hint">
+              Multiple accounts? <strong>Disconnect</strong> karo, phir naya login connect karo.
             </p>
-            {me?.mt5_connected && (
-              <div className="connected-card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-                  <div>
-                    {me.mt5_ready ? '✅' : '⏳'} {me.mt5_ready ? 'Connected' : 'Syncing'}: {me.mt5_login} @ {me.mt5_server}
-                    {!me.mt5_ready && (
-                      <p style={{ margin: '.5rem 0 0', fontSize: '.85rem', color: '#f0b90b' }}>
-                        MetaApi is connecting your account — balance may show $0 for 1–2 minutes.
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-disconnect"
-                    disabled={loading}
-                    onClick={async () => {
-                      if (!confirm(`Disconnect MT5 account ${me.mt5_login}?`)) return;
-                      setLoading(true);
-                      try {
-                        await disconnectMT5();
-                        setMt5({ mt5_login: '', mt5_password: '', mt5_server: '' });
-                        await refresh();
-                      } catch (ex) {
-                        alert(ex.response?.data?.detail || ex.message);
-                      }
-                      setLoading(false);
-                    }}
-                  >
-                    Disconnect MT5
-                  </button>
+
+            {me?.mt5_connected ? (
+              <div className="mt5-status-card">
+                <div className="mt5-status-header">
+                  <span className="mt5-status-icon">{me.mt5_ready ? '✅' : '⏳'}</span>
+                  <strong className={me.mt5_ready ? 'green' : ''}>
+                    {me.mt5_ready ? 'MT5 Connected' : 'MT5 Syncing…'}
+                  </strong>
                 </div>
+                <div className="mt5-status-details">
+                  <p><span>Login:</span> {me.mt5_login}</p>
+                  <p><span>Server:</span> {me.mt5_server}</p>
+                  <p><span>Balance:</span> {fmt(me.balance)}</p>
+                </div>
+                {!me.mt5_ready && (
+                  <p className="mt5-sync-note">
+                    MetaApi connecting — balance $0 ho sakta hai 1–2 minute tak.
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="btn-disconnect btn-disconnect-lg"
+                  disabled={loading}
+                  onClick={async () => {
+                    if (!confirm(`Disconnect MT5 account ${me.mt5_login}?`)) return;
+                    setLoading(true);
+                    try {
+                      await disconnectMT5();
+                      setMt5({ mt5_login: '', mt5_password: '', mt5_server: '' });
+                      await refresh();
+                    } catch (ex) {
+                      alert(ex.response?.data?.detail || ex.message);
+                    }
+                    setLoading(false);
+                  }}
+                >
+                  Disconnect MT5
+                </button>
+              </div>
+            ) : (
+              <div className="mt5-status-card mt5-status-off">
+                <strong>MT5 Not Connected</strong>
+                <p className="mt5-sync-note">Neeche credentials daal kar connect karo.</p>
               </div>
             )}
-            {isFollower && !me?.mt5_connected && (
-              <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
-                Connect MT5, then press <strong>Start Bot</strong> on the dashboard to receive copied trades.
-              </p>
-            )}
+
             {isFollower && me?.mt5_connected && (
-              <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
-                After connecting, press <strong>Start Bot</strong> on the dashboard to receive copied trades from the master account.
+              <p className="mt5-hint">
+                Copy trading ke liye Dashboard par <strong>Start Bot</strong> dabao.
               </p>
             )}
+
+            <h2 className="mt5-form-title">{me?.mt5_connected ? 'Connect New Account' : 'Connect MT5'}</h2>
             <form className="mt5-form" onSubmit={async (e) => {
               e.preventDefault();
               setLoading(true);
@@ -391,7 +401,7 @@ export default function App() {
               <input placeholder="MT5 Login" value={mt5.mt5_login} onChange={e => setMt5({ ...mt5, mt5_login: e.target.value })} required />
               <input placeholder="MT5 Password" type="password" value={mt5.mt5_password} onChange={e => setMt5({ ...mt5, mt5_password: e.target.value })} required />
               <input placeholder="Server (e.g. Exness-MT5Trial16)" value={mt5.mt5_server} onChange={e => setMt5({ ...mt5, mt5_server: e.target.value })} required />
-              <button type="submit" disabled={loading}>
+              <button type="submit" className="btn-connect" disabled={loading}>
                 {loading ? 'Connecting...' : me?.mt5_connected ? 'Connect New Account' : 'Connect MT5'}
               </button>
             </form>
