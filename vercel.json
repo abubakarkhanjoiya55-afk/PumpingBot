@@ -5,6 +5,6 @@
   "installCommand": "cd client && npm ci",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "env": {
-    "VITE_API_URL": "https://web-production-6a35f.up.railway.app"
+    "VITE_API_URL": "https://web-production-26ef9.up.railway.app"
   }
 }
