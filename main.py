@@ -23,7 +23,7 @@ from copy_trading import copy_trade_to_followers, start_copy_watcher
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
-    MIN_EFFECTIVE_SCORE, MIN_TREND_STRUCTURE,
+    MIN_EFFECTIVE_SCORE, MIN_TREND_STRUCTURE, MIN_CONFLUENCE, SCAN_INTERVAL_SEC,
     TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
     SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
@@ -68,7 +68,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.5.0"   # Elite gate fix, clear skip logs, manual/bot split
+API_VERSION = "3.6.0"   # Active mode: 5 trades, bigger lots, confluence combo
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -918,14 +918,15 @@ def run_user_bot(user_id, login, password, server):
                 cname = analysis.get("chart_pattern_name")
                 bname = analysis.get("breakout_name")
                 tstruct = analysis.get("trend_structure", 0)
-                effective = min(score, tstruct)
+                effective = (score + tstruct) // 2
+                confluence = analysis.get("confluence", 0)
                 confirm = analysis.get("m15_confirm_name") or cname or bname or pname
 
                 pinfo = f"| {confirm}" if confirm else ""
                 print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
                       f"ADX4H:{adx_4h:.0f} ADX1H:{adx_1h:.0f} "
                       f"RSI:{rsi:.0f} Score:{score} Struct:{tstruct} Eff:{effective} "
-                      f"HTF:{analysis['htf_aligned']} {pinfo}")
+                      f"Conf:{confluence}/{MIN_CONFLUENCE} HTF:{analysis['htf_aligned']} {pinfo}")
 
                 ok, skip_reason = trade_eligible(analysis)
 
@@ -997,7 +998,7 @@ def run_user_bot(user_id, login, password, server):
 
                 time.sleep(1)
 
-            time.sleep(60)
+            time.sleep(SCAN_INTERVAL_SEC)
 
         except Exception as e:
             import traceback
