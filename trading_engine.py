@@ -8,7 +8,8 @@ DAILY_MAX_LOSS_PCT   = 0.015   # 1.5% max daily loss
 DAILY_TRAIL_START    = 0.015   # lock profits after 1.5% daily gain
 DAILY_TRAIL_GAP      = 0.008   # trail gap 0.8%
 RISK_PER_TRADE_PCT   = 0.003   # 0.3% base risk per trade
-MAX_OPEN_TRADES      = 4       # fewer concurrent = better focus
+MAX_OPEN_TRADES      = 4       # total open trades (all symbols)
+MAX_TRADES_PER_SYMBOL = 3      # ek symbol par max 3 trades ek waqt
 MIN_SCORE            = 68      # only high-confidence entries
 STRONG_SCORE         = 82      # hold mode threshold
 MAX_SPREAD_POINTS    = 2000
