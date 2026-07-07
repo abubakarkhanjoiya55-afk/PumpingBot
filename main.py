@@ -65,7 +65,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.3.0"   # Railway deploy verify — curl / should show this version
+API_VERSION = "3.3.1"   # Railway deploy verify — curl /api should show this version
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -345,6 +345,50 @@ def _as_int_ticket(ticket):
     except (TypeError, ValueError):
         return None
 
+
+def fetch_position_closed_profit(conn, ticket):
+    """MetaApi deal history se closed trade ka real profit + close price."""
+    if not conn or not ticket:
+        return None, None
+    deals = conn.deals_get_by_position(ticket)
+    if not deals:
+        return None, None
+
+    total_profit = 0.0
+    close_price = None
+    for d in deals:
+        if not isinstance(d, dict):
+            continue
+        total_profit += float(d.get('profit', 0) or 0)
+        total_profit += float(d.get('swap', 0) or 0)
+        total_profit += float(d.get('commission', 0) or 0)
+        entry = d.get('entryType', d.get('entry', ''))
+        if entry in ('DEAL_ENTRY_OUT', 'DEAL_ENTRY_INOUT', 'DEAL_ENTRY_OUT_BY') or d.get('price'):
+            close_price = d.get('price') or close_price
+
+    if total_profit == 0 and close_price is None:
+        return None, None
+    return round(total_profit, 2), close_price
+
+
+def backfill_closed_trade_profit(conn, trade, db=None, commit=False):
+    """DB closed trade jiska profit 0 hai — MetaApi se actual profit set karo."""
+    if not trade or trade.status != 'closed' or not trade.mt5_ticket:
+        return False
+    if trade.profit not in (None, 0, 0.0):
+        return False
+
+    profit, close_price = fetch_position_closed_profit(conn, trade.mt5_ticket)
+    if profit is None:
+        return False
+
+    trade.profit = profit
+    if close_price and not trade.close_price:
+        trade.close_price = float(close_price)
+    if db and commit:
+        db.commit()
+    return True
+
 def get_open_bot_tickets(user_id):
     db = SessionLocal()
     try:
@@ -468,12 +512,17 @@ def reconcile_trades_with_mt5(user_id, conn):
                     status="open",
                 ))
 
-        # Broker pe nahi — DB open → closed (profit zero mat karo)
+        # Broker pe nahi — DB open → closed (MetaApi se profit backfill)
         for tr in db.query(Trade).filter(
             Trade.user_id == user_id, Trade.status == "open"
         ).all():
             ticket = _as_int_ticket(tr.mt5_ticket)
             if ticket not in live_map:
+                profit, close_price = fetch_position_closed_profit(conn, ticket)
+                if profit is not None:
+                    tr.profit = profit
+                if close_price:
+                    tr.close_price = float(close_price)
                 tr.status = "closed"
                 if not tr.closed_at:
                     tr.closed_at = datetime.utcnow()
@@ -1562,16 +1611,24 @@ def get_trades(current_user: User = Depends(get_current_user),
     reconcile_trades_with_mt5(current_user.id, conn)
     trades = db.query(Trade).filter(
         Trade.user_id == current_user.id
-    ).order_by(Trade.opened_at.desc()).limit(100).all()
+    ).order_by(
+        Trade.closed_at.desc().nullslast(),
+        Trade.opened_at.desc()
+    ).limit(500).all()
 
-    # Open trades: live floating profit attach karo (Vercel symbol se match karta hai)
     if conn and conn._ready:
         live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
+        backfilled = 0
         for t in trades:
             if t.status == "open" and t.mt5_ticket:
                 p = live_map.get(_as_int_ticket(t.mt5_ticket))
                 if p:
                     t.profit = round(p.profit, 2)
+            elif t.status == "closed" and backfilled < 25:
+                if backfill_closed_trade_profit(conn, t, db):
+                    backfilled += 1
+        if backfilled:
+            db.commit()
 
     return trades
 

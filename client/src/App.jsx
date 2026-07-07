@@ -101,7 +101,9 @@ export default function App() {
   const logout = () => { setToken(null); setAuthed(false); };
 
   const openTrades = trades.filter(t => t.status === 'open');
-  const closedTrades = trades.filter(t => t.status === 'closed');
+  const closedTrades = trades
+    .filter(t => t.status === 'closed')
+    .sort((a, b) => new Date(b.closed_at || b.opened_at) - new Date(a.closed_at || a.opened_at));
   const floatingPl = getFloatingPl(me);
   const openCount = Math.max(me?.open_trades_count ?? 0, openTrades.length, positions.length);
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
@@ -263,22 +265,26 @@ export default function App() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Time</th><th>Symbol</th><th>Type</th><th>Lot</th><th>Profit</th><th>Status</th>
+                    <th>Closed</th><th>Symbol</th><th>Type</th><th>Lot</th>
+                    <th>Open</th><th>Close</th><th>Profit</th><th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {closedTrades.slice(0, 50).map(t => (
+                  {closedTrades.slice(0, 100).map(t => (
                     <tr key={t.id}>
-                      <td>{new Date(t.opened_at).toLocaleTimeString()}</td>
+                      <td>{new Date(t.closed_at || t.opened_at).toLocaleString()}</td>
                       <td><strong>{t.symbol}</strong></td>
                       <td className={t.trade_type === 'BUY' ? 'green' : 'red'}>{t.trade_type}</td>
                       <td>{t.lot}</td>
-                      <td className={t.profit >= 0 ? 'green' : 'red'}>{fmt(t.profit)}</td>
-                      <td><span className={t.profit >= 0 ? 'badge-profit' : 'badge-loss'}>{t.profit >= 0 ? 'PROFIT' : 'LOSS'}</span></td>
+                      <td>{t.open_price?.toFixed?.(2) ?? t.open_price ?? '-'}</td>
+                      <td>{t.close_price?.toFixed?.(2) ?? t.close_price ?? '-'}</td>
+                      <td className={(t.profit || 0) >= 0 ? 'green' : 'red'}>{fmt(t.profit)}</td>
+                      <td><span className={(t.profit || 0) >= 0 ? 'badge-profit' : 'badge-loss'}>{(t.profit || 0) >= 0 ? 'PROFIT' : 'LOSS'}</span></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {closedTrades.length === 0 && <p className="empty">No closed trades yet.</p>}
             </div>
           </>
         )}

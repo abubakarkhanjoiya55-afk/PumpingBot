@@ -190,6 +190,20 @@ class MT5Manager:
             positions = [p for p in positions if p.symbol == symbol]
         return positions
 
+    def deals_get_by_position(self, position_id):
+        """Closed position ke deals — actual profit backfill ke liye."""
+        if not self._ready:
+            return []
+        data = self._run(self._async_get_deals_by_position(position_id))
+        return data or []
+
+    async def _async_get_deals_by_position(self, position_id):
+        try:
+            return await self._connection.get_deals_by_position(position_id=str(position_id))
+        except Exception as e:
+            print(f"[Deals] position={position_id} {e}")
+            return []
+
     def copy_rates_from_pos(self, symbol, timeframe, start, count):
         if not self._ready: return None
         data = self._run(self._async_get_candles(symbol, timeframe, count))
