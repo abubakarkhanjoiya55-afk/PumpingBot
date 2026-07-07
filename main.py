@@ -23,17 +23,18 @@ from copy_trading import copy_trade_to_followers, start_copy_watcher
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
+    MIN_EFFECTIVE_SCORE, MIN_TREND_STRUCTURE,
     TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
     SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
     MARGIN_PROFIT_TRIGGER, MARGIN_SL_LOCK_PCT,
     ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
     get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
-    calculate_lot, analyze_symbol, should_take_trade,
+    calculate_lot, analyze_symbol, should_take_trade, trade_eligible,
     get_htf_atr, calc_margin_used, profit_to_price, calc_h1_sl,
 )
 
-ELITE_SCORE          = 90     # is se upar: TP ka wait, sirf SL trail ho
+ELITE_SCORE          = STRONG_SCORE  # is se upar: TP ka wait, sirf SL trail ho
 MARGIN_PROFIT_MULT   = MARGIN_PROFIT_TRIGGER  # margin ka 100% profit → SL lock
 ELITE_SL_LOCK_PCT    = MARGIN_SL_LOCK_PCT     # peak profit ka 70% broker SL par lock
 ELITE_MIN_PEAK       = 0.0    # margin-based trigger use hoga, fixed $ peak nahi
@@ -67,7 +68,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.4.0"   # Elite trading: 1H SL, M15 confirm, margin 70% lock
+API_VERSION = "3.5.0"   # Elite gate fix, clear skip logs, manual/bot split
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -403,6 +404,7 @@ def get_open_bot_tickets(user_id):
             Trade.user_id == user_id,
             Trade.status == "open",
             Trade.mt5_ticket != None,
+            Trade.score >= MIN_SCORE - 5,  # sirf bot-placed trades (manual reconcile score=0)
         ).all()
         return {r[0] for r in rows}
     finally:
@@ -870,21 +872,26 @@ def run_user_bot(user_id, login, password, server):
             bot_pos = get_bot_positions(user_id, mt5_manager)
 
             if len(bot_pos) >= MAX_OPEN_TRADES:
+                print(f"[SKIP] Max bot trades open ({len(bot_pos)}/{MAX_OPEN_TRADES})")
                 time.sleep(5)
                 continue
 
-            print(f"[SCAN] Scanning {len(SYMBOLS)} symbols...")
+            print(f"[SCAN] Scanning {len(SYMBOLS)} symbols... (bot open: {len(bot_pos)}/{MAX_OPEN_TRADES})")
 
             for symbol in SYMBOLS:
                 if len(bot_pos) >= MAX_OPEN_TRADES:
+                    print(f"[SKIP] Max bot trades reached during scan")
                     break
 
                 last_close = last_close_times.get((user_id, symbol))
                 if last_close and (now - last_close).total_seconds() < MIN_COOLDOWN_SEC:
+                    remaining = int(MIN_COOLDOWN_SEC - (now - last_close).total_seconds())
+                    print(f"[SKIP] {symbol} — cooldown {remaining}s left")
                     continue
 
                 sym_pos = [p for p in bot_pos if p.symbol == symbol]
                 if len(sym_pos) >= MAX_TRADES_PER_SYMBOL:
+                    print(f"[SKIP] {symbol} — bot trade already open on symbol")
                     continue
 
                 analysis = analyze_symbol(symbol, mt5_manager)
@@ -911,23 +918,26 @@ def run_user_bot(user_id, login, password, server):
                 cname = analysis.get("chart_pattern_name")
                 bname = analysis.get("breakout_name")
                 tstruct = analysis.get("trend_structure", 0)
+                effective = min(score, tstruct)
                 confirm = analysis.get("m15_confirm_name") or cname or bname or pname
 
                 pinfo = f"| {confirm}" if confirm else ""
                 print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
                       f"ADX4H:{adx_4h:.0f} ADX1H:{adx_1h:.0f} "
-                      f"RSI:{rsi:.0f} Score:{score} Struct:{tstruct} HTF:{analysis['htf_aligned']} {pinfo}")
+                      f"RSI:{rsi:.0f} Score:{score} Struct:{tstruct} Eff:{effective} "
+                      f"HTF:{analysis['htf_aligned']} {pinfo}")
+
+                ok, skip_reason = trade_eligible(analysis)
 
                 db = SessionLocal()
                 sig = Signal(
                     symbol=symbol,
-                    signal_type=trend if score >= MIN_SCORE else "WAIT",
+                    signal_type=trend if ok else "WAIT",
                     score=score, ema_fast=analysis["e8"], ema_slow=analysis["e21"],
                     macd=analysis["macd"], rsi=rsi, adx=adx_4h,
                     price=analysis["closes15"][-1])
                 db.add(sig); db.commit(); db.close()
 
-                ok, skip_reason = should_take_trade(analysis)
                 if not ok:
                     if skip_reason not in ("skip",):
                         print(f"[SKIP] {symbol} — {skip_reason}")
@@ -935,6 +945,7 @@ def run_user_bot(user_id, login, password, server):
 
                 lot = calculate_lot(balance, atr, symbol, score, mt5_manager)
                 if lot is None:
+                    print(f"[SKIP] {symbol} — lot_calc_failed")
                     continue
 
                 entry = tick.ask if trend == "BUY" else tick.bid

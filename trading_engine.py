@@ -9,13 +9,14 @@ DAILY_PROFIT_TARGET   = 0.05    # 5% daily target — hit hone par bot ruk jata 
 DAILY_TRAIL_START     = 0.03    # 3% ke baad profit lock
 DAILY_TRAIL_GAP       = 0.01    # 1% trail gap
 RISK_PER_TRADE_PCT    = 0.003   # 0.3% base risk per trade
-MAX_OPEN_TRADES       = 3       # kam trades = zyada focus
+MAX_OPEN_TRADES       = 2       # kam trades = zyada focus, zyada accuracy
 MAX_TRADES_PER_SYMBOL = 1       # ek symbol = ek trade (accuracy)
-MIN_SCORE             = 90      # sirf elite signals (90%+ accuracy setups)
-MIN_TREND_STRUCTURE   = 90      # mazboot trend structure minimum
+MIN_SCORE             = 85      # technical score minimum
+MIN_TREND_STRUCTURE   = 80      # trend structure minimum
+MIN_EFFECTIVE_SCORE   = 85      # min(score, struct) — dono strong hon
 MIN_ADX_4H            = 22      # trend confirm
 MIN_ADX_1H            = 20
-STRONG_SCORE          = 90
+STRONG_SCORE          = 88      # elite mode + higher lot
 MARGIN_PROFIT_TRIGGER = 1.0     # margin ka 100% profit → SL lock start
 MARGIN_SL_LOCK_PCT    = 0.70     # locked profit = 70% of peak
 MAX_SPREAD_POINTS     = 2000
@@ -839,20 +840,21 @@ def analyze_symbol(symbol, mt5_manager):
     }
 
 
-def should_take_trade(analysis):
-    """
-    Final gate — sirf 90%+ strong setups.
-    M15 par candle pattern, chart pattern, ya breakout confirm hona zaroori.
-    Trend structure 90+ bhi entry allow karta hai.
-    """
+def trade_eligible(analysis):
+    """Same checks as should_take_trade — returns (ok, reason) with clear labels."""
     if analysis.get("skip"):
         return False, "skip"
 
     score = analysis["score"]
     trend_struct = analysis.get("trend_structure", 0)
+    effective = min(score, trend_struct)
 
-    if score < MIN_SCORE and trend_struct < MIN_TREND_STRUCTURE:
-        return False, "low_score"
+    if effective < MIN_EFFECTIVE_SCORE:
+        return False, f"effective_{effective}_need_{MIN_EFFECTIVE_SCORE}"
+    if score < MIN_SCORE:
+        return False, f"score_{score}_need_{MIN_SCORE}"
+    if trend_struct < MIN_TREND_STRUCTURE:
+        return False, f"struct_{trend_struct}_need_{MIN_TREND_STRUCTURE}"
 
     if not analysis["htf_aligned"]:
         return False, "htf_conflict"
@@ -866,7 +868,6 @@ def should_take_trade(analysis):
     if not analysis.get("m15_aligned"):
         return False, "m15_conflict"
 
-    # M15 confirmation mandatory — candle / chart / breakout / strong trend
     if not analysis.get("m15_confirmed"):
         return False, "no_m15_confirm"
 
@@ -889,3 +890,8 @@ def should_take_trade(analysis):
         return False, "rsi_oversold"
 
     return True, "ok"
+
+
+def should_take_trade(analysis):
+    """Final gate — sirf elite setups jahan score AUR structure dono strong hon."""
+    return trade_eligible(analysis)

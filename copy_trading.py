@@ -114,7 +114,31 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
                     db.commit()
                     print(f"[COPY] ✅ {follower.username} {symbol} {trend} lot={follower_lot}")
                 else:
-                    print(f"[COPY] ❌ {follower.username} failed: {result.retcode}")
+                    # Ek retry — kabhi spread/slippage ki wajah se fail hota hai
+                    time.sleep(2)
+                    tick2 = conn.symbol_info_tick(symbol)
+                    if tick2:
+                        f_entry = tick2.ask if trend == "BUY" else tick2.bid
+                        request["price"] = f_entry
+                        request["sl"] = f_entry - sl_dist if trend == "BUY" else f_entry + sl_dist
+                    result2 = conn.order_send(request)
+                    if result2.retcode == conn.TRADE_RETCODE_DONE:
+                        trade = Trade(
+                            user_id=follower.id,
+                            symbol=symbol,
+                            trade_type=trend,
+                            lot=follower_lot,
+                            open_price=f_entry,
+                            score=score or 0,
+                            mt5_ticket=result2.order,
+                            master_ticket=master_ticket,
+                            status="open",
+                        )
+                        db.add(trade)
+                        db.commit()
+                        print(f"[COPY] ✅ {follower.username} {symbol} {trend} lot={follower_lot} (retry)")
+                    else:
+                        print(f"[COPY] ❌ {follower.username} failed: {result.retcode} retry={result2.retcode}")
 
             except Exception as e:
                 print(f"[COPY] ❌ {follower.username}: {e}")
