@@ -672,13 +672,13 @@ def run_user_bot(user_id, login, password, server):
                 # SL/TP ab 1H volatility ke hisab se — entry timeframe ka tight ATR nahi
                 atr = get_htf_atr(pos.symbol, mt5_manager)
                 if atr is None:
-                    rates5 = mt5_manager.copy_rates_from_pos(
-                        pos.symbol, mt5_manager.TIMEFRAME_M5, 0, 50)
+                    rates15 = mt5_manager.copy_rates_from_pos(
+                        pos.symbol, mt5_manager.TIMEFRAME_M15, 0, 50)
                     atr = 0
-                    if rates5 is not None and len(rates5) > 14:
-                        h5 = [r['high']  for r in rates5]
-                        l5 = [r['low']   for r in rates5]
-                        c5 = [r['close'] for r in rates5]
+                    if rates15 is not None and len(rates15) > 14:
+                        h5 = [r['high']  for r in rates15]
+                        l5 = [r['low']   for r in rates15]
+                        c5 = [r['close'] for r in rates15]
                         atr = calc_atr(h5, l5, c5)
 
                 current_trend, current_adx_4h, current_adx_1h, _ = get_trend(pos.symbol, mt5_manager)
@@ -913,7 +913,7 @@ def run_user_bot(user_id, login, password, server):
                     signal_type=trend if score >= MIN_SCORE else "WAIT",
                     score=score, ema_fast=analysis["e8"], ema_slow=analysis["e21"],
                     macd=analysis["macd"], rsi=rsi, adx=adx_4h,
-                    price=analysis["closes5"][-1])
+                    price=analysis["closes15"][-1])
                 db.add(sig); db.commit(); db.close()
 
                 ok, skip_reason = should_take_trade(analysis)
@@ -973,7 +973,7 @@ def run_user_bot(user_id, login, password, server):
 
                 time.sleep(1)
 
-            time.sleep(5)
+            time.sleep(60)
 
         except Exception as e:
             import traceback

@@ -13,6 +13,7 @@ MASTER_ACCOUNT_ID = os.environ.get(
     "5e4d5291-3a52-4e73-9a95-2d6ea449843c",
 )
 
+TIMEFRAME_M15      = "15m"
 TIMEFRAME_M5       = "5m"
 TIMEFRAME_H1       = "1h"
 TIMEFRAME_H4       = "4h"
@@ -97,6 +98,7 @@ class MT5Manager:
         self._lock       = threading.Lock()
 
         # Constants — instance pe directly available
+        self.TIMEFRAME_M15      = TIMEFRAME_M15
         self.TIMEFRAME_M5       = TIMEFRAME_M5
         self.TIMEFRAME_H1       = TIMEFRAME_H1
         self.TIMEFRAME_H4       = TIMEFRAME_H4

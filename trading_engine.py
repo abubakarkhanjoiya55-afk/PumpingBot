@@ -12,7 +12,7 @@ MAX_OPEN_TRADES      = 4       # fewer concurrent = better focus
 MIN_SCORE            = 68      # only high-confidence entries
 STRONG_SCORE         = 82      # hold mode threshold
 MAX_SPREAD_POINTS    = 2000
-MIN_COOLDOWN_SEC     = 240     # 4 min between same-symbol trades
+MIN_COOLDOWN_SEC     = 900     # 15 min — entry timeframe M15 ke saath align
 SCALP_ATR_MULT       = 0.45
 HOLD_MIN_PROFIT      = 8.0
 HOLD_TRAIL_PCT       = 0.72    # lock 72% of peak profit
@@ -252,7 +252,7 @@ def detect_candle_pattern(opens, highs, lows, closes):
 
 def get_htf_atr(symbol, mt5_manager, period=14):
     """
-    SL/TP ka basis entry timeframe (M5/M15) ki jagah 1H volatility par rakho —
+    SL/TP ka basis 1H volatility par — entry analysis M15 candles se hoti hai.
     isse SL trade lagte hi tight hit nahi hota, market ke real breathing room ke
     hisab se set hota hai.
     """
@@ -518,34 +518,35 @@ def analyze_symbol(symbol, mt5_manager):
 
     trend, adx_4h, adx_1h, htf_aligned = get_trend(symbol, mt5_manager)
 
-    rates5 = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_M5, 0, 120)
-    if rates5 is None or len(rates5) < 55:
+    # Entry signals sirf M15 candles se — M5/M1 scalping band
+    rates15 = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_M15, 0, 250)
+    if rates15 is None or len(rates15) < 55:
         return {"skip": True, "reason": "no_data", "symbol": symbol}
 
-    opens5 = [r["open"] for r in rates5]
-    highs5 = [r["high"] for r in rates5]
-    lows5 = [r["low"] for r in rates5]
-    closes5 = [r["close"] for r in rates5]
+    opens15 = [r["open"] for r in rates15]
+    highs15 = [r["high"] for r in rates15]
+    lows15 = [r["low"] for r in rates15]
+    closes15 = [r["close"] for r in rates15]
 
-    e8_l = ema(closes5, 8)
-    e21_l = ema(closes5, 21)
-    e50_l = ema(closes5, 50)
-    e200_l = ema(closes5, min(200, len(closes5) - 1))
-    rsi = calc_rsi(closes5)
-    stk, std = calc_stoch_rsi(closes5)
-    atr_m5 = calc_atr(highs5, lows5, closes5)
-    # SL/TP 1H volatility ke hisab se — M5 ka tight ATR sirf scoring ke liye
-    atr = get_htf_atr(symbol, mt5_manager) or atr_m5
-    mh, mhp = calc_macd(closes5)
-    bbu, bbm, bbl = calc_bollinger(closes5)
-    st_dir, _ = calc_supertrend(highs5, lows5, closes5)
-    ichimoku = calc_ichimoku(highs5, lows5, closes5)
-    pname, pdir, pbonus = detect_candle_pattern(opens5, highs5, lows5, closes5)
-    ddir, dbonus = detect_rsi_divergence(closes5)
+    e8_l = ema(closes15, 8)
+    e21_l = ema(closes15, 21)
+    e50_l = ema(closes15, 50)
+    e200_l = ema(closes15, min(200, len(closes15) - 1))
+    rsi = calc_rsi(closes15)
+    stk, std = calc_stoch_rsi(closes15)
+    atr_m15 = calc_atr(highs15, lows15, closes15)
+    # SL/TP 1H volatility — M15 ATR sirf backup
+    atr = get_htf_atr(symbol, mt5_manager) or atr_m15
+    mh, mhp = calc_macd(closes15)
+    bbu, bbm, bbl = calc_bollinger(closes15)
+    st_dir, _ = calc_supertrend(highs15, lows15, closes15)
+    ichimoku = calc_ichimoku(highs15, lows15, closes15)
+    pname, pdir, pbonus = detect_candle_pattern(opens15, highs15, lows15, closes15)
+    ddir, dbonus = detect_rsi_divergence(closes15)
 
     score = calc_score(
         trend, adx_4h, adx_1h, rsi, stk, std,
-        mh, mhp, closes5,
+        mh, mhp, closes15,
         e8_l[-1], e21_l[-1], e50_l[-1], e200_l[-1],
         bbu, bbl, bbm, pdir, pbonus,
         st_dir, ichimoku, htf_aligned, ddir, dbonus,
@@ -559,7 +560,7 @@ def analyze_symbol(symbol, mt5_manager):
         "score": score,
         "trade_mode": trade_mode,
         "atr": atr,
-        "atr_m5": atr_m5,
+        "atr_m15": atr_m15,
         "adx_4h": adx_4h,
         "adx_1h": adx_1h,
         "rsi": rsi,
@@ -568,7 +569,7 @@ def analyze_symbol(symbol, mt5_manager):
         "pattern_dir": pdir,
         "pattern_bonus": pbonus,
         "tick": tick,
-        "closes5": closes5,
+        "closes15": closes15,
         "e8": e8_l[-1],
         "e21": e21_l[-1],
         "macd": mh,

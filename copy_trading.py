@@ -258,14 +258,14 @@ def manual_copy_watcher():
                         master_info = mt5_manager.account_info()
                         balance = master_info.balance if master_info else 1000
 
-                        rates = mt5_manager.copy_rates_from_pos(
-                            pos.symbol, mt5_manager.TIMEFRAME_M5, 0, 20)
+                        rates15 = mt5_manager.copy_rates_from_pos(
+                            pos.symbol, mt5_manager.TIMEFRAME_M15, 0, 20)
                         atr = 1.0
-                        if rates and len(rates) > 5:
+                        if rates15 and len(rates15) > 5:
                             from trading_engine import calc_atr
-                            h = [r["high"] for r in rates]
-                            l = [r["low"] for r in rates]
-                            c = [r["close"] for r in rates]
+                            h = [r["high"] for r in rates15]
+                            l = [r["low"] for r in rates15]
+                            c = [r["close"] for r in rates15]
                             atr = calc_atr(h, l, c) or 1.0
 
                         tick = mt5_manager.symbol_info_tick(pos.symbol)
