@@ -11,10 +11,13 @@ DAILY_TRAIL_GAP       = 0.01    # 1% trail gap
 RISK_PER_TRADE_PCT    = 0.003   # 0.3% base risk per trade
 MAX_OPEN_TRADES       = 3       # kam trades = zyada focus
 MAX_TRADES_PER_SYMBOL = 1       # ek symbol = ek trade (accuracy)
-MIN_SCORE             = 74      # sirf strong signals
+MIN_SCORE             = 90      # sirf elite signals (90%+ accuracy setups)
+MIN_TREND_STRUCTURE   = 90      # mazboot trend structure minimum
 MIN_ADX_4H            = 22      # trend confirm
 MIN_ADX_1H            = 20
-STRONG_SCORE          = 82
+STRONG_SCORE          = 90
+MARGIN_PROFIT_TRIGGER = 1.0     # margin ka 100% profit → SL lock start
+MARGIN_SL_LOCK_PCT    = 0.70     # locked profit = 70% of peak
 MAX_SPREAD_POINTS     = 2000
 MIN_COOLDOWN_SEC      = 900     # 15 min
 TRADE_MAX_LOSS_PCT    = 0.006   # ek trade par max 0.6% account loss
@@ -253,6 +256,213 @@ def detect_candle_pattern(opens, highs, lows, closes):
         return "Tweezer Top", "SELL", 14
 
     return None, None, 0
+
+
+def find_swing_lows(lows, left=3, right=3):
+    """Local swing lows — SL placement ke liye."""
+    swings = []
+    for i in range(left, len(lows) - right):
+        window = lows[i - left:i + right + 1]
+        if lows[i] == min(window):
+            swings.append((i, lows[i]))
+    return swings
+
+
+def find_swing_highs(highs, left=3, right=3):
+    """Local swing highs — SL placement ke liye."""
+    swings = []
+    for i in range(left, len(highs) - right):
+        window = highs[i - left:i + right + 1]
+        if highs[i] == max(window):
+            swings.append((i, highs[i]))
+    return swings
+
+
+def detect_breakout(highs, lows, closes, trend, lookback=20):
+    """
+    M15 range / level breakout — sirf trend direction mein confirm.
+    Returns (name, direction, strength).
+    """
+    if len(closes) < lookback + 2:
+        return None, None, 0
+
+    recent_high = max(highs[-lookback - 1:-1])
+    recent_low = min(lows[-lookback - 1:-1])
+    prev_close = closes[-2]
+    price = closes[-1]
+    body = abs(price - prev_close)
+    avg_range = sum(h - l for h, l in zip(highs[-10:], lows[-10:])) / 10
+    strong_move = body >= avg_range * 0.6
+
+    if trend == "BUY" and price > recent_high and prev_close <= recent_high and strong_move:
+        return "Bullish Breakout", "BUY", 25
+    if trend == "SELL" and price < recent_low and prev_close >= recent_low and strong_move:
+        return "Bearish Breakout", "SELL", 25
+    return None, None, 0
+
+
+def detect_chart_pattern(opens, highs, lows, closes):
+    """
+    M15 chart patterns — double top/bottom, H&S simplified, triangle breakout.
+    Returns (name, direction, strength).
+    """
+    if len(closes) < 30:
+        return None, None, 0
+
+    swing_lows = find_swing_lows(lows)
+    swing_highs = find_swing_highs(highs)
+
+    # Double Bottom (W pattern)
+    if len(swing_lows) >= 2:
+        _, l1 = swing_lows[-2]
+        _, l2 = swing_lows[-1]
+        mid_high = max(highs[swing_lows[-2][0]:swing_lows[-1][0] + 1]) if swing_lows[-2][0] < swing_lows[-1][0] else 0
+        tol = (mid_high - min(l1, l2)) * 0.02 if mid_high else abs(l1 - l2) * 0.05
+        if abs(l1 - l2) <= max(tol, 0.0001) and closes[-1] > mid_high and mid_high > 0:
+            return "Double Bottom", "BUY", 28
+
+    # Double Top (M pattern)
+    if len(swing_highs) >= 2:
+        _, h1 = swing_highs[-2]
+        _, h2 = swing_highs[-1]
+        mid_low = min(lows[swing_highs[-2][0]:swing_highs[-1][0] + 1]) if swing_highs[-2][0] < swing_highs[-1][0] else 0
+        tol = (max(h1, h2) - mid_low) * 0.02 if mid_low else abs(h1 - h2) * 0.05
+        if abs(h1 - h2) <= max(tol, 0.0001) and closes[-1] < mid_low and mid_low > 0:
+            return "Double Top", "SELL", 28
+
+    # Head & Shoulders (simplified — 3 swing highs)
+    if len(swing_highs) >= 3:
+        _, ls = swing_highs[-3]
+        _, head = swing_highs[-2]
+        _, rs = swing_highs[-1]
+        shoulder_tol = head * 0.003
+        if head > ls and head > rs and abs(ls - rs) <= shoulder_tol and closes[-1] < min(ls, rs):
+            return "Head & Shoulders", "SELL", 30
+
+    # Inverse H&S (3 swing lows)
+    if len(swing_lows) >= 3:
+        _, ls = swing_lows[-3]
+        _, head = swing_lows[-2]
+        _, rs = swing_lows[-1]
+        shoulder_tol = head * 0.003
+        if head < ls and head < rs and abs(ls - rs) <= shoulder_tol and closes[-1] > max(ls, rs):
+            return "Inverse H&S", "BUY", 30
+
+    # Ascending triangle breakout
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        flat_top = abs(swing_highs[-1][1] - swing_highs[-2][1]) / swing_highs[-1][1] < 0.004
+        rising_lows = swing_lows[-1][1] > swing_lows[-2][1]
+        if flat_top and rising_lows and closes[-1] > swing_highs[-1][1]:
+            return "Ascending Triangle", "BUY", 26
+
+    # Descending triangle breakout
+    if len(swing_highs) >= 2 and len(swing_lows) >= 2:
+        flat_bottom = abs(swing_lows[-1][1] - swing_lows[-2][1]) / swing_lows[-1][1] < 0.004
+        falling_highs = swing_highs[-1][1] < swing_highs[-2][1]
+        if flat_bottom and falling_highs and closes[-1] < swing_lows[-1][1]:
+            return "Descending Triangle", "SELL", 26
+
+    return None, None, 0
+
+
+def calc_trend_structure_score(trend, adx_4h, adx_1h, closes, e8, e21, e50, e200,
+                                supertrend_dir, ichimoku, htf_aligned):
+    """
+    Mazboot trend structures ka combined score (0–100).
+    90+ = high-probability trend continuation setup.
+    """
+    score = 0
+
+    if htf_aligned:
+        score += 22
+    if adx_4h >= 35:
+        score += 18
+    elif adx_4h >= 28:
+        score += 14
+    elif adx_4h >= 22:
+        score += 8
+    if adx_1h >= 28:
+        score += 10
+    elif adx_1h >= 22:
+        score += 6
+
+    # EMA ribbon — full stack
+    if trend == "BUY" and e8 > e21 > e50 > e200:
+        score += 20
+    elif trend == "SELL" and e8 < e21 < e50 < e200:
+        score += 20
+    elif trend == "BUY" and e8 > e21 > e50:
+        score += 12
+    elif trend == "SELL" and e8 < e21 < e50:
+        score += 12
+
+    # Higher highs / higher lows structure (last 10 bars)
+    if len(closes) >= 12:
+        mid = len(closes) // 2
+        first_half = closes[:mid]
+        second_half = closes[mid:]
+        if trend == "BUY" and max(second_half) > max(first_half) and min(second_half) > min(first_half):
+            score += 12
+        elif trend == "SELL" and max(second_half) < max(first_half) and min(second_half) < min(first_half):
+            score += 12
+
+    if trend == "BUY" and supertrend_dir == 1:
+        score += 8
+    elif trend == "SELL" and supertrend_dir == -1:
+        score += 8
+
+    if ichimoku:
+        if trend == "BUY" and ichimoku["above_cloud"] and ichimoku["tk_bull"]:
+            score += 10
+        elif trend == "SELL" and ichimoku["below_cloud"] and ichimoku["tk_bear"]:
+            score += 10
+
+    return min(score, 100)
+
+
+def calc_h1_sl(symbol, trade_type, entry_price, mt5_manager):
+    """
+    1H candle patterns + swing structure se sahi SL.
+    Pattern wick / swing low-high ke neeche/upar buffer ke sath.
+    """
+    rates = mt5_manager.copy_rates_from_pos(symbol, mt5_manager.TIMEFRAME_H1, 0, 60)
+    if rates is None or len(rates) < 12:
+        atr = get_htf_atr(symbol, mt5_manager)
+        if not atr:
+            return None
+        return entry_price - atr * 1.2 if trade_type == "BUY" else entry_price + atr * 1.2
+
+    opens = [r["open"] for r in rates]
+    highs = [r["high"] for r in rates]
+    lows = [r["low"] for r in rates]
+    closes = [r["close"] for r in rates]
+    atr = calc_atr(highs, lows, closes) or (highs[-1] - lows[-1])
+
+    _, pdir, _ = detect_candle_pattern(opens, highs, lows, closes)
+    swing_lows = find_swing_lows(lows)
+    swing_highs = find_swing_highs(highs)
+    buffer = atr * 0.15
+
+    if trade_type == "BUY":
+        candidates = [lows[-2], lows[-3]]
+        if swing_lows:
+            candidates.append(swing_lows[-1][1])
+        if pdir == "BUY":
+            candidates.append(lows[-1])
+        sl = min(candidates) - buffer
+        if sl >= entry_price:
+            sl = entry_price - atr * 1.2
+    else:
+        candidates = [highs[-2], highs[-3]]
+        if swing_highs:
+            candidates.append(swing_highs[-1][1])
+        if pdir == "SELL":
+            candidates.append(highs[-1])
+        sl = max(candidates) + buffer
+        if sl <= entry_price:
+            sl = entry_price + atr * 1.2
+
+    return sl
 
 
 def get_htf_atr(symbol, mt5_manager, period=14):
@@ -547,7 +757,27 @@ def analyze_symbol(symbol, mt5_manager):
     st_dir, _ = calc_supertrend(highs15, lows15, closes15)
     ichimoku = calc_ichimoku(highs15, lows15, closes15)
     pname, pdir, pbonus = detect_candle_pattern(opens15, highs15, lows15, closes15)
+    cname, cdir, cbonus = detect_chart_pattern(opens15, highs15, lows15, closes15)
+    bname, bdir, bbonus = detect_breakout(highs15, lows15, closes15, trend)
     ddir, dbonus = detect_rsi_divergence(closes15)
+
+    trend_struct = calc_trend_structure_score(
+        trend, adx_4h, adx_1h, closes15,
+        e8_l[-1], e21_l[-1], e50_l[-1], e200_l[-1],
+        st_dir, ichimoku, htf_aligned,
+    )
+
+    # Best M15 confirmation signal
+    m15_confirm_name = None
+    m15_confirm_dir = None
+    m15_confirm_bonus = 0
+    for name, direction, bonus in [
+        (pname, pdir, pbonus), (cname, cdir, cbonus), (bname, bdir, bbonus),
+    ]:
+        if direction == trend and bonus > m15_confirm_bonus:
+            m15_confirm_name = name
+            m15_confirm_dir = direction
+            m15_confirm_bonus = bonus
 
     score = calc_score(
         trend, adx_4h, adx_1h, rsi, stk, std,
@@ -556,8 +786,25 @@ def analyze_symbol(symbol, mt5_manager):
         bbu, bbl, bbm, pdir, pbonus,
         st_dir, ichimoku, htf_aligned, ddir, dbonus,
     )
+    # Chart pattern + breakout bonus
+    if cdir == trend and cbonus:
+        score = min(100, score + cbonus // 2)
+    if bdir == trend and bbonus:
+        score = min(100, score + bbonus // 2)
+    if trend_struct >= MIN_TREND_STRUCTURE:
+        score = min(100, score + 5)
 
-    trade_mode = "SCALP" if score < STRONG_SCORE else "HOLD"
+    trade_mode = "ELITE" if score >= STRONG_SCORE else "HOLD"
+    m15_aligned = (
+        (trend == "BUY" and e8_l[-1] > e21_l[-1] and closes15[-1] > closes15[-2]) or
+        (trend == "SELL" and e8_l[-1] < e21_l[-1] and closes15[-1] < closes15[-2])
+    )
+    m15_confirmed = (
+        (pdir == trend and pbonus >= 12) or
+        (cdir == trend and cbonus >= 20) or
+        (bdir == trend and bbonus >= 20) or
+        trend_struct >= MIN_TREND_STRUCTURE
+    )
 
     return {
         "symbol": symbol,
@@ -570,9 +817,20 @@ def analyze_symbol(symbol, mt5_manager):
         "adx_1h": adx_1h,
         "rsi": rsi,
         "htf_aligned": htf_aligned,
+        "m15_aligned": m15_aligned,
+        "m15_confirmed": m15_confirmed,
+        "trend_structure": trend_struct,
         "pattern_name": pname,
         "pattern_dir": pdir,
         "pattern_bonus": pbonus,
+        "chart_pattern_name": cname,
+        "chart_pattern_dir": cdir,
+        "chart_pattern_bonus": cbonus,
+        "breakout_name": bname,
+        "breakout_dir": bdir,
+        "breakout_bonus": bbonus,
+        "m15_confirm_name": m15_confirm_name,
+        "m15_confirm_dir": m15_confirm_dir,
         "tick": tick,
         "closes15": closes15,
         "e8": e8_l[-1],
@@ -582,24 +840,52 @@ def analyze_symbol(symbol, mt5_manager):
 
 
 def should_take_trade(analysis):
-    """Final gate — only trade when multiple confirmations align."""
+    """
+    Final gate — sirf 90%+ strong setups.
+    M15 par candle pattern, chart pattern, ya breakout confirm hona zaroori.
+    Trend structure 90+ bhi entry allow karta hai.
+    """
     if analysis.get("skip"):
         return False, "skip"
 
     score = analysis["score"]
-    if score < MIN_SCORE:
+    trend_struct = analysis.get("trend_structure", 0)
+
+    if score < MIN_SCORE and trend_struct < MIN_TREND_STRUCTURE:
         return False, "low_score"
 
-    if not analysis["htf_aligned"] and score < 75:
+    if not analysis["htf_aligned"]:
         return False, "htf_conflict"
 
-    pdir = analysis.get("pattern_dir")
-    if pdir and pdir != analysis["trend"] and score < 78:
-        return False, "pattern_conflict"
+    if analysis["adx_4h"] < MIN_ADX_4H:
+        return False, "weak_adx_4h"
 
-    # Require candle OR strong momentum for medium scores
-    if score < 75 and not analysis.get("pattern_name"):
-        if analysis["adx_4h"] < 20:
-            return False, "no_pattern_weak_adx"
+    if analysis["adx_1h"] < MIN_ADX_1H:
+        return False, "weak_adx_1h"
+
+    if not analysis.get("m15_aligned"):
+        return False, "m15_conflict"
+
+    # M15 confirmation mandatory — candle / chart / breakout / strong trend
+    if not analysis.get("m15_confirmed"):
+        return False, "no_m15_confirm"
+
+    pdir = analysis.get("pattern_dir")
+    cdir = analysis.get("chart_pattern_dir")
+    bdir = analysis.get("breakout_dir")
+    trend = analysis["trend"]
+
+    if pdir and pdir != trend:
+        return False, "pattern_conflict"
+    if cdir and cdir != trend:
+        return False, "chart_conflict"
+    if bdir and bdir != trend:
+        return False, "breakout_conflict"
+
+    rsi = analysis.get("rsi", 50)
+    if trend == "BUY" and rsi > 68:
+        return False, "rsi_overbought"
+    if trend == "SELL" and rsi < 32:
+        return False, "rsi_oversold"
 
     return True, "ok"

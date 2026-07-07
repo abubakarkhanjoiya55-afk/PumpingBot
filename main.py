@@ -26,16 +26,17 @@ from trading_engine import (
     TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
     SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
+    MARGIN_PROFIT_TRIGGER, MARGIN_SL_LOCK_PCT,
     ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
     get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
     calculate_lot, analyze_symbol, should_take_trade,
-    get_htf_atr, calc_margin_used, profit_to_price,
+    get_htf_atr, calc_margin_used, profit_to_price, calc_h1_sl,
 )
 
 ELITE_SCORE          = 90     # is se upar: TP ka wait, sirf SL trail ho
-MARGIN_PROFIT_MULT   = 2.0    # profit >= margin * 2 → jaldi book (score < 90)
-ELITE_SL_LOCK_PCT    = 0.70   # score >= 90: peak profit ka 70% broker SL par lock
-ELITE_MIN_PEAK       = 5.0    # itna peak profit banne ke baad hi SL lock start ho
+MARGIN_PROFIT_MULT   = MARGIN_PROFIT_TRIGGER  # margin ka 100% profit → SL lock
+ELITE_SL_LOCK_PCT    = MARGIN_SL_LOCK_PCT     # peak profit ka 70% broker SL par lock
+ELITE_MIN_PEAK       = 0.0    # margin-based trigger use hoga, fixed $ peak nahi
 
 import os
 SECRET_KEY = os.environ.get("SECRET_KEY", "goldbot-secret-key-2024")
@@ -66,7 +67,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.3.1"   # Railway deploy verify — curl /api should show this version
+API_VERSION = "3.4.0"   # Elite trading: 1H SL, M15 confirm, margin 70% lock
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -296,7 +297,12 @@ def close_pos(pos, reason=""):
             "type_filling": mt5_manager.ORDER_FILLING_IOC,
         }
         result = mt5_manager.order_send(request)
-        return result.retcode == mt5_manager.TRADE_RETCODE_DONE, pos.profit
+        if result.retcode != mt5_manager.TRADE_RETCODE_DONE:
+            return False, 0
+        ticket = _as_int_ticket(pos.ticket)
+        conn = mt5_manager
+        profit, _ = fetch_position_closed_profit(conn, ticket)
+        return True, profit if profit is not None else pos.profit
     except:
         return False, 0
 
@@ -656,12 +662,31 @@ def run_user_bot(user_id, login, password, server):
                 time.sleep(600)
                 continue
 
+            if daily_pnl_equity >= DAILY_PROFIT_TARGET:
+                print(f"[TARGET] 5% daily profit hit! (${daily_pnl_equity*100:.2f}%) — stopping for today")
+                close_all_positions(user_id, "DailyTarget5pct", balance)
+                day_locked_out = True
+                time.sleep(600)
+                continue
+
             bot_pos = get_bot_positions(user_id, mt5_manager)
 
             for pos in bot_pos:
                 current_profit = pos.profit
                 ticket         = _as_int_ticket(pos.ticket)
                 trade_type     = "BUY" if pos.type == 0 else "SELL"
+
+                # Per-trade max loss cap
+                max_loss_usd = balance * TRADE_MAX_LOSS_PCT
+                if current_profit < -max_loss_usd:
+                    tick = mt5_manager.symbol_info_tick(pos.symbol)
+                    done, profit = close_pos(pos, "MaxTradeLoss")
+                    if done and tick:
+                        cp = tick.bid if pos.type == 0 else tick.ask
+                        update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                        last_close_times[(user_id, pos.symbol)] = now
+                        print(f"[MAX LOSS] {pos.symbol} cut at ${profit:.2f}")
+                    continue
 
                 db = SessionLocal()
                 tr = db.query(Trade).filter(Trade.mt5_ticket == ticket).first()
@@ -686,7 +711,7 @@ def run_user_bot(user_id, login, password, server):
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
                                  (trade_type == "SELL" and current_trend == "BUY")
 
-                if trend_reversed:
+                if trend_reversed and current_profit <= 0:
                     tick = mt5_manager.symbol_info_tick(pos.symbol)
                     done, profit = close_pos(pos, "TrendExit")
                     if done and tick:
@@ -713,32 +738,14 @@ def run_user_bot(user_id, login, password, server):
                         elite_sl_locked.pop(ticket, None)
                     continue
 
-                # ── Munasib profit rule: agar profit margin se double ho jaye to book karo ──
-                # (score >= 90 wali "elite" trades ke liye ye rule skip — unko TP tak wait karne do)
-                if score < ELITE_SCORE and current_profit > 0:
-                    margin_used = calc_margin_used(trade_lot, pos.symbol, open_price, mt5_manager)
-                    if margin_used and margin_used > 0 and current_profit >= margin_used * MARGIN_PROFIT_MULT:
-                        tick = mt5_manager.symbol_info_tick(pos.symbol)
-                        done, profit = close_pos(pos, "DoubleMarginTP")
-                        if done and tick:
-                            cp = tick.bid if pos.type == 0 else tick.ask
-                            update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
-                            last_close_times[(user_id, pos.symbol)] = now
-                            get_platform_fee(profit, user_id, balance)
-                            print(f"[DOUBLE MARGIN TP] {pos.symbol} Margin:${margin_used:.2f} "
-                                  f"Profit:${profit:.2f} (2x+ margin — booked)")
-                            peak_profits.pop(ticket, None)
-                            locked_profits.pop(ticket, None)
-                            elite_sl_locked.pop(ticket, None)
-                        continue
-
-                # ── Elite trades (score >= 90): TP ka wait karo, sirf SL upar trail karo ──
-                if score >= ELITE_SCORE:
+                # ── Margin-based SL lock: profit >= 100% margin → SL 70% profit par lock ──
+                margin_used = calc_margin_used(trade_lot, pos.symbol, open_price, mt5_manager)
+                if margin_used and margin_used > 0 and current_profit > 0:
                     if current_profit > peak_profits.get(ticket, 0):
                         peak_profits[ticket] = current_profit
                     peak = peak_profits.get(ticket, 0)
 
-                    if peak >= ELITE_MIN_PEAK:
+                    if peak >= margin_used * MARGIN_PROFIT_MULT:
                         target_lock = peak * ELITE_SL_LOCK_PCT
                         new_sl = profit_to_price(open_price, trade_type, target_lock,
                                                   trade_lot, pos.symbol, mt5_manager)
@@ -753,15 +760,14 @@ def run_user_bot(user_id, login, password, server):
                                 ok = mt5_manager.modify_position(ticket, sl=new_sl)
                                 if ok:
                                     elite_sl_locked[ticket] = new_sl
-                                    print(f"[ELITE SL LOCK] {pos.symbol} ticket={ticket} "
-                                          f"SL→{new_sl:.5f} (locking 70% of peak ${peak:.2f})")
-
-                    # TP hit ho jaye to normal HoldTP se close ho jayega (neeche common logic)
+                                    print(f"[MARGIN SL LOCK] {pos.symbol} ticket={ticket} "
+                                          f"SL→{new_sl:.5f} (70% of peak ${peak:.2f}, "
+                                          f"margin ${margin_used:.2f})")
 
                 profit_target = get_profit_target(score, atr, pos.symbol, mt5_manager)
 
                 if score >= ELITE_SCORE:
-                    # Elite: sirf real TP ya trend/dead-momentum exit — koi internal early trail nahi
+                    # Elite: sirf real TP ya trend/dead-momentum exit — early close nahi
                     if current_profit >= profit_target:
                         tick = mt5_manager.symbol_info_tick(pos.symbol)
                         done, profit = close_pos(pos, "EliteTP")
@@ -902,11 +908,15 @@ def run_user_bot(user_id, login, password, server):
                 tick = analysis["tick"]
                 pname = analysis.get("pattern_name")
                 pbonus = analysis.get("pattern_bonus", 0)
+                cname = analysis.get("chart_pattern_name")
+                bname = analysis.get("breakout_name")
+                tstruct = analysis.get("trend_structure", 0)
+                confirm = analysis.get("m15_confirm_name") or cname or bname or pname
 
-                pinfo = f"| {pname}+{pbonus}" if pname else ""
+                pinfo = f"| {confirm}" if confirm else ""
                 print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
                       f"ADX4H:{adx_4h:.0f} ADX1H:{adx_1h:.0f} "
-                      f"RSI:{rsi:.0f} Score:{score} HTF:{analysis['htf_aligned']} {pinfo}")
+                      f"RSI:{rsi:.0f} Score:{score} Struct:{tstruct} HTF:{analysis['htf_aligned']} {pinfo}")
 
                 db = SessionLocal()
                 sig = Signal(
@@ -928,7 +938,9 @@ def run_user_bot(user_id, login, password, server):
                     continue
 
                 entry = tick.ask if trend == "BUY" else tick.bid
-                sl    = entry - atr if trend == "BUY" else entry + atr
+                sl    = calc_h1_sl(symbol, trend, entry, mt5_manager)
+                if sl is None:
+                    sl = entry - atr if trend == "BUY" else entry + atr
 
                 request = {
                     "action":       mt5_manager.TRADE_ACTION_DEAL,

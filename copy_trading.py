@@ -80,7 +80,8 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
                     continue
 
                 f_entry = tick.ask if trend == "BUY" else tick.bid
-                f_sl = f_entry - atr if trend == "BUY" else f_entry + atr
+                sl_dist = abs(entry - sl) if sl and entry else atr
+                f_sl = f_entry - sl_dist if trend == "BUY" else f_entry + sl_dist
 
                 request = {
                     "action": conn.TRADE_ACTION_DEAL,
