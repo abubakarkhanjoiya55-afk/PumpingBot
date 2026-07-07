@@ -13,7 +13,7 @@ echo "=== PumpingBot Deploy ==="
 if [ -n "$RAILWAY_TOKEN" ]; then
   echo "[Railway] Deploying service $RAILWAY_SERVICE_ID ..."
   if command -v railway >/dev/null 2>&1; then
-    RAILWAY_TOKEN="$RAILWAY_TOKEN" railway up --service "$RAILWAY_SERVICE_ID" --detach -y
+    RAILWAY_TOKEN="$RAILWAY_TOKEN" railway up --service "$RAILWAY_SERVICE_ID" --detach || \
   else
     curl -s -X POST https://backboard.railway.com/graphql/v2 \
       -H "Content-Type: application/json" \

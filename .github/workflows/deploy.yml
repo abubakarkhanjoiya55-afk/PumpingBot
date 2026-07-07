@@ -26,7 +26,11 @@ jobs:
             echo "::warning::RAILWAY_TOKEN secret missing — add it in GitHub repo Settings → Secrets"
             exit 0
           fi
-          railway up --service "$RAILWAY_SERVICE_ID" --detach -y
+          railway up --service "$RAILWAY_SERVICE_ID" --detach || \
+          curl -sf -X POST https://backboard.railway.com/graphql/v2 \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -d "{\"query\":\"mutation { serviceInstanceDeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\") }\"}"
 
   vercel:
     runs-on: ubuntu-latest
