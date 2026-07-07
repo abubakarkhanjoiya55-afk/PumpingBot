@@ -26,7 +26,7 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
                             master_lot, master_balance, entry, sl, trade_mode,
                             master_ticket=None, source="BOT"):
     """Place proportional copy on every active follower account."""
-    pool_get, pool_is_ready, SessionLocal, Trade, User = _get_pool_helpers()
+    pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
 
     db = SessionLocal()
     try:
@@ -126,7 +126,7 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
 
 def copy_close_to_followers(master_ticket, symbol):
     """When master closes a position, close matching follower positions."""
-    pool_get, pool_is_ready, SessionLocal, Trade, User = _get_pool_helpers()
+    pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
 
     db = SessionLocal()
     try:
