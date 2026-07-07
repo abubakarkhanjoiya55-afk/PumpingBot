@@ -59,6 +59,11 @@ export async function connectMT5(creds) {
   return data;
 }
 
+export async function disconnectMT5() {
+  const { data } = await api.post('/disconnect-mt5', null, { headers: authHeaders() });
+  return data;
+}
+
 export async function startBot() {
   const { data } = await api.post('/bot/start', null, { headers: authHeaders() });
   return data;

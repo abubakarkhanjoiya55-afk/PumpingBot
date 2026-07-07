@@ -75,6 +75,8 @@ const API = (() => {
     connectMT5: (mt5_login, mt5_password, mt5_server) =>
       request('POST', '/connect-mt5', { mt5_login, mt5_password, mt5_server }),
 
+    disconnectMT5: () => request('POST', '/disconnect-mt5'),
+
     // Bot
     startBot: () => request('POST', '/bot/start'),
     stopBot: () => request('POST', '/bot/stop'),

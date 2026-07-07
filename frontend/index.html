@@ -94,9 +94,11 @@
             <form id="mt5-form" class="mt5-form">
               <input type="number" id="mt5-login" placeholder="MT5 Login" required />
               <input type="password" id="mt5-password" placeholder="MT5 Password" required />
-              <input type="text" id="mt5-server" placeholder="Server (e.g. Exness-MT5Trial15)" required />
-              <button type="submit" class="btn btn-secondary">Connect MT5</button>
+              <input type="text" id="mt5-server" placeholder="Server (e.g. Exness-MT5Trial16)" required />
+              <button type="submit" class="btn btn-secondary" id="btn-connect-mt5">Connect MT5</button>
+              <button type="button" class="btn btn-danger hidden" id="btn-disconnect-mt5">Disconnect MT5</button>
             </form>
+            <p id="mt5-switch-hint" class="hint">Multiple accounts? Disconnect first, then connect another login.</p>
             <p id="mt5-status" class="hint"></p>
           </div>
           <div class="action-block">

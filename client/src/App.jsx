@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   login, register, setToken, getToken,
-  fetchDashboard, connectMT5, startBot, stopBot, API_URL,
+  fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
 } from './api';
 
 function fmt(n) {
@@ -97,6 +97,15 @@ export default function App() {
     const t = setInterval(refresh, 15000);
     return () => clearInterval(t);
   }, [authed, refresh]);
+
+  useEffect(() => {
+    if (!me?.mt5_connected) return;
+    setMt5(prev => ({
+      mt5_login: me.mt5_login != null ? String(me.mt5_login) : prev.mt5_login,
+      mt5_server: me.mt5_server || prev.mt5_server,
+      mt5_password: prev.mt5_password,
+    }));
+  }, [me?.mt5_login, me?.mt5_server, me?.mt5_connected]);
 
   const logout = () => { setToken(null); setAuthed(false); };
 
@@ -317,17 +326,48 @@ export default function App() {
         {page === 'mt5' && (
           <>
             <h1>MT5 Connection</h1>
+            <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
+              Multiple accounts? Pehle <strong>Disconnect</strong> karo, phir naya login connect karo.
+            </p>
             {me?.mt5_connected && (
               <div className="connected-card">
-                {me.mt5_ready ? '✅' : '⏳'} {me.mt5_ready ? 'Connected' : 'Syncing'}: {me.mt5_login} @ {me.mt5_server}
-                {!me.mt5_ready && (
-                  <p style={{ margin: '.5rem 0 0', fontSize: '.85rem', color: '#f0b90b' }}>
-                    MetaApi is connecting your account — balance may show $0 for 1–2 minutes.
-                  </p>
-                )}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+                  <div>
+                    {me.mt5_ready ? '✅' : '⏳'} {me.mt5_ready ? 'Connected' : 'Syncing'}: {me.mt5_login} @ {me.mt5_server}
+                    {!me.mt5_ready && (
+                      <p style={{ margin: '.5rem 0 0', fontSize: '.85rem', color: '#f0b90b' }}>
+                        MetaApi is connecting your account — balance may show $0 for 1–2 minutes.
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-disconnect"
+                    disabled={loading}
+                    onClick={async () => {
+                      if (!confirm(`Disconnect MT5 account ${me.mt5_login}?`)) return;
+                      setLoading(true);
+                      try {
+                        await disconnectMT5();
+                        setMt5({ mt5_login: '', mt5_password: '', mt5_server: '' });
+                        await refresh();
+                      } catch (ex) {
+                        alert(ex.response?.data?.detail || ex.message);
+                      }
+                      setLoading(false);
+                    }}
+                  >
+                    Disconnect MT5
+                  </button>
+                </div>
               </div>
             )}
-            {isFollower && (
+            {isFollower && !me?.mt5_connected && (
+              <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
+                Connect MT5, then press <strong>Start Bot</strong> on the dashboard to receive copied trades.
+              </p>
+            )}
+            {isFollower && me?.mt5_connected && (
               <p style={{ marginBottom: '1rem', color: '#aaa', fontSize: '.9rem' }}>
                 After connecting, press <strong>Start Bot</strong> on the dashboard to receive copied trades from the master account.
               </p>
@@ -341,6 +381,7 @@ export default function App() {
                   mt5_password: mt5.mt5_password,
                   mt5_server: mt5.mt5_server,
                 });
+                setMt5(prev => ({ ...prev, mt5_password: '' }));
                 await refresh();
               } catch (ex) {
                 alert(ex.response?.data?.detail || ex.message);
@@ -349,8 +390,10 @@ export default function App() {
             }}>
               <input placeholder="MT5 Login" value={mt5.mt5_login} onChange={e => setMt5({ ...mt5, mt5_login: e.target.value })} required />
               <input placeholder="MT5 Password" type="password" value={mt5.mt5_password} onChange={e => setMt5({ ...mt5, mt5_password: e.target.value })} required />
-              <input placeholder="Server" value={mt5.mt5_server} onChange={e => setMt5({ ...mt5, mt5_server: e.target.value })} required />
-              <button type="submit" disabled={loading}>{loading ? 'Connecting...' : 'Connect MT5'}</button>
+              <input placeholder="Server (e.g. Exness-MT5Trial16)" value={mt5.mt5_server} onChange={e => setMt5({ ...mt5, mt5_server: e.target.value })} required />
+              <button type="submit" disabled={loading}>
+                {loading ? 'Connecting...' : me?.mt5_connected ? 'Connect New Account' : 'Connect MT5'}
+              </button>
             </form>
           </>
         )}

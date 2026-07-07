@@ -95,6 +95,22 @@
         $('#mt5-server').value
       );
       showToast(data.message);
+      $('#mt5-password').value = '';
+      await refreshDashboard();
+    } catch (ex) {
+      showToast(ex.message, true);
+    }
+  });
+
+  $('#btn-disconnect-mt5').addEventListener('click', async () => {
+    const login = $('#mt5-login').value;
+    if (!confirm(`Disconnect MT5 account ${login || ''}?`)) return;
+    try {
+      const data = await API.disconnectMT5();
+      showToast(data.message);
+      $('#mt5-login').value = '';
+      $('#mt5-password').value = '';
+      $('#mt5-server').value = '';
       await refreshDashboard();
     } catch (ex) {
       showToast(ex.message, true);
@@ -181,6 +197,16 @@
     $('#mt5-status').textContent = m.mt5_connected
       ? `Connected: ${m.mt5_login} @ ${m.mt5_server}`
       : 'Enter your MT5 credentials to connect';
+
+    const connectBtn = $('#btn-connect-mt5');
+    const disconnectBtn = $('#btn-disconnect-mt5');
+    if (m.mt5_connected) {
+      connectBtn.textContent = 'Connect New Account';
+      disconnectBtn.classList.remove('hidden');
+    } else {
+      connectBtn.textContent = 'Connect MT5';
+      disconnectBtn.classList.add('hidden');
+    }
 
     $('#role-hint').textContent = m.role === 'master'
       ? 'Master account — your trades copy to all active followers.'

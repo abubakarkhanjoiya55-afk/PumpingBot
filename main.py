@@ -1495,6 +1495,11 @@ async def connect_mt5(creds: MT5Credentials,
     """
     print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login}")
 
+    if current_user.mt5_login and current_user.mt5_login != creds.mt5_login:
+        active_bots[current_user.id] = False
+        current_user.bot_active = False
+        print(f"[CONNECT] Switching account {current_user.mt5_login} → {creds.mt5_login}")
+
     if is_master_user(current_user):
         # ── Master: existing connection use karo ──────────────────────────
         metaapi_ready_event.clear()
@@ -1560,6 +1565,40 @@ async def connect_mt5(creds: MT5Credentials,
             "mt5_ready": True,
             "role":      "follower",
         }
+
+
+@app.post("/disconnect-mt5")
+def disconnect_mt5(current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Current MT5 account disconnect — doosra account connect karne ke liye."""
+    if not current_user.mt5_login:
+        raise HTTPException(400, "No MT5 account connected")
+
+    prev_login = current_user.mt5_login
+    prev_server = current_user.mt5_server
+
+    active_bots[current_user.id] = False
+    current_user.bot_active = False
+
+    if is_master_user(current_user):
+        metaapi_ready_event.clear()
+        mt5_manager._ready = False
+    else:
+        pool_remove(current_user.id)
+
+    current_user.mt5_login = None
+    current_user.mt5_password = None
+    current_user.mt5_server = None
+    current_user.metaapi_account_id = None
+    db.commit()
+
+    print(f"[DISCONNECT] {current_user.username} disconnected MT5 {prev_login}@{prev_server}")
+    return {
+        "message": "MT5 disconnected — ab doosra account connect kar sakte ho",
+        "mt5_connected": False,
+        "mt5_ready": False,
+    }
+
 
 # FIX: start_bot checks _ready before launching thread
 @app.post("/bot/start")
