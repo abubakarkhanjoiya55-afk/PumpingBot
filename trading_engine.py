@@ -4,16 +4,20 @@ Tuned for high win-rate scalping with strong-score position sizing.
 """
 
 # ─── Engine constants ─────────────────────────────────────────────────────────
-DAILY_MAX_LOSS_PCT   = 0.015   # 1.5% max daily loss
-DAILY_TRAIL_START    = 0.015   # lock profits after 1.5% daily gain
-DAILY_TRAIL_GAP      = 0.008   # trail gap 0.8%
-RISK_PER_TRADE_PCT   = 0.003   # 0.3% base risk per trade
-MAX_OPEN_TRADES      = 4       # total open trades (all symbols)
-MAX_TRADES_PER_SYMBOL = 3      # ek symbol par max 3 trades ek waqt
-MIN_SCORE            = 68      # only high-confidence entries
-STRONG_SCORE         = 82      # hold mode threshold
-MAX_SPREAD_POINTS    = 2000
-MIN_COOLDOWN_SEC     = 900     # 15 min — entry timeframe M15 ke saath align
+DAILY_MAX_LOSS_PCT    = 0.015   # 1.5% max daily loss
+DAILY_PROFIT_TARGET   = 0.05    # 5% daily target — hit hone par bot ruk jata hai
+DAILY_TRAIL_START     = 0.03    # 3% ke baad profit lock
+DAILY_TRAIL_GAP       = 0.01    # 1% trail gap
+RISK_PER_TRADE_PCT    = 0.003   # 0.3% base risk per trade
+MAX_OPEN_TRADES       = 3       # kam trades = zyada focus
+MAX_TRADES_PER_SYMBOL = 1       # ek symbol = ek trade (accuracy)
+MIN_SCORE             = 74      # sirf strong signals
+MIN_ADX_4H            = 22      # trend confirm
+MIN_ADX_1H            = 20
+STRONG_SCORE          = 82
+MAX_SPREAD_POINTS     = 2000
+MIN_COOLDOWN_SEC      = 900     # 15 min
+TRADE_MAX_LOSS_PCT    = 0.006   # ek trade par max 0.6% account loss
 SCALP_ATR_MULT       = 0.45
 HOLD_MIN_PROFIT      = 8.0
 HOLD_TRAIL_PCT       = 0.72    # lock 72% of peak profit

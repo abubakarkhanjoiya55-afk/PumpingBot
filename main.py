@@ -21,8 +21,9 @@ from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account,
 from db_migrate import migrate_schema
 from copy_trading import copy_trade_to_followers, start_copy_watcher
 from trading_engine import (
-    DAILY_MAX_LOSS_PCT, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
+    DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
+    TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
     SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
     ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
@@ -877,7 +878,7 @@ def run_user_bot(user_id, login, password, server):
                     continue
 
                 sym_pos = [p for p in bot_pos if p.symbol == symbol]
-                if sym_pos:
+                if len(sym_pos) >= MAX_TRADES_PER_SYMBOL:
                     continue
 
                 analysis = analyze_symbol(symbol, mt5_manager)
