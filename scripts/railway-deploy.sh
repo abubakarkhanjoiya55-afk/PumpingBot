@@ -26,8 +26,16 @@ echo "=== Railway deploy ==="
 
 try_railway_up() {
   echo "Trying railway up (uploads repo code directly) ..."
-  railway up --project "$PROJECT_ID" --detach 2>&1 && return 0
-  railway up --detach 2>&1 && return 0
+  for svc in web Web pumpingbot PumpingBot backend api; do
+    echo "  → service=$svc"
+    if railway up --service "$svc" --detach 2>&1; then
+      return 0
+    fi
+  done
+  if [ -n "${RAILWAY_ENVIRONMENT_ID:-}" ]; then
+    railway up --project "$PROJECT_ID" --environment "$RAILWAY_ENVIRONMENT_ID" --detach 2>&1 && return 0
+  fi
+  railway up --project "$PROJECT_ID" --environment production --detach 2>&1 && return 0
   return 1
 }
 
@@ -85,12 +93,10 @@ if echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(
   exit 0
 fi
 
-echo "GraphQL deploy failed — trying railway up (uploads repo code) ..."
-if command -v railway >/dev/null 2>&1; then
-  railway up --service "$SERVICE_ID" --environment "$ENV_ID" --detach
-  exit 0
-fi
+echo "GraphQL deploy failed — trying railway up ..."
+try_railway_up && exit 0
 
 echo "All deploy methods failed."
-echo "Tip: use Account token from https://railway.app/account/tokens (No Team), not Project token."
+echo "Fix: GitHub secret RAILWAY_TOKEN must be Account token from https://railway.app/account/tokens"
+echo "     Select Team = 'No Team' when creating. Project tokens do NOT work for deploy."
 exit 1
