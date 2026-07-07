@@ -202,6 +202,12 @@ export default function App() {
               </div>
             </div>
 
+            {!me?.mt5_connected && (
+              <div className="warn-banner">
+                ⚠️ Pehle <strong>MT5</strong> page se account connect karo, phir Start Bot dabao.
+              </div>
+            )}
+
             <div className="bot-bar">
               <div>
                 <div className="bot-status">

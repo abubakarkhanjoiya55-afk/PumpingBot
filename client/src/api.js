@@ -1,8 +1,16 @@
 import axios from 'axios';
 
-// Same Railway deploy = same origin. Vercel pe VITE_API_URL set karo.
-const API_URL = import.meta.env.VITE_API_URL
-  || (typeof window !== 'undefined' ? window.location.origin : 'https://web-production-26ef9.up.railway.app');
+const RAILWAY_API = 'https://web-production-26ef9.up.railway.app';
+
+function resolveApiUrl() {
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  if (typeof window !== 'undefined' && window.location.hostname.includes('railway.app')) {
+    return window.location.origin;
+  }
+  return RAILWAY_API;
+}
+
+const API_URL = resolveApiUrl();
 
 const api = axios.create({ baseURL: API_URL });
 

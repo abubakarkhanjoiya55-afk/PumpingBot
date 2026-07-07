@@ -35,6 +35,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .btn-start:disabled { opacity: .45; cursor: not-allowed; }
 .badge-on { background: rgba(0,255,136,.15); color: #00ff88; }
 .badge-off { background: rgba(255,71,87,.15); color: #ff4757; }
+.warn-banner { background: rgba(240,185,11,.12); border: 1px solid #f0b90b; color: #f0b90b; padding: .75rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: .9rem; }
 .btn-logout { background: transparent; border: 1px solid #444; color: #aaa; padding: .4rem .8rem; border-radius: 6px; cursor: pointer; margin-left: auto; }
 
 .table-container { background: #1a1d27; border: 1px solid #2a2d3a; border-radius: 10px; overflow: hidden; }
