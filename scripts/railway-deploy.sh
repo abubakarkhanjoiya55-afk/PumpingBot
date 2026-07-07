@@ -24,20 +24,22 @@ gql() {
 
 echo "=== Railway deploy ==="
 
+try_railway_up() {
+  echo "Trying railway up (uploads repo code directly) ..."
+  railway up --project "$PROJECT_ID" --detach 2>&1 && return 0
+  railway up --detach 2>&1 && return 0
+  return 1
+}
+
 # Resolve service + environment IDs when only project ID is known
 if [ -z "$SERVICE_ID" ] || [ -z "$ENV_ID" ]; then
   echo "Looking up services in project $PROJECT_ID ..."
   LOOKUP=$(gql "{\"query\":\"query { project(id: \\\"$PROJECT_ID\\\") { id name environments { edges { node { id name } } } services { edges { node { id name } } } } }\"}")
-  echo "$LOOKUP" | python3 -c "
-import json, sys, os
+  if echo "$LOOKUP" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(1 if d.get('errors') else 0)" 2>/dev/null; then
+    echo "$LOOKUP" | python3 -c "
+import json, sys
 data = json.load(sys.stdin)
-if data.get('errors'):
-    print('GraphQL errors:', data['errors'])
-    sys.exit(1)
-proj = data.get('data', {}).get('project')
-if not proj:
-    print('Project not found — check RAILWAY_PROJECT_ID and token type')
-    sys.exit(1)
+proj = data['data']['project']
 print('Project:', proj.get('name'), proj.get('id'))
 services = [e['node'] for e in proj.get('services', {}).get('edges', [])]
 envs = [e['node'] for e in proj.get('environments', {}).get('edges', [])]
@@ -45,23 +47,26 @@ for s in services:
     print('  Service:', s['name'], s['id'])
 for e in envs:
     print('  Environment:', e['name'], e['id'])
-if not services:
-    sys.exit(1)
-# Pick first web-like service or first service
 pick = services[0]
 for s in services:
     if s['name'].lower() in ('web', 'pumpingbot', 'backend', 'api'):
         pick = s
         break
-env = envs[0] if envs else None
-if not env:
-    sys.exit(1)
+env = envs[0]
 open('/tmp/railway_ids.env', 'w').write(f\"SERVICE_ID={pick['id']}\\nENV_ID={env['id']}\\n\")
 print('Selected service:', pick['name'], pick['id'])
 print('Selected environment:', env['name'], env['id'])
 "
-  # shellcheck disable=SC1091
-  source /tmp/railway_ids.env
+    # shellcheck disable=SC1091
+    source /tmp/railway_ids.env
+  else
+    echo "$LOOKUP" | python3 -m json.tool 2>/dev/null || echo "$LOOKUP"
+    echo "::warning::GraphQL lookup failed (Not Authorized = wrong token type)"
+    echo "Use Account token from https://railway.app/account/tokens (Team: No Team)"
+    try_railway_up && exit 0
+    echo "Deploy failed — update RAILWAY_TOKEN to Account token (not Project token)"
+    exit 1
+  fi
 fi
 
 if [ -z "$SERVICE_ID" ] || [ -z "$ENV_ID" ]; then
