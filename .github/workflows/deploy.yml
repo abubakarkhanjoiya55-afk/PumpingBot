@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  RAILWAY_SERVICE_ID: c2f246da-a5ec-4432-ad4e-925438b85982
+  RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
   VITE_API_URL: https://web-production-6a35f.up.railway.app
 
 jobs:
@@ -21,16 +21,16 @@ jobs:
       - name: Deploy backend to Railway
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+          RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "::warning::RAILWAY_TOKEN secret missing — add it in GitHub repo Settings → Secrets"
+            echo "::warning::RAILWAY_TOKEN secret missing"
             exit 0
           fi
-          railway up --service "$RAILWAY_SERVICE_ID" --detach || \
-          curl -sf -X POST https://backboard.railway.com/graphql/v2 \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -d "{\"query\":\"mutation { serviceInstanceDeploy(serviceId: \\\"$RAILWAY_SERVICE_ID\\\") }\"}"
+          chmod +x scripts/railway-deploy.sh
+          ./scripts/railway-deploy.sh
 
   vercel:
     runs-on: ubuntu-latest
