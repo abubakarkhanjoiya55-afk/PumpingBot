@@ -8,25 +8,30 @@ DAILY_MAX_LOSS_PCT    = 0.015   # 1.5% max daily loss
 DAILY_PROFIT_TARGET   = 0.05    # 5% daily target — hit hone par bot ruk jata hai
 DAILY_TRAIL_START     = 0.03    # 3% ke baad profit lock
 DAILY_TRAIL_GAP       = 0.01    # 1% trail gap
-RISK_PER_TRADE_PCT    = 0.007   # 0.7% base risk — meaningful profit per trade
-MAX_OPEN_TRADES       = 5       # 3–5 active trades target
-MAX_TRADES_PER_SYMBOL = 1       # ek symbol = ek trade
-MIN_SCORE             = 76      # technical score minimum
-MIN_TREND_STRUCTURE   = 70      # trend structure minimum
-MIN_EFFECTIVE_SCORE   = 74      # avg(score, struct) — balanced gate
-MIN_CONFLUENCE        = 5       # kitne indicators ek saath agree karte hain
-MIN_ADX_4H            = 18      # trend confirm (thoda relaxed)
-MIN_ADX_1H            = 15
-STRONG_SCORE          = 85      # elite mode + higher lot + trail
-MARGIN_PROFIT_TRIGGER = 0.8     # margin ka 80% profit → SL lock start
-MARGIN_SL_LOCK_PCT    = 0.65    # locked profit = 65% of peak
+RISK_PER_TRADE_PCT    = 0.004   # 0.4% risk — loss control
+MAX_OPEN_TRADES       = 3       # 3 quality trades max
+MAX_TRADES_PER_SYMBOL = 1
+MIN_SCORE             = 82      # strong technical minimum
+MIN_TREND_STRUCTURE   = 78      # strong structure minimum
+MIN_EFFECTIVE_SCORE   = 80      # min(score, struct) — dono strong
+MIN_CONFLUENCE        = 6       # 6+ indicators agree
+MIN_ADX_4H            = 22      # mandatory trend
+MIN_ADX_1H            = 18
+STRONG_SCORE          = 86
+MARGIN_PROFIT_TRIGGER = 0.7
+MARGIN_SL_LOCK_PCT    = 0.70
 MAX_SPREAD_POINTS     = 2000
-MIN_COOLDOWN_SEC      = 240     # 4 min same symbol cooldown
-TRADE_MAX_LOSS_PCT    = 0.008   # ek trade par max 0.8% account loss
-SCALP_ATR_MULT       = 0.85    # bigger scalp targets
-HOLD_MIN_PROFIT      = 4.0     # $4+ par trail shuru
-HOLD_TRAIL_PCT       = 0.65    # lock 65% of peak profit
-SCAN_INTERVAL_SEC    = 25      # har 25 sec scan — zyada opportunities
+MIN_COOLDOWN_SEC      = 480     # 8 min cooldown
+LOSS_COOLDOWN_SEC     = 900     # loss ke baad 15 min
+TRADE_MAX_LOSS_PCT    = 0.004   # max 0.4% account per trade
+EARLY_LOSS_CUT_PCT    = 0.0025  # 0.25% pe jaldi cut
+STALE_LOSS_MINUTES    = 6       # 6 min loss mein → close
+BREAKEVEN_PROFIT_USD  = 3.0     # $3+ profit → SL breakeven
+SCALP_ATR_MULT       = 0.65
+HOLD_MIN_PROFIT      = 5.0
+HOLD_TRAIL_PCT       = 0.70
+SCAN_INTERVAL_SEC    = 35
+SL_ATR_TIGHTEN        = 0.85    # SL thoda tight
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,
@@ -433,7 +438,7 @@ def calc_h1_sl(symbol, trade_type, entry_price, mt5_manager):
         atr = get_htf_atr(symbol, mt5_manager)
         if not atr:
             return None
-        return entry_price - atr * 1.2 if trade_type == "BUY" else entry_price + atr * 1.2
+        return entry_price - atr * SL_ATR_TIGHTEN if trade_type == "BUY" else entry_price + atr * SL_ATR_TIGHTEN
 
     opens = [r["open"] for r in rates]
     highs = [r["high"] for r in rates]
@@ -454,7 +459,7 @@ def calc_h1_sl(symbol, trade_type, entry_price, mt5_manager):
             candidates.append(lows[-1])
         sl = min(candidates) - buffer
         if sl >= entry_price:
-            sl = entry_price - atr * 1.2
+            sl = entry_price - atr * SL_ATR_TIGHTEN
     else:
         candidates = [highs[-2], highs[-3]]
         if swing_highs:
@@ -463,7 +468,7 @@ def calc_h1_sl(symbol, trade_type, entry_price, mt5_manager):
             candidates.append(highs[-1])
         sl = max(candidates) + buffer
         if sl <= entry_price:
-            sl = entry_price + atr * 1.2
+            sl = entry_price + atr * SL_ATR_TIGHTEN
 
     return sl
 
@@ -718,16 +723,16 @@ def count_indicator_confluence(trend, htf_aligned, adx_4h, adx_1h, rsi, stoch_k,
 
 
 def get_risk_multiplier(score):
-    """Strong score = higher margin allocation (scaled lot)."""
+    """Strong score = higher lot — conservative base."""
     if score >= 92:
-        return 5.0
-    if score >= 85:
-        return 4.0
-    if score >= 78:
-        return 3.0
-    if score >= 72:
-        return 2.2
-    return 1.5
+        return 3.5
+    if score >= 86:
+        return 2.8
+    if score >= 80:
+        return 2.0
+    if score >= 74:
+        return 1.5
+    return 1.0
 
 
 def get_profit_target(score, atr, symbol, mt5_manager):
@@ -862,16 +867,14 @@ def analyze_symbol(symbol, mt5_manager):
 
     trade_mode = "ELITE" if score >= STRONG_SCORE else "SCALP"
     m15_aligned = (
-        (trend == "BUY" and e8_l[-1] > e21_l[-1]) or
-        (trend == "SELL" and e8_l[-1] < e21_l[-1]) or
-        confluence >= MIN_CONFLUENCE + 1
+        (trend == "BUY" and e8_l[-1] > e21_l[-1] and closes15[-1] > closes15[-2]) or
+        (trend == "SELL" and e8_l[-1] < e21_l[-1] and closes15[-1] < closes15[-2])
     )
     m15_confirmed = (
-        (pdir == trend and pbonus >= 8) or
-        (cdir == trend and cbonus >= 12) or
-        (bdir == trend and bbonus >= 12) or
-        trend_struct >= MIN_TREND_STRUCTURE or
-        confluence >= MIN_CONFLUENCE
+        (pdir == trend and pbonus >= 12) or
+        (cdir == trend and cbonus >= 18) or
+        (bdir == trend and bbonus >= 18) or
+        (trend_struct >= MIN_TREND_STRUCTURE and confluence >= MIN_CONFLUENCE)
     )
 
     return {
@@ -909,13 +912,13 @@ def analyze_symbol(symbol, mt5_manager):
 
 
 def trade_eligible(analysis):
-    """Multi-indicator confluence gate — zyada trades, strong setups."""
+    """Win-rate focused gate — kam trades, strong confluence, HTF mandatory."""
     if analysis.get("skip"):
         return False, "skip"
 
     score = analysis["score"]
     trend_struct = analysis.get("trend_structure", 0)
-    effective = (score + trend_struct) // 2
+    effective = min(score, trend_struct)
     confluence = analysis.get("confluence", 0)
 
     if effective < MIN_EFFECTIVE_SCORE:
@@ -927,14 +930,13 @@ def trade_eligible(analysis):
     if confluence < MIN_CONFLUENCE:
         return False, f"confluence_{confluence}_need_{MIN_CONFLUENCE}"
 
-    # HTF conflict allowed jab confluence bahut strong ho
-    if not analysis["htf_aligned"] and confluence < MIN_CONFLUENCE + 2:
+    if not analysis["htf_aligned"]:
         return False, "htf_conflict"
 
-    if analysis["adx_4h"] < MIN_ADX_4H and confluence < MIN_CONFLUENCE + 1:
+    if analysis["adx_4h"] < MIN_ADX_4H:
         return False, "weak_adx_4h"
 
-    if analysis["adx_1h"] < MIN_ADX_1H and confluence < MIN_CONFLUENCE + 1:
+    if analysis["adx_1h"] < MIN_ADX_1H:
         return False, "weak_adx_1h"
 
     if not analysis.get("m15_aligned"):
@@ -948,18 +950,17 @@ def trade_eligible(analysis):
     bdir = analysis.get("breakout_dir")
     trend = analysis["trend"]
 
-    # Sirf strong opposing patterns block karen
-    if pdir and pdir != trend and analysis.get("pattern_bonus", 0) >= 15:
+    if pdir and pdir != trend and analysis.get("pattern_bonus", 0) >= 12:
         return False, "pattern_conflict"
-    if cdir and cdir != trend and analysis.get("chart_pattern_bonus", 0) >= 18:
+    if cdir and cdir != trend and analysis.get("chart_pattern_bonus", 0) >= 15:
         return False, "chart_conflict"
-    if bdir and bdir != trend and analysis.get("breakout_bonus", 0) >= 18:
+    if bdir and bdir != trend and analysis.get("breakout_bonus", 0) >= 15:
         return False, "breakout_conflict"
 
     rsi = analysis.get("rsi", 50)
-    if trend == "BUY" and rsi > 75:
+    if trend == "BUY" and rsi > 68:
         return False, "rsi_overbought"
-    if trend == "SELL" and rsi < 25:
+    if trend == "SELL" and rsi < 32:
         return False, "rsi_oversold"
 
     return True, "ok"

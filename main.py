@@ -24,6 +24,7 @@ from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
     MIN_EFFECTIVE_SCORE, MIN_TREND_STRUCTURE, MIN_CONFLUENCE, SCAN_INTERVAL_SEC,
+    EARLY_LOSS_CUT_PCT, STALE_LOSS_MINUTES, BREAKEVEN_PROFIT_USD, LOSS_COOLDOWN_SEC,
     TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
     SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
@@ -68,7 +69,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.6.0"   # Active mode: 5 trades, bigger lots, confluence combo
+API_VERSION = "3.7.0"   # Loss protection: tight entries + fast loss cut
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -397,6 +398,21 @@ def backfill_closed_trade_profit(conn, trade, db=None, commit=False):
         db.commit()
     return True
 
+def _set_symbol_cooldown(user_id, symbol, now, lost_money=False):
+    """Loss ke baad zyada cooldown — dubara jaldi mat lagao."""
+    last_close_times[(user_id, symbol)] = now
+    if lost_money:
+        last_close_times[(user_id, symbol, "loss")] = now
+
+
+def _symbol_on_loss_cooldown(user_id, symbol, now):
+    """15 min block after a losing close on this symbol."""
+    t = last_close_times.get((user_id, symbol, "loss"))
+    if t and (now - t).total_seconds() < LOSS_COOLDOWN_SEC:
+        return True, int(LOSS_COOLDOWN_SEC - (now - t).total_seconds())
+    return False, 0
+
+
 def get_open_bot_tickets(user_id):
     db = SessionLocal()
     try:
@@ -678,15 +694,28 @@ def run_user_bot(user_id, login, password, server):
                 ticket         = _as_int_ticket(pos.ticket)
                 trade_type     = "BUY" if pos.type == 0 else "SELL"
 
+                early_loss_usd = balance * EARLY_LOSS_CUT_PCT
+                max_loss_usd   = balance * TRADE_MAX_LOSS_PCT
+
+                # Jaldi loss cut — chhota loss bada mat banao
+                if current_profit < -early_loss_usd:
+                    tick = mt5_manager.symbol_info_tick(pos.symbol)
+                    done, profit = close_pos(pos, "EarlyLossCut")
+                    if done and tick:
+                        cp = tick.bid if pos.type == 0 else tick.ask
+                        update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                        _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=True)
+                        print(f"[EARLY CUT] {pos.symbol} loss ${profit:.2f}")
+                    continue
+
                 # Per-trade max loss cap
-                max_loss_usd = balance * TRADE_MAX_LOSS_PCT
                 if current_profit < -max_loss_usd:
                     tick = mt5_manager.symbol_info_tick(pos.symbol)
                     done, profit = close_pos(pos, "MaxTradeLoss")
                     if done and tick:
                         cp = tick.bid if pos.type == 0 else tick.ask
                         update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
-                        last_close_times[(user_id, pos.symbol)] = now
+                        _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=True)
                         print(f"[MAX LOSS] {pos.symbol} cut at ${profit:.2f}")
                     continue
 
@@ -695,7 +724,37 @@ def run_user_bot(user_id, login, password, server):
                 score      = tr.score if tr else 60
                 trade_lot  = tr.lot if tr else getattr(pos, "volume", 0)
                 open_price = tr.open_price if tr else getattr(pos, "openPrice", 0)
+                opened_at  = tr.opened_at if tr else None
                 db.close()
+
+                # 6+ minute loss → band karo, hope mat rakho
+                if current_profit < 0 and opened_at:
+                    held_min = (now - opened_at).total_seconds() / 60
+                    if held_min >= STALE_LOSS_MINUTES:
+                        tick = mt5_manager.symbol_info_tick(pos.symbol)
+                        done, profit = close_pos(pos, "StaleLoss")
+                        if done and tick:
+                            cp = tick.bid if pos.type == 0 else tick.ask
+                            update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
+                            _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=True)
+                            print(f"[STALE LOSS] {pos.symbol} {held_min:.0f}min ${profit:.2f}")
+                        continue
+
+                # $3+ profit → breakeven SL broker pe lock
+                if current_profit >= BREAKEVEN_PROFIT_USD and open_price:
+                    be_sl = profit_to_price(open_price, trade_type, 0.5,
+                                            trade_lot, pos.symbol, mt5_manager)
+                    if be_sl is not None:
+                        last_be = elite_sl_locked.get(ticket)
+                        improves = (
+                            last_be is None or
+                            (trade_type == "BUY" and be_sl > last_be) or
+                            (trade_type == "SELL" and be_sl < last_be)
+                        )
+                        if improves:
+                            if mt5_manager.modify_position(ticket, sl=be_sl):
+                                elite_sl_locked[ticket] = be_sl
+                                print(f"[BREAKEVEN SL] {pos.symbol} ticket={ticket}")
 
                 # SL/TP ab 1H volatility ke hisab se — entry timeframe ka tight ATR nahi
                 atr = get_htf_atr(pos.symbol, mt5_manager)
@@ -713,13 +772,13 @@ def run_user_bot(user_id, login, password, server):
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
                                  (trade_type == "SELL" and current_trend == "BUY")
 
-                if trend_reversed and current_profit <= 0:
+                if trend_reversed and current_profit < HOLD_MIN_PROFIT:
                     tick = mt5_manager.symbol_info_tick(pos.symbol)
                     done, profit = close_pos(pos, "TrendExit")
                     if done and tick:
                         cp = tick.bid if pos.type == 0 else tick.ask
                         update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
-                        last_close_times[(user_id, pos.symbol)] = now
+                        _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=(profit < 0))
                         status = "Profit" if profit > 0 else "Loss cut"
                         print(f"[TREND EXIT] {pos.symbol} {status}: ${profit:.2f}")
                         locked_profits.pop(ticket, None)
@@ -733,7 +792,7 @@ def run_user_bot(user_id, login, password, server):
                     if done and tick:
                         cp = tick.bid if pos.type == 0 else tick.ask
                         update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
-                        last_close_times[(user_id, pos.symbol)] = now
+                        _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=True)
                         print(f"[DEAD EXIT] {pos.symbol} Loss cut: ${profit:.2f}")
                         locked_profits.pop(ticket, None)
                         peak_profits.pop(ticket, None)
@@ -889,6 +948,11 @@ def run_user_bot(user_id, login, password, server):
                     print(f"[SKIP] {symbol} — cooldown {remaining}s left")
                     continue
 
+                on_loss_cd, loss_rem = _symbol_on_loss_cooldown(user_id, symbol, now)
+                if on_loss_cd:
+                    print(f"[SKIP] {symbol} — loss cooldown {loss_rem}s left")
+                    continue
+
                 sym_pos = [p for p in bot_pos if p.symbol == symbol]
                 if len(sym_pos) >= MAX_TRADES_PER_SYMBOL:
                     print(f"[SKIP] {symbol} — bot trade already open on symbol")
@@ -918,7 +982,7 @@ def run_user_bot(user_id, login, password, server):
                 cname = analysis.get("chart_pattern_name")
                 bname = analysis.get("breakout_name")
                 tstruct = analysis.get("trend_structure", 0)
-                effective = (score + tstruct) // 2
+                effective = min(score, tstruct)
                 confluence = analysis.get("confluence", 0)
                 confirm = analysis.get("m15_confirm_name") or cname or bname or pname
 
@@ -994,7 +1058,7 @@ def run_user_bot(user_id, login, password, server):
                     bot_pos = get_bot_positions(user_id, mt5_manager)
                 else:
                     print(f"[FAIL] {symbol}: retcode={result.retcode}")
-                    last_close_times[(user_id, symbol)] = now
+                    _set_symbol_cooldown(user_id, symbol, now, lost_money=False)
 
                 time.sleep(1)
 
