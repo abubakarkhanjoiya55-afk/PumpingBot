@@ -11,8 +11,8 @@ DAILY_TRAIL_GAP       = 0.01
 RISK_PER_TRADE_PCT    = 0.004
 MAX_OPEN_TRADES       = 3
 MAX_TRADES_PER_SYMBOL = 1
-MIN_BREAKOUT_SCORE    = 45      # combined breakout strength minimum
-STRONG_SCORE          = 75      # strong multi-TF breakout
+MIN_BREAKOUT_SCORE    = 20      # M15 breakout akela kaafi
+STRONG_SCORE          = 60      # H1/H4 bhi confirm hon to strong
 MIN_SCORE             = MIN_BREAKOUT_SCORE
 MIN_TREND_STRUCTURE   = 0       # legacy — indicators removed
 MIN_EFFECTIVE_SCORE   = MIN_BREAKOUT_SCORE
@@ -56,10 +56,12 @@ TRAILING_LEVELS = [
 ]
 
 BREAKOUT_LOOKBACK = {
-    "M15": 20,
+    "M15": 15,
     "H1":  24,
     "H4":  30,
 }
+
+M15_FRESH_BARS = 4   # is window ke andar breakout fresh maana jayega
 
 
 # ─── Price utilities (ATR sirf SL buffer ke liye — entry signal nahi) ─────────
@@ -181,13 +183,10 @@ def detect_htf_candle_patterns(symbol, mt5_manager):
     return patterns
 
 
-# ─── Breakout detection (M15 / H1 / H4) ───────────────────────────────────────
+# ─── Breakout detection (M15 live + H1/H4 bonus) ────────────────────────────────
 
-def detect_breakout(highs, lows, closes, lookback=20, min_body_ratio=0.55):
-    """
-    Range breakout — returns (name, direction, strength, levels).
-    levels: recent_high, recent_low, range_height, breakout_level
-    """
+def detect_breakout(highs, lows, closes, lookback=20, min_body_ratio=0.30):
+    """Closed-candle range breakout — H1/H4 bonus ke liye."""
     empty_levels = {"recent_high": 0, "recent_low": 0, "range_height": 0, "breakout_level": 0}
     if len(closes) < lookback + 2:
         return None, None, 0, empty_levels
@@ -221,20 +220,98 @@ def detect_breakout(highs, lows, closes, lookback=20, min_body_ratio=0.55):
     return None, None, 0, levels
 
 
+def detect_m15_breakout_live(highs, lows, closes, live_bid, live_ask, lookback=15):
+    """
+    M15 live breakout — tick price se turant detect.
+    Breakout milte hi trade: forming candle cross ya last 4 bars mein fresh cross.
+    """
+    empty_levels = {"recent_high": 0, "recent_low": 0, "range_height": 0, "breakout_level": 0}
+    if len(closes) < lookback + 3:
+        return None, None, 0, empty_levels
+
+    # current forming candle ko range se bahar rakho
+    recent_high = max(highs[-lookback - 1:-1])
+    recent_low = min(lows[-lookback - 1:-1])
+    range_height = max(recent_high - recent_low, 0.0001)
+    last_closed = closes[-2]
+
+    levels = {
+        "recent_high": recent_high,
+        "recent_low": recent_low,
+        "range_height": range_height,
+        "breakout_level": recent_high,
+    }
+
+    def _fresh_bull_cross():
+        if live_ask <= recent_high and highs[-1] <= recent_high:
+            return False
+        # abhi live/forming candle break ho rahi hai
+        if (live_ask > recent_high or highs[-1] > recent_high) and last_closed <= recent_high:
+            return True
+        # pichli 1-4 band hui candles mein cross
+        for i in range(2, min(M15_FRESH_BARS + 2, len(closes))):
+            if closes[-i] > recent_high and closes[-i - 1] <= recent_high:
+                return True
+        return False
+
+    def _fresh_bear_cross():
+        if live_bid >= recent_low and lows[-1] >= recent_low:
+            return False
+        if (live_bid < recent_low or lows[-1] < recent_low) and last_closed >= recent_low:
+            return True
+        for i in range(2, min(M15_FRESH_BARS + 2, len(closes))):
+            if closes[-i] < recent_low and closes[-i - 1] >= recent_low:
+                return True
+        return False
+
+    if _fresh_bull_cross():
+        pierce = max(live_ask - recent_high, highs[-1] - recent_high, 0)
+        strength = 28 + min(22, int(pierce / max(range_height * 0.05, 0.00001)))
+        levels["breakout_level"] = recent_high
+        return "M15 Bullish Breakout", "BUY", min(strength, 50), levels
+
+    if _fresh_bear_cross():
+        pierce = max(recent_low - live_bid, recent_low - lows[-1], 0)
+        strength = 28 + min(22, int(pierce / max(range_height * 0.05, 0.00001)))
+        levels["breakout_level"] = recent_low
+        return "M15 Bearish Breakout", "SELL", min(strength, 50), levels
+
+    return None, None, 0, levels
+
+
 def detect_tf_breakout(ohlc, lookback):
     if ohlc is None:
         return None, None, 0, {}
     return detect_breakout(ohlc["highs"], ohlc["lows"], ohlc["closes"], lookback=lookback)
 
 
-def get_multi_tf_breakouts(symbol, mt5_manager):
-    """M15, H1, H4 breakouts — trade sirf inhi par."""
+def get_multi_tf_breakouts(symbol, mt5_manager, tick=None):
+    """M15 live breakout primary; H1/H4 sirf bonus score."""
     results = {}
     tf_config = [
-        ("M15", mt5_manager.TIMEFRAME_M15, BREAKOUT_LOOKBACK["M15"], 120),
         ("H1",  mt5_manager.TIMEFRAME_H1,  BREAKOUT_LOOKBACK["H1"],  80),
         ("H4",  mt5_manager.TIMEFRAME_H4,  BREAKOUT_LOOKBACK["H4"],  60),
     ]
+    m15_ohlc = fetch_ohlc(symbol, mt5_manager.TIMEFRAME_M15, 120, mt5_manager)
+    if m15_ohlc is None:
+        results["M15"] = {"name": None, "dir": None, "strength": 0, "levels": {}, "ohlc": None}
+    elif tick is not None:
+        name, direction, strength, levels = detect_m15_breakout_live(
+            m15_ohlc["highs"], m15_ohlc["lows"], m15_ohlc["closes"],
+            tick.bid, tick.ask, lookback=BREAKOUT_LOOKBACK["M15"],
+        )
+        results["M15"] = {
+            "name": name, "dir": direction, "strength": strength,
+            "levels": levels, "ohlc": m15_ohlc,
+        }
+    else:
+        name, direction, strength, levels = detect_tf_breakout(
+            m15_ohlc, BREAKOUT_LOOKBACK["M15"])
+        results["M15"] = {
+            "name": name, "dir": direction, "strength": strength,
+            "levels": levels, "ohlc": m15_ohlc,
+        }
+
     for label, tf, lookback, count in tf_config:
         ohlc = fetch_ohlc(symbol, tf, count, mt5_manager)
         name, direction, strength, levels = detect_tf_breakout(ohlc, lookback)
@@ -246,7 +323,7 @@ def get_multi_tf_breakouts(symbol, mt5_manager):
 
 
 def resolve_breakout_direction(breakouts):
-    """M15 breakout zaroori + kam se kam H1 ya H4 confirm."""
+    """M15 breakout = trade turant. H1/H4 sirf score bonus."""
     m15 = breakouts.get("M15", {})
     h1 = breakouts.get("H1", {})
     h4 = breakouts.get("H4", {})
@@ -255,21 +332,14 @@ def resolve_breakout_direction(breakouts):
     if not m15_dir:
         return None, 0, {}
 
-    htf_dirs = [d for d in (h1.get("dir"), h4.get("dir")) if d]
-    htf_confirm = [d for d in htf_dirs if d == m15_dir]
-
-    if not htf_confirm:
-        return None, 0, {}
-
     score = m15.get("strength", 0)
     for tf in ("H1", "H4"):
         if breakouts[tf].get("dir") == m15_dir:
-            score += breakouts[tf].get("strength", 0)
+            score += breakouts[tf].get("strength", 0) // 2
     if h1.get("dir") == m15_dir and h4.get("dir") == m15_dir:
-        score += 15  # teeno TF aligned — bonus
+        score += 15
 
-    # SL/TP ke liye sab se mazboot levels (H4 > H1 > M15)
-    primary_levels = h4.get("levels") or h1.get("levels") or m15.get("levels") or {}
+    primary_levels = m15.get("levels") or h1.get("levels") or h4.get("levels") or {}
     return m15_dir, min(score, 100), primary_levels
 
 
@@ -499,11 +569,26 @@ def analyze_symbol(symbol, mt5_manager):
     if spread > max_spread:
         return {"skip": True, "reason": "spread", "symbol": symbol, "spread": spread}
 
-    breakouts = get_multi_tf_breakouts(symbol, mt5_manager)
+    breakouts = get_multi_tf_breakouts(symbol, mt5_manager, tick=tick)
     trend, score, levels = resolve_breakout_direction(breakouts)
 
     if trend is None:
-        return {"skip": True, "reason": "no_breakout", "symbol": symbol}
+        m15 = breakouts.get("M15", {})
+        lvls = m15.get("levels") or {}
+        if not lvls.get("recent_high") and m15.get("ohlc"):
+            o = m15["ohlc"]
+            lb = BREAKOUT_LOOKBACK["M15"]
+            if len(o["closes"]) >= lb + 2:
+                lvls = {
+                    "recent_high": max(o["highs"][-lb - 1:-1]),
+                    "recent_low": min(o["lows"][-lb - 1:-1]),
+                }
+        return {
+            "skip": True, "reason": "no_breakout", "symbol": symbol,
+            "m15_high": lvls.get("recent_high"),
+            "m15_low": lvls.get("recent_low"),
+            "bid": tick.bid, "ask": tick.ask,
+        }
 
     htf_patterns = detect_htf_candle_patterns(symbol, mt5_manager)
     pattern_bonus = 0
@@ -562,24 +647,16 @@ def analyze_symbol(symbol, mt5_manager):
 
 
 def trade_eligible(analysis):
-    """Sirf breakout trades — M15 + H1/H4 confirm."""
+    """M15 breakout milte hi trade — H1/H4 optional bonus."""
     if analysis.get("skip"):
         return False, "skip"
-
-    score = analysis.get("score", 0)
-    if score < MIN_BREAKOUT_SCORE:
-        return False, f"breakout_score_{score}_need_{MIN_BREAKOUT_SCORE}"
 
     if not analysis.get("m15_breakout"):
         return False, "no_m15_breakout"
 
-    h1_ok = analysis.get("h1_breakout") is not None
-    h4_ok = analysis.get("h4_breakout") is not None
-    if not (h1_ok or h4_ok):
-        return False, "no_htf_breakout_confirm"
-
-    if analysis.get("pattern_conflict"):
-        return False, "htf_pattern_conflict"
+    score = analysis.get("score", 0)
+    if score < MIN_BREAKOUT_SCORE:
+        return False, f"breakout_score_{score}_need_{MIN_BREAKOUT_SCORE}"
 
     return True, "ok"
 

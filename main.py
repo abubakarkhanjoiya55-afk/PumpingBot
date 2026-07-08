@@ -953,7 +953,11 @@ def run_user_bot(user_id, login, password, server):
                     elif reason == "no_data":
                         print(f"[NO DATA] {symbol}")
                     elif reason == "no_breakout":
-                        pass  # har scan par log nahi — sirf breakout milne par
+                        ah = analysis.get("m15_high")
+                        al = analysis.get("m15_low")
+                        if ah and al:
+                            print(f"[NO BO] {symbol} M15 range {al:.5f}-{ah:.5f} "
+                                  f"bid={analysis.get('bid', 0):.5f} ask={analysis.get('ask', 0):.5f}")
                     else:
                         print(f"[NO TICK] {symbol}")
                     continue
