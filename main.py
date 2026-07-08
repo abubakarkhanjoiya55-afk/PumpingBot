@@ -23,16 +23,16 @@ from copy_trading import copy_trade_to_followers, start_copy_watcher
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
-    MIN_EFFECTIVE_SCORE, MIN_TREND_STRUCTURE, MIN_CONFLUENCE, SCAN_INTERVAL_SEC,
+    MIN_BREAKOUT_SCORE, SCAN_INTERVAL_SEC,
     EARLY_LOSS_CUT_PCT, STALE_LOSS_MINUTES, BREAKEVEN_PROFIT_USD, LOSS_COOLDOWN_SEC,
     TRADE_MAX_LOSS_PCT,
     MAX_SPREAD_POINTS, SYMBOL_MAX_SPREAD, MIN_COOLDOWN_SEC,
-    SCALP_ATR_MULT, HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
+    HOLD_MIN_PROFIT, HOLD_TRAIL_PCT, TRAILING_LEVELS,
     MARGIN_PROFIT_TRIGGER, MARGIN_SL_LOCK_PCT,
-    ema, calc_rsi, calc_stoch_rsi, calc_adx, calc_atr, calc_macd, calc_bollinger,
-    get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
+    calc_atr, get_trend, get_profit_target, get_locked_profit, is_scalp_trade,
     calculate_lot, analyze_symbol, should_take_trade, trade_eligible,
-    get_htf_atr, calc_margin_used, profit_to_price, calc_h1_sl,
+    get_htf_atr, calc_margin_used, profit_to_price, calc_breakout_sl,
+    get_breakout_profit_target,
 )
 
 ELITE_SCORE          = STRONG_SCORE  # is se upar: TP ka wait, sirf SL trail ho
@@ -768,32 +768,19 @@ def run_user_bot(user_id, login, password, server):
                         c5 = [r['close'] for r in rates15]
                         atr = calc_atr(h5, l5, c5)
 
-                current_trend, current_adx_4h, current_adx_1h, _ = get_trend(pos.symbol, mt5_manager)
+                current_trend, _, _, _ = get_trend(pos.symbol, mt5_manager)
                 trend_reversed = (trade_type == "BUY"  and current_trend == "SELL") or \
                                  (trade_type == "SELL" and current_trend == "BUY")
 
                 if trend_reversed and current_profit < HOLD_MIN_PROFIT:
                     tick = mt5_manager.symbol_info_tick(pos.symbol)
-                    done, profit = close_pos(pos, "TrendExit")
+                    done, profit = close_pos(pos, "BreakoutFail")
                     if done and tick:
                         cp = tick.bid if pos.type == 0 else tick.ask
                         update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
                         _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=(profit < 0))
                         status = "Profit" if profit > 0 else "Loss cut"
-                        print(f"[TREND EXIT] {pos.symbol} {status}: ${profit:.2f}")
-                        locked_profits.pop(ticket, None)
-                        peak_profits.pop(ticket, None)
-                        elite_sl_locked.pop(ticket, None)
-                    continue
-
-                if current_profit < 0 and current_adx_1h < 15 and current_adx_4h < 15:
-                    tick = mt5_manager.symbol_info_tick(pos.symbol)
-                    done, profit = close_pos(pos, "DeadMomentum")
-                    if done and tick:
-                        cp = tick.bid if pos.type == 0 else tick.ask
-                        update_trade_closed(user_id, pos.symbol, profit, cp, ticket)
-                        _set_symbol_cooldown(user_id, pos.symbol, now, lost_money=True)
-                        print(f"[DEAD EXIT] {pos.symbol} Loss cut: ${profit:.2f}")
+                        print(f"[BREAKOUT FAIL] {pos.symbol} {status}: ${profit:.2f}")
                         locked_profits.pop(ticket, None)
                         peak_profits.pop(ticket, None)
                         elite_sl_locked.pop(ticket, None)
@@ -965,6 +952,8 @@ def run_user_bot(user_id, login, password, server):
                         print(f"[HIGH SPREAD] {symbol} spread={analysis.get('spread', 0):.0f}")
                     elif reason == "no_data":
                         print(f"[NO DATA] {symbol}")
+                    elif reason == "no_breakout":
+                        pass  # har scan par log nahi — sirf breakout milne par
                     else:
                         print(f"[NO TICK] {symbol}")
                     continue
@@ -973,24 +962,20 @@ def run_user_bot(user_id, login, password, server):
                 score = analysis["score"]
                 trade_mode = analysis["trade_mode"]
                 atr = analysis["atr"]
-                adx_4h = analysis["adx_4h"]
-                adx_1h = analysis["adx_1h"]
-                rsi = analysis["rsi"]
                 tick = analysis["tick"]
-                pname = analysis.get("pattern_name")
-                pbonus = analysis.get("pattern_bonus", 0)
-                cname = analysis.get("chart_pattern_name")
+                levels = analysis.get("breakout_levels", {})
                 bname = analysis.get("breakout_name")
-                tstruct = analysis.get("trend_structure", 0)
-                effective = min(score, tstruct)
-                confluence = analysis.get("confluence", 0)
-                confirm = analysis.get("m15_confirm_name") or cname or bname or pname
+                pname = analysis.get("pattern_name")
+                closes15 = analysis.get("closes15") or []
+                price = closes15[-1] if closes15 else tick.ask
 
-                pinfo = f"| {confirm}" if confirm else ""
+                pinfo = f"| {bname}" if bname else ""
+                if pname:
+                    pinfo += f" | {pname}"
                 print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
-                      f"ADX4H:{adx_4h:.0f} ADX1H:{adx_1h:.0f} "
-                      f"RSI:{rsi:.0f} Score:{score} Struct:{tstruct} Eff:{effective} "
-                      f"Conf:{confluence}/{MIN_CONFLUENCE} HTF:{analysis['htf_aligned']} {pinfo}")
+                      f"BreakoutScore:{score} HTF:{analysis['htf_aligned']} "
+                      f"M15:{analysis.get('m15_breakout')} "
+                      f"H1:{analysis.get('h1_breakout')} H4:{analysis.get('h4_breakout')} {pinfo}")
 
                 ok, skip_reason = trade_eligible(analysis)
 
@@ -998,9 +983,9 @@ def run_user_bot(user_id, login, password, server):
                 sig = Signal(
                     symbol=symbol,
                     signal_type=trend if ok else "WAIT",
-                    score=score, ema_fast=analysis["e8"], ema_slow=analysis["e21"],
-                    macd=analysis["macd"], rsi=rsi, adx=adx_4h,
-                    price=analysis["closes15"][-1])
+                    score=score, ema_fast=0, ema_slow=0,
+                    macd=0, rsi=0, adx=0,
+                    price=price)
                 db.add(sig); db.commit(); db.close()
 
                 if not ok:
@@ -1008,13 +993,15 @@ def run_user_bot(user_id, login, password, server):
                         print(f"[SKIP] {symbol} — {skip_reason}")
                     continue
 
-                lot = calculate_lot(balance, atr, symbol, score, mt5_manager)
+                entry = tick.ask if trend == "BUY" else tick.bid
+                sl = calc_breakout_sl(symbol, trend, entry, levels, mt5_manager)
+                sl_distance = abs(entry - sl) if sl else atr
+                lot = calculate_lot(balance, atr, symbol, score, mt5_manager,
+                                    sl_distance=sl_distance)
                 if lot is None:
                     print(f"[SKIP] {symbol} — lot_calc_failed")
                     continue
 
-                entry = tick.ask if trend == "BUY" else tick.bid
-                sl    = calc_h1_sl(symbol, trend, entry, mt5_manager)
                 if sl is None:
                     sl = entry - atr if trend == "BUY" else entry + atr
 
@@ -1028,14 +1015,15 @@ def run_user_bot(user_id, login, password, server):
                     "sl":           sl,
                     "deviation":    50,
                     "magic":        888888,
-                    "comment":      f"PB_{trade_mode}_S{score}",
+                    "comment":      f"BO_{trade_mode}_S{score}",
                     "type_time":    mt5_manager.ORDER_TIME_GTC,
                     "type_filling": mt5_manager.ORDER_FILLING_IOC,
                 }
 
                 result = mt5_manager.order_send(request)
                 if result.retcode == mt5_manager.TRADE_RETCODE_DONE:
-                    target = get_profit_target(score, atr, symbol, mt5_manager)
+                    target = get_breakout_profit_target(
+                        entry, trend, levels, lot, symbol, mt5_manager, score)
                     print(f"[{trade_mode}] TRADE PLACED! {symbol} {trend} "
                           f"Score:{score} Target:${target} Lot:{lot}")
                     db = SessionLocal()

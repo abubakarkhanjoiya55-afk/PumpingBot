@@ -17,6 +17,7 @@ TIMEFRAME_M15      = "15m"
 TIMEFRAME_M5       = "5m"
 TIMEFRAME_H1       = "1h"
 TIMEFRAME_H4       = "4h"
+TIMEFRAME_D1       = "1d"
 TRADE_ACTION_DEAL  = "DEAL"
 ORDER_TYPE_BUY     = "ORDER_TYPE_BUY"
 ORDER_TYPE_SELL    = "ORDER_TYPE_SELL"
@@ -102,6 +103,7 @@ class MT5Manager:
         self.TIMEFRAME_M5       = TIMEFRAME_M5
         self.TIMEFRAME_H1       = TIMEFRAME_H1
         self.TIMEFRAME_H4       = TIMEFRAME_H4
+        self.TIMEFRAME_D1       = TIMEFRAME_D1
         self.TRADE_ACTION_DEAL  = TRADE_ACTION_DEAL
         self.ORDER_TYPE_BUY     = ORDER_TYPE_BUY
         self.ORDER_TYPE_SELL    = ORDER_TYPE_SELL
@@ -220,7 +222,12 @@ class MT5Manager:
 
     async def _async_get_candles(self, symbol, timeframe, count):
         try:
-            start_time = datetime.now(timezone.utc) - timedelta(days=5)
+            lookback_days = {
+                "1d": max(120, count * 2),
+                "4h": max(30, count // 6 + 5),
+                "1h": max(14, count // 24 + 3),
+            }.get(timeframe, 7)
+            start_time = datetime.now(timezone.utc) - timedelta(days=lookback_days)
             data = await self._account.get_historical_candles(symbol, timeframe, start_time, count)
             return data
         except Exception as e:
