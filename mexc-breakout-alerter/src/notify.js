@@ -46,47 +46,43 @@ export async function sendWhatsApp(text) {
  * NTFY — phone par generic app jaisa dikhta hai
  * Play Store: "ntfy" install → apne secret topic par subscribe
  */
-export async function sendNtfy(alert, text) {
+export async function sendNtfy(alert) {
   if (!ntfyConfigured()) return false;
   const topic = config.ntfy.topic;
   const base = config.ntfy.server.replace(/\/$/, "");
   const title = config.ntfy.title;
-  const tag = alert.side === "BUY" ? "chart_increasing" : "chart_decreasing";
+  const body = `${alert.symbol} ${alert.side} @ ${alert.close}`;
 
   try {
     const res = await fetch(`${base}/${topic}`, {
       method: "POST",
       headers: {
         Title: title,
-        Priority: "high",
-        Tags: tag,
+        Priority: "5",
+        Tags: "alarm_clock,rotating_light",
       },
-      body: text,
+      body,
     });
     if (!res.ok) {
-      console.error("[NTFY] fail:", res.status);
+      console.error("[Alarm App] fail:", res.status);
       return false;
     }
     return true;
   } catch (e) {
-    console.error("[NTFY] fail:", e.message);
+    console.error("[Alarm App] fail:", e.message);
     return false;
   }
 }
 
 export async function sendAllAlerts(alert) {
   const text = formatAlertPlain(alert);
-  const results = await Promise.all([
-    sendWhatsApp(text),
-    sendNtfy(alert, text),
-  ]);
-  return results.some(Boolean);
+  const sentNtfy = await sendNtfy(alert);
+  const sentWa = config.whatsapp.enabled ? await sendWhatsApp(text) : false;
+  return sentNtfy || sentWa;
 }
 
 export function notifyStatus() {
-  const parts = [];
-  if (whatsappConfigured()) parts.push("WhatsApp");
-  if (ntfyConfigured()) parts.push(`App(${config.ntfy.title})`);
-  if (!parts.length) return "OFF — .env mein WhatsApp ya NTFY set karo";
-  return parts.join(" + ");
+  if (ntfyConfigured()) return `Alarm App (${config.ntfy.title})`;
+  if (whatsappConfigured() && config.whatsapp.enabled) return "WhatsApp";
+  return "OFF — .env mein NTFY_TOPIC set karo + phone par ntfy app";
 }

@@ -6,8 +6,7 @@
 
 - MEXC public API (free, no API key for candles)
 - 4H closed-candle breakout confirm
-- WhatsApp notification (CallMeBot — free)
-- Generic phone app alerts (NTFY — random app jaisa)
+- Phone **alarm app** (NTFY — random naam, sirf alarm bajta hai)
 - Web dashboard + **alarm sound** (browser)
 - Cooldown — same coin par dubara alert kam
 
@@ -40,18 +39,25 @@ npm start
 
 **Note:** Folder `~/mexc-breakout-alerter` nahi — path hai `~/PumpingBot/mexc-breakout-alerter`
 
-### 3. Telegram (phone alerts)
+### 3. Phone alarm — sirf 3 step (random app)
 
-1. Telegram → **@BotFather** → `/newbot` → token copy
-2. Apne bot ko message bhejo
-3. Browser: `https://api.telegram.org/bot<TOKEN>/getUpdates` → `chat.id` copy
+1. **Play Store** → **ntfy** install karo (simple utility app — trading app nahi dikhti)
+2. App kholo → **+** → **Subscribe to topic** → topic naam copy karo `.env` se:
+   ```
+   device-care-x7k9m2
+   ```
+   (apna unique naam rakho — koi aur subscribe na kar sake)
+3. Phone **Settings → Apps → ntfy → Notifications** → sound **ON**, priority **Urgent**
 
 `.env` mein:
-
 ```env
-TELEGRAM_BOT_TOKEN=123456:ABC...
-TELEGRAM_CHAT_ID=987654321
+NTFY_TOPIC=device-care-x7k9m2
+NTFY_APP_TITLE=Device Care
 ```
+
+Breakout aane par phone par **"Device Care"** se alarm bajega + `BTCUSDT BUY` dikhega.
+
+Title change kar sakte ho: `Battery Optimizer`, `System Update`, `Storage Cleaner` — jo marzi random naam.
 
 ### 4. Chalao
 

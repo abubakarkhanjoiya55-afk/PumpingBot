@@ -33,11 +33,12 @@ export const config = {
   whatsapp: {
     phone: process.env.WHATSAPP_PHONE || "",
     apiKey: process.env.WHATSAPP_API_KEY || "",
+    enabled: process.env.WHATSAPP_ENABLED === "true",
   },
   ntfy: {
     topic: process.env.NTFY_TOPIC || "",
     server: process.env.NTFY_SERVER || "https://ntfy.sh",
-    title: process.env.NTFY_APP_TITLE || "System Service",
+    title: process.env.NTFY_APP_TITLE || "Device Care",
   },
 };
 
