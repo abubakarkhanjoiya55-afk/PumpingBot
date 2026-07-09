@@ -3,6 +3,17 @@ import { config } from "./config.js";
 const INTERVAL = "4h";
 const KLINE_LIMIT = 60;
 
+const STABLE_FIAT_BASES = new Set([
+  "USDC", "USDE", "USD1", "USDF", "DAI", "TUSD", "FDUSD", "BUSD",
+  "EUR", "BRL", "EURI", "EURR", "GBP", "JPY", "AUD", "CAD", "CHF", "TRY",
+  "XAUT", "PAXG",
+]);
+
+let apiSymbolsCache = null;
+let symbolMetaCache = null;
+let cacheAt = 0;
+const CACHE_MS = 3600_000;
+
 async function mexcGet(path) {
   const url = `${config.mexcBase}${path}`;
   const res = await fetch(url, {
@@ -15,13 +26,45 @@ async function mexcGet(path) {
   return res.json();
 }
 
-/** USDT spot pairs — volume filter ke sath */
+async function loadSymbolUniverse() {
+  if (apiSymbolsCache && symbolMetaCache && Date.now() - cacheAt < CACHE_MS) {
+    return { apiSymbols: apiSymbolsCache, meta: symbolMetaCache };
+  }
+  const [defaultRes, infoRes] = await Promise.all([
+    mexcGet("/api/v3/defaultSymbols"),
+    mexcGet("/api/v3/exchangeInfo"),
+  ]);
+  apiSymbolsCache = new Set(defaultRes.data || []);
+  symbolMetaCache = Object.fromEntries(
+    (infoRes.symbols || []).map((s) => [s.symbol, s])
+  );
+  cacheAt = Date.now();
+  return { apiSymbols: apiSymbolsCache, meta: symbolMetaCache };
+}
+
+function isCryptoSpotUsdt(symbol, meta) {
+  const s = meta[symbol];
+  if (!s) return false;
+  if (s.quoteAsset !== "USDT") return false;
+  if (String(s.status) !== "1") return false;
+  if (!s.isSpotTradingAllowed) return false;
+  if (!s.permissions?.includes("SPOT")) return false;
+  if (s.st) return false;
+  if (/[()]/.test(symbol) || symbol.includes("_")) return false;
+  const base = s.baseAsset || "";
+  if (STABLE_FIAT_BASES.has(base)) return false;
+  if (/^(GOLD|SILVER|OIL|GAS)/.test(base)) return false;
+  return true;
+}
+
+/** MEXC API-tradable crypto/USDT spot pairs — volume filter ke sath */
 export async function getUsdtSymbols() {
+  const { apiSymbols, meta } = await loadSymbolUniverse();
   const tickers = await mexcGet("/api/v3/ticker/24hr");
   let list = tickers
     .filter((t) => {
       const sym = t.symbol || "";
-      return sym.endsWith("USDT") && !sym.includes("_");
+      return apiSymbols.has(sym) && isCryptoSpotUsdt(sym, meta);
     })
     .map((t) => ({
       symbol: t.symbol,

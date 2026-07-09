@@ -18,6 +18,18 @@ SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
 COOLDOWN_H = int(os.environ.get("DC_COOLDOWN_H", "8"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
+SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
+
+# Fiat, stablecoins, tokenized commodities — crypto breakout scan se bahar
+STABLE_FIAT_BASES = frozenset({
+    "USDC", "USDE", "USD1", "USDF", "DAI", "TUSD", "FDUSD", "BUSD",
+    "EUR", "BRL", "EURI", "EURR", "GBP", "JPY", "AUD", "CAD", "CHF", "TRY",
+    "XAUT", "PAXG",
+})
+
+_api_symbols_cache: set[str] | None = None
+_symbol_meta_cache: dict[str, dict] | None = None
+_symbol_cache_at: float = 0
 
 TIMEFRAMES = [
     ("15m", "15M", 80),
@@ -281,17 +293,75 @@ def scan_ohlc(ohlc: dict) -> list[dict]:
     return hits
 
 
+async def _load_symbol_universe(client: httpx.AsyncClient) -> tuple[set[str], dict[str, dict]]:
+    global _api_symbols_cache, _symbol_meta_cache, _symbol_cache_at
+    if (
+        _api_symbols_cache is not None
+        and _symbol_meta_cache is not None
+        and time.time() - _symbol_cache_at < SYMBOL_CACHE_SEC
+    ):
+        return _api_symbols_cache, _symbol_meta_cache
+
+    r_default = await client.get("https://api.mexc.com/api/v3/defaultSymbols")
+    r_default.raise_for_status()
+    payload = r_default.json()
+    api_syms = set(payload.get("data") or [])
+
+    r_info = await client.get("https://api.mexc.com/api/v3/exchangeInfo")
+    r_info.raise_for_status()
+    meta = {s["symbol"]: s for s in r_info.json().get("symbols", [])}
+
+    _api_symbols_cache = api_syms
+    _symbol_meta_cache = meta
+    _symbol_cache_at = time.time()
+    print(f"[Device Care] MEXC API symbols loaded: {len(api_syms)} tradable")
+    return api_syms, meta
+
+
+def _is_crypto_spot_usdt(symbol: str, meta: dict[str, dict]) -> bool:
+    """Sirf MEXC spot crypto/USDT — forex, stable, commodity exclude."""
+    s = meta.get(symbol)
+    if not s:
+        return False
+    if s.get("quoteAsset") != "USDT":
+        return False
+    if str(s.get("status")) != "1":
+        return False
+    if not s.get("isSpotTradingAllowed"):
+        return False
+    if "SPOT" not in s.get("permissions", []):
+        return False
+    if s.get("st"):
+        return False
+    if "(" in symbol or ")" in symbol or "_" in symbol:
+        return False
+
+    base = s.get("baseAsset", "")
+    if base in STABLE_FIAT_BASES:
+        return False
+    if base.startswith(("GOLD", "SILVER", "OIL", "GAS")):
+        return False
+    return True
+
+
 async def fetch_symbols(client: httpx.AsyncClient) -> list[tuple[str, float]]:
+    api_syms, meta = await _load_symbol_universe(client)
     r = await client.get("https://api.mexc.com/api/v3/ticker/24hr")
     r.raise_for_status()
     rows = []
+    skipped = 0
     for t in r.json():
         sym = t.get("symbol", "")
-        if sym.endswith("USDT") and "_" not in sym:
-            vol = float(t.get("quoteVolume", 0))
-            if vol >= MIN_VOL:
-                rows.append((sym, vol))
+        if sym not in api_syms:
+            continue
+        if not _is_crypto_spot_usdt(sym, meta):
+            skipped += 1
+            continue
+        vol = float(t.get("quoteVolume", 0))
+        if vol >= MIN_VOL:
+            rows.append((sym, vol))
     rows.sort(key=lambda x: x[1], reverse=True)
+    print(f"[Device Care] Crypto USDT pairs: {len(rows)} (filtered {skipped} non-crypto/low-quality)")
     return rows
 
 
