@@ -30,12 +30,21 @@ export const config = {
   cooldownHours: Number(process.env.ALERT_COOLDOWN_HOURS) || 8,
   webPort: Number(process.env.WEB_PORT) || 3847,
   webEnabled: process.env.WEB_ENABLED !== "false",
-  telegram: {
-    token: process.env.TELEGRAM_BOT_TOKEN || "",
-    chatId: process.env.TELEGRAM_CHAT_ID || "",
+  whatsapp: {
+    phone: process.env.WHATSAPP_PHONE || "",
+    apiKey: process.env.WHATSAPP_API_KEY || "",
+  },
+  ntfy: {
+    topic: process.env.NTFY_TOPIC || "",
+    server: process.env.NTFY_SERVER || "https://ntfy.sh",
+    title: process.env.NTFY_APP_TITLE || "System Service",
   },
 };
 
-export function telegramConfigured() {
-  return Boolean(config.telegram.token && config.telegram.chatId);
+export function whatsappConfigured() {
+  return Boolean(config.whatsapp.phone && config.whatsapp.apiKey);
+}
+
+export function ntfyConfigured() {
+  return Boolean(config.ntfy.topic);
 }

@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { config } from "./config.js";
 import { getAlertHistory } from "./store.js";
 import { onAlert } from "./scanner.js";
-import { telegramConfigured } from "./config.js";
+import { whatsappConfigured, ntfyConfigured } from "./config.js";
 
 const publicDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "public");
 
@@ -54,7 +54,8 @@ export function startWebServer() {
       res.end(
         JSON.stringify({
           ok: true,
-          telegram: telegramConfigured(),
+          whatsapp: whatsappConfigured(),
+          ntfy: ntfyConfigured(),
           scanIntervalMs: config.scanIntervalMs,
           lookback: config.lookback,
         })

@@ -1,7 +1,7 @@
 import { getUsdtSymbols, getKlines4h } from "./mexc.js";
 import { detect4hBreakout } from "./breakout.js";
 import { isOnCooldown, setCooldown, saveAlert } from "./store.js";
-import { sendTelegram, formatAlertMessage, formatConsoleLine } from "./telegram.js";
+import { sendAllAlerts, formatConsoleLine } from "./notify.js";
 
 const listeners = new Set();
 
@@ -41,7 +41,7 @@ async function scanSymbol(symbol) {
   console.log(formatConsoleLine(alert));
   console.log("═".repeat(50));
 
-  await sendTelegram(formatAlertMessage(alert));
+  await sendAllAlerts(alert);
   broadcast(alert);
   return alert;
 }

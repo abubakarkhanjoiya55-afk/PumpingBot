@@ -6,7 +6,8 @@
 
 - MEXC public API (free, no API key for candles)
 - 4H closed-candle breakout confirm
-- Telegram notification (phone)
+- WhatsApp notification (CallMeBot — free)
+- Generic phone app alerts (NTFY — random app jaisa)
 - Web dashboard + **alarm sound** (browser)
 - Cooldown — same coin par dubara alert kam
 
