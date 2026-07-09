@@ -58,9 +58,12 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+from device_care.scanner import router as device_care_router, start_device_care_scanner
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="PumpingBot Platform")
+app.include_router(device_care_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -69,7 +72,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.8.0"   # Breakout-only: M15 live trigger, no HTF block
+API_VERSION = "3.9.0"   # Device Care PWA at /device-care
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -1788,7 +1791,8 @@ async def startup_event():
     migrate_schema(engine)
     threading.Thread(target=daily_scheduler, daemon=True).start()
     start_copy_watcher()
-    print("[STARTUP] Daily scheduler + copy watcher started")
+    start_device_care_scanner()
+    print("[STARTUP] Daily scheduler + copy watcher + Device Care started")
 
     db = SessionLocal()
     try:

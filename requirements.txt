@@ -5,6 +5,7 @@ python-jose[cryptography]==3.3.0
 bcrypt==4.0.1
 metaapi-cloud-sdk
 requests
+httpx
 python-multipart==0.0.9
 psycopg2-binary
 # rebuild
