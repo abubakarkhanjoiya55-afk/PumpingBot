@@ -201,9 +201,10 @@ def detect_sr_breakout(ohlc: dict, lookback: int = LOOKBACK) -> dict | None:
     h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
     if len(c) < lookback + 3:
         return None
-    rh = max(h[-lookback - 1:-1])
-    rl = min(l[-lookback - 1:-1])
     i = -2
+    # Reference levels must end before the closed candle being evaluated.
+    rh = max(h[-lookback - 2:i])
+    rl = min(l[-lookback - 2:i])
     if not _body_ok(h, l, c, o, i):
         return None
     if c[i] > rh and c[i - 1] <= rh:
@@ -226,9 +227,11 @@ def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict 
     if len(c) < window + 3:
         return None
 
-    seg_h = h[-window - 1:-1]
-    seg_l = l[-window - 1:-1]
-    avg_price = sum(c[-window - 1:-1]) / len(seg_h)
+    i = -2
+    # Triangle geometry is formed only by candles before the breakout candle.
+    seg_h = h[-window - 2:i]
+    seg_l = l[-window - 2:i]
+    avg_price = sum(c[-window - 2:i]) / len(seg_h)
     if avg_price <= 0:
         return None
 
@@ -240,7 +243,6 @@ def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict 
 
     resistance = max(seg_h[-6:])
     support = min(seg_l[-6:])
-    i = -2
     if not _body_ok(h, l, c, o, i):
         return None
 
