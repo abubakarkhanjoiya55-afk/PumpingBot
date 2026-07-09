@@ -2,169 +2,181 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MEXC 4H Breakout Alerts</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d1117" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Device Care" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon-192.svg" />
+  <link rel="apple-touch-icon" href="/icon-192.svg" />
+  <title>Device Care</title>
   <style>
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: system-ui, sans-serif;
+      font-family: system-ui, -apple-system, sans-serif;
       background: #0d1117;
       color: #e6edf3;
-      margin: 0;
-      padding: 1.5rem;
-      max-width: 720px;
-      margin-inline: auto;
+      min-height: 100dvh;
+      padding: 1.25rem;
+      padding-top: max(1.25rem, env(safe-area-inset-top));
     }
-    h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
-    .sub { color: #8b949e; font-size: 0.9rem; margin-bottom: 1.25rem; }
-    .status { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .pill {
-      background: #21262d;
-      padding: 0.35rem 0.75rem;
-      border-radius: 999px;
-      font-size: 0.85rem;
+    .header {
+      text-align: center;
+      padding: 2rem 0 1.5rem;
     }
-    .pill.on { border: 1px solid #3fb950; color: #3fb950; }
-    .pill.off { border: 1px solid #f85149; color: #f85149; }
-    label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
-    #flash {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(63, 185, 80, 0.15);
-      pointer-events: none;
-      animation: flash 0.6s ease-out;
+    .logo {
+      width: 72px; height: 72px;
+      margin: 0 auto 1rem;
+      background: #1a2332;
+      border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem;
     }
-    @keyframes flash {
-      from { opacity: 1; }
-      to { opacity: 0; }
+    h1 { font-size: 1.4rem; font-weight: 600; }
+    .sub { color: #8b949e; font-size: 0.85rem; margin-top: 0.35rem; }
+    .status-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 1rem;
     }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .dot.on { background: #3fb950; }
+    .dot.off { background: #f85149; }
+    .hint {
+      background: #1a2332;
+      border-radius: 10px;
+      padding: 1rem;
+      font-size: 0.9rem;
+      color: #8b949e;
+      line-height: 1.5;
+      margin-bottom: 1rem;
+    }
+    .hint b { color: #e6edf3; }
+    #list { margin-top: 0.5rem; }
     .alert-card {
       background: #161b22;
       border: 1px solid #30363d;
-      border-radius: 8px;
+      border-radius: 10px;
       padding: 1rem;
-      margin-bottom: 0.75rem;
-      animation: slide 0.3s ease-out;
+      margin-bottom: 0.6rem;
     }
     .alert-card.buy { border-left: 4px solid #3fb950; }
     .alert-card.sell { border-left: 4px solid #f85149; }
-    @keyframes slide {
-      from { transform: translateY(-8px); opacity: 0; }
-      to { transform: translateY(0); opacity: 1; }
-    }
-    .symbol { font-size: 1.25rem; font-weight: 700; }
-    .meta { color: #8b949e; font-size: 0.85rem; margin-top: 0.35rem; }
-    #list { margin-top: 1rem; }
-    .empty { color: #8b949e; text-align: center; padding: 2rem; }
+    .sym { font-size: 1.15rem; font-weight: 700; }
+    .meta { color: #8b949e; font-size: 0.8rem; margin-top: 0.25rem; }
+    .empty { text-align: center; color: #8b949e; padding: 2rem 0; font-size: 0.9rem; }
   </style>
 </head>
 <body>
-  <div id="flash"></div>
-  <h1>MEXC 4H Breakout Alerts</h1>
-  <p class="sub">Trade nahi — sirf confirmed 4H breakout par alarm</p>
-
-  <div class="status">
-    <span class="pill" id="conn">Connecting...</span>
-    <label>
-      <input type="checkbox" id="sound" checked />
-      Alarm sound ON
-    </label>
+  <div class="header">
+    <div class="logo">⚙️</div>
+    <h1>Device Care</h1>
+    <p class="sub">Background monitoring active</p>
   </div>
 
-  <div id="list"><p class="empty">Scan chal raha hai — breakout aane par yahan dikhega</p></div>
+  <div class="status-card">
+    <div><span class="dot off" id="dot"></span><span id="status">Connecting...</span></div>
+    <div class="meta" id="substatus" style="margin-top:0.5rem">Alerts ready hone par alarm bajega</div>
+  </div>
+
+  <div class="hint" id="install-hint" style="display:none">
+    <b>App install:</b> Chrome menu (⋮) → <b>Add to Home screen</b> → Add
+  </div>
+
+  <div id="list"><p class="empty">Monitoring... alert aane par yahan dikhega</p></div>
 
   <script>
     const list = document.getElementById("list");
-    const conn = document.getElementById("conn");
-    const soundOn = document.getElementById("sound");
-    const flash = document.getElementById("flash");
+    const status = document.getElementById("status");
+    const substatus = document.getElementById("substatus");
+    const dot = document.getElementById("dot");
+    let audioCtx;
 
     function beep() {
-      if (!soundOn.checked) return;
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const play = (freq, start, dur) => {
-          const o = ctx.createOscillator();
-          const g = ctx.createGain();
-          o.connect(g);
-          g.connect(ctx.destination);
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.25, start);
-          g.gain.exponentialRampToValueAtTime(0.01, start + dur);
-          o.start(start);
-          o.stop(start + dur);
+        audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+        const t = audioCtx.currentTime;
+        const play = (f, s, d) => {
+          const o = audioCtx.createOscillator();
+          const g = audioCtx.createGain();
+          o.connect(g); g.connect(audioCtx.destination);
+          o.frequency.value = f;
+          g.gain.setValueAtTime(0.3, s);
+          g.gain.exponentialRampToValueAtTime(0.01, s + d);
+          o.start(s); o.stop(s + d);
         };
-        play(880, ctx.currentTime, 0.15);
-        play(1100, ctx.currentTime + 0.18, 0.2);
-        play(1320, ctx.currentTime + 0.4, 0.25);
-      } catch (e) {
-        console.warn("beep failed", e);
-      }
-      if (Notification.permission === "granted") {
-        // title set per alert in showAlert
+        play(880, t, 0.2);
+        play(1100, t + 0.22, 0.2);
+        play(1320, t + 0.44, 0.3);
+        play(880, t + 0.8, 0.4);
+      } catch (_) {}
+    }
+
+    function notifySw(alert) {
+      if (navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: "breakout", alert });
       }
     }
 
     function showAlert(a) {
       const empty = list.querySelector(".empty");
       if (empty) empty.remove();
-
       const card = document.createElement("div");
       card.className = "alert-card " + (a.side === "BUY" ? "buy" : "sell");
       card.innerHTML = `
-        <div class="symbol">${a.symbol}</div>
-        <div>${a.side} — ${a.name}</div>
-        <div class="meta">Close ${a.close} | Level ${a.level} | Strength ${a.strength}</div>
-        <div class="meta">${new Date(a.alertedAt || Date.now()).toLocaleString()}</div>
+        <div class="sym">${a.symbol}</div>
+        <div>${a.side} breakout</div>
+        <div class="meta">@ ${a.close} · ${new Date(a.alertedAt || Date.now()).toLocaleString()}</div>
       `;
       list.prepend(card);
-
-      flash.style.display = "block";
-      flash.style.animation = "none";
-      void flash.offsetWidth;
-      flash.style.animation = "";
-      setTimeout(() => { flash.style.display = "none"; }, 600);
-
       beep();
-
+      notifySw(a);
       if (Notification.permission === "granted") {
-        new Notification(`MEXC 4H: ${a.symbol}`, {
-          body: `${a.side} breakout @ ${a.close}`,
+        new Notification("Device Care", {
+          body: `${a.symbol} ${a.side} @ ${a.close}`,
+          icon: "/icon-192.svg",
+          vibrate: [300, 100, 300, 100, 300],
+          tag: "dc-" + a.symbol,
+          renotify: true,
         });
       }
-
-      document.title = `🚨 ${a.symbol} — MEXC Alerts`;
-      setTimeout(() => { document.title = "MEXC 4H Breakout Alerts"; }, 8000);
     }
 
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
+    async function setup() {
+      if ("serviceWorker" in navigator) {
+        await navigator.serviceWorker.register("/sw.js");
+      }
+      if ("Notification" in window) {
+        const p = await Notification.requestPermission();
+        substatus.textContent = p === "granted"
+          ? "Notifications ON — alarm ready"
+          : "Notifications allow karo taake alarm bajay";
+      }
+      if (!window.matchMedia("(display-mode: standalone)").matches) {
+        document.getElementById("install-hint").style.display = "block";
+      }
     }
+    setup();
 
-    fetch("/api/alerts")
-      .then((r) => r.json())
-      .then((items) => {
-        if (items.length) {
-          list.innerHTML = "";
-          items.forEach(showAlert);
-        }
-      })
-      .catch(() => {});
+    fetch("/api/alerts").then(r => r.json()).then(items => {
+      if (items.length) { list.innerHTML = ""; items.forEach(showAlert); }
+    }).catch(() => {});
 
     const es = new EventSource("/events");
     es.onopen = () => {
-      conn.textContent = "Live connected";
-      conn.className = "pill on";
+      dot.className = "dot on";
+      status.textContent = "Live — monitoring";
     };
     es.onerror = () => {
-      conn.textContent = "Disconnected — retrying...";
-      conn.className = "pill off";
+      dot.className = "dot off";
+      status.textContent = "Reconnecting...";
     };
     es.onmessage = (ev) => {
       try {
         const msg = JSON.parse(ev.data);
-        if (msg.type === "breakout" && msg.alert) showAlert(msg.alert);
+        if (msg.type === "breakout") showAlert(msg.alert);
       } catch (_) {}
     };
   </script>

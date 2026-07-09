@@ -10,6 +10,7 @@ console.log("║   MEXC 4H Breakout Alerter (no trade)    ║");
 console.log("╚══════════════════════════════════════════╝");
 console.log(`Lookback: ${config.lookback} candles | Interval: 4h`);
 console.log(`Phone alerts: ${notifyStatus()}`);
+console.log(`PWA App: browser / phone — Add to Home Screen`);
 console.log(`Scan every: ${config.scanIntervalMs / 1000}s`);
 
 if (config.webEnabled && !once) {
