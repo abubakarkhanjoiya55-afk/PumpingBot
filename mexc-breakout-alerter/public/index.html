@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MEXC 4H Breakout Alerts</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0d1117;
+      color: #e6edf3;
+      margin: 0;
+      padding: 1.5rem;
+      max-width: 720px;
+      margin-inline: auto;
+    }
+    h1 { font-size: 1.35rem; margin-bottom: 0.25rem; }
+    .sub { color: #8b949e; font-size: 0.9rem; margin-bottom: 1.25rem; }
+    .status { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .pill {
+      background: #21262d;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+    }
+    .pill.on { border: 1px solid #3fb950; color: #3fb950; }
+    .pill.off { border: 1px solid #f85149; color: #f85149; }
+    label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+    #flash {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(63, 185, 80, 0.15);
+      pointer-events: none;
+      animation: flash 0.6s ease-out;
+    }
+    @keyframes flash {
+      from { opacity: 1; }
+      to { opacity: 0; }
+    }
+    .alert-card {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      animation: slide 0.3s ease-out;
+    }
+    .alert-card.buy { border-left: 4px solid #3fb950; }
+    .alert-card.sell { border-left: 4px solid #f85149; }
+    @keyframes slide {
+      from { transform: translateY(-8px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+    .symbol { font-size: 1.25rem; font-weight: 700; }
+    .meta { color: #8b949e; font-size: 0.85rem; margin-top: 0.35rem; }
+    #list { margin-top: 1rem; }
+    .empty { color: #8b949e; text-align: center; padding: 2rem; }
+  </style>
+</head>
+<body>
+  <div id="flash"></div>
+  <h1>MEXC 4H Breakout Alerts</h1>
+  <p class="sub">Trade nahi — sirf confirmed 4H breakout par alarm</p>
+
+  <div class="status">
+    <span class="pill" id="conn">Connecting...</span>
+    <label>
+      <input type="checkbox" id="sound" checked />
+      Alarm sound ON
+    </label>
+  </div>
+
+  <div id="list"><p class="empty">Scan chal raha hai — breakout aane par yahan dikhega</p></div>
+
+  <script>
+    const list = document.getElementById("list");
+    const conn = document.getElementById("conn");
+    const soundOn = document.getElementById("sound");
+    const flash = document.getElementById("flash");
+
+    function beep() {
+      if (!soundOn.checked) return;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const play = (freq, start, dur) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.frequency.value = freq;
+          g.gain.setValueAtTime(0.25, start);
+          g.gain.exponentialRampToValueAtTime(0.01, start + dur);
+          o.start(start);
+          o.stop(start + dur);
+        };
+        play(880, ctx.currentTime, 0.15);
+        play(1100, ctx.currentTime + 0.18, 0.2);
+        play(1320, ctx.currentTime + 0.4, 0.25);
+      } catch (e) {
+        console.warn("beep failed", e);
+      }
+      if (Notification.permission === "granted") {
+        // title set per alert in showAlert
+      }
+    }
+
+    function showAlert(a) {
+      const empty = list.querySelector(".empty");
+      if (empty) empty.remove();
+
+      const card = document.createElement("div");
+      card.className = "alert-card " + (a.side === "BUY" ? "buy" : "sell");
+      card.innerHTML = `
+        <div class="symbol">${a.symbol}</div>
+        <div>${a.side} — ${a.name}</div>
+        <div class="meta">Close ${a.close} | Level ${a.level} | Strength ${a.strength}</div>
+        <div class="meta">${new Date(a.alertedAt || Date.now()).toLocaleString()}</div>
+      `;
+      list.prepend(card);
+
+      flash.style.display = "block";
+      flash.style.animation = "none";
+      void flash.offsetWidth;
+      flash.style.animation = "";
+      setTimeout(() => { flash.style.display = "none"; }, 600);
+
+      beep();
+
+      if (Notification.permission === "granted") {
+        new Notification(`MEXC 4H: ${a.symbol}`, {
+          body: `${a.side} breakout @ ${a.close}`,
+        });
+      }
+
+      document.title = `🚨 ${a.symbol} — MEXC Alerts`;
+      setTimeout(() => { document.title = "MEXC 4H Breakout Alerts"; }, 8000);
+    }
+
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
+    fetch("/api/alerts")
+      .then((r) => r.json())
+      .then((items) => {
+        if (items.length) {
+          list.innerHTML = "";
+          items.forEach(showAlert);
+        }
+      })
+      .catch(() => {});
+
+    const es = new EventSource("/events");
+    es.onopen = () => {
+      conn.textContent = "Live connected";
+      conn.className = "pill on";
+    };
+    es.onerror = () => {
+      conn.textContent = "Disconnected — retrying...";
+      conn.className = "pill off";
+    };
+    es.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === "breakout" && msg.alert) showAlert(msg.alert);
+      } catch (_) {}
+    };
+  </script>
+</body>
+</html>

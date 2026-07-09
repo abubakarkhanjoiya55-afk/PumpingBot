@@ -1,0 +1,16 @@
+{
+  "name": "mexc-breakout-alerter",
+  "version": "1.0.0",
+  "description": "MEXC 4H breakout scanner — alerts only, no trading",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "scan-once": "node src/index.js --once"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["mexc", "breakout", "alert", "crypto"],
+  "license": "MIT"
+}
