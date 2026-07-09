@@ -55,7 +55,24 @@ TELEGRAM_CHAT_ID=987654321
 npm start
 ```
 
-Dashboard: **http://localhost:3847**
+**Terminal band mat karo** — server isi window mein chalta rehta hai.
+
+Dashboard tab kholo jab yeh line aaye:
+
+```
+[WEB] Dashboard: http://localhost:3847
+```
+
+Windows browser (WSL se): `http://localhost:3847`
+
+**Port already in use?**
+
+```bash
+pkill -f "node src/index.js"
+npm start
+```
+
+Ya `.env` mein `WEB_PORT=3848` set karo.
 
 Ek scan test:
 

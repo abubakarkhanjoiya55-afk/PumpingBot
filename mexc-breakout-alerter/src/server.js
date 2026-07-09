@@ -66,6 +66,15 @@ export function startWebServer() {
     res.end(indexHtml);
   });
 
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[WEB] Port ${config.webPort} already in use.`);
+      console.error("[WEB] Fix: pkill -f 'node src/index.js'  OR  change WEB_PORT in .env");
+      process.exit(1);
+    }
+    throw err;
+  });
+
   server.listen(config.webPort, () => {
     console.log(`[WEB] Dashboard: http://localhost:${config.webPort}`);
     console.log("[WEB] Browser kholo — breakout par alarm bajega");
