@@ -222,16 +222,18 @@ class MT5Manager:
 
     async def _async_get_candles(self, symbol, timeframe, count):
         try:
-            lookback_days = {
-                "1d": max(120, count * 2),
-                "4h": max(30, count // 6 + 5),
-                "1h": max(14, count // 24 + 3),
-            }.get(timeframe, 7)
-            start_time = datetime.now(timezone.utc) - timedelta(days=lookback_days)
-            data = await self._account.get_historical_candles(symbol, timeframe, start_time, count)
+            limit = min(int(count or 100), 1000)
+            data = await self._account.get_historical_candles(
+                symbol=symbol,
+                timeframe=timeframe,
+                start_time=None,
+                limit=limit,
+            )
+            if not data:
+                print(f"[Candles] {symbol} {timeframe}: empty response")
             return data
         except Exception as e:
-            print(f'[Candles] {e}')
+            print(f"[Candles] {symbol} {timeframe}: {e}")
             return None
 
     def order_send(self, request):

@@ -952,6 +952,8 @@ def run_user_bot(user_id, login, password, server):
                         print(f"[HIGH SPREAD] {symbol} spread={analysis.get('spread', 0):.0f}")
                     elif reason == "no_data":
                         print(f"[NO DATA] {symbol}")
+                    elif reason == "no_candles":
+                        print(f"[NO CANDLES] {symbol} — M15/H1 data nahi mili, MetaApi check karo")
                     elif reason == "no_breakout":
                         ah = analysis.get("m15_high")
                         al = analysis.get("m15_low")
@@ -982,6 +984,9 @@ def run_user_bot(user_id, login, password, server):
                       f"H1:{analysis.get('h1_breakout')} H4:{analysis.get('h4_breakout')} {pinfo}")
 
                 ok, skip_reason = trade_eligible(analysis)
+
+                if ok:
+                    print(f"[BREAKOUT!] {symbol} {trend} score={score} — trade lag rahi hai")
 
                 db = SessionLocal()
                 sig = Signal(
