@@ -6,13 +6,11 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 import httpx
 from fastapi import APIRouter
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 
 STATIC = Path(__file__).parent / "static"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
@@ -25,6 +23,22 @@ sse_clients: list[asyncio.Queue] = []
 alert_history: list[dict] = []
 cooldown: dict[str, float] = {}
 _scan_task = None
+
+scan_stats = {
+    "totalCoins": 0,
+    "scanned": 0,
+    "currentCoin": "",
+    "phase": "starting",
+    "lastScanAt": None,
+    "lastDurationSec": 0,
+    "alertsTotal": 0,
+    "errors": 0,
+    "timeframe": "4H",
+    "exchange": "MEXC",
+    "minVolumeUsdt": MIN_VOL,
+    "lookback": LOOKBACK,
+    "nextScanInSec": 0,
+}
 
 
 def _static(name: str):
@@ -63,7 +77,7 @@ async def icon512():
 
 @router.get("/api/status")
 async def status():
-    return {"ok": True, "app": "Device Care", "lookback": LOOKBACK, "scanSec": SCAN_SEC}
+    return {"ok": True, "app": "Device Care", **scan_stats}
 
 
 @router.get("/api/alerts")
@@ -71,10 +85,13 @@ async def alerts():
     return alert_history[:80]
 
 
-@router.get("/events")
-async def events():
+async def _sse_stream():
     q: asyncio.Queue = asyncio.Queue()
     sse_clients.append(q)
+    try:
+        q.put_nowait({"type": "stats", "data": dict(scan_stats)})
+    except Exception:
+        pass
 
     async def gen():
         try:
@@ -91,15 +108,47 @@ async def events():
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-def _broadcast(alert: dict):
-    alert_history.insert(0, alert)
-    del alert_history[80:]
-    payload = {"type": "breakout", "alert": alert}
+@router.get("/events")
+@router.get("/api/stream")
+async def events():
+    return await _sse_stream()
+
+
+def _push_sse(payload: dict):
     for q in list(sse_clients):
         try:
             q.put_nowait(payload)
         except Exception:
             pass
+
+
+def _broadcast_stats():
+    _push_sse({"type": "stats", "data": dict(scan_stats)})
+
+
+def _normalize_alert(alert: dict) -> dict:
+    direction = alert.get("direction", "")
+    if direction == "BULLISH":
+        direction = "UP"
+    elif direction == "BEARISH":
+        direction = "DOWN"
+    return {
+        "symbol": alert["symbol"],
+        "direction": direction,
+        "close": alert.get("close"),
+        "volume": alert.get("volume", 0),
+        "at": alert.get("alertedAt") or alert.get("at"),
+        "side": alert.get("side"),
+        "level": alert.get("level"),
+    }
+
+
+def _broadcast(alert: dict):
+    alert_history.insert(0, alert)
+    del alert_history[80:]
+    scan_stats["alertsTotal"] = len(alert_history)
+    _push_sse({"type": "alert", "data": _normalize_alert(alert)})
+    _broadcast_stats()
 
 
 def detect_breakout(ohlc: dict) -> dict | None:
@@ -132,7 +181,7 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
             if vol >= MIN_VOL:
                 rows.append((sym, vol))
     rows.sort(key=lambda x: x[1], reverse=True)
-    return [s for s, _ in rows]
+    return rows
 
 
 async def fetch_klines(client: httpx.AsyncClient, symbol: str) -> dict | None:
@@ -158,27 +207,55 @@ async def scan_loop():
     print("[Device Care] Scanner started")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
+            started = time.time()
+            scan_stats["phase"] = "fetching_pairs"
+            scan_stats["scanned"] = 0
+            scan_stats["errors"] = 0
+            _broadcast_stats()
             try:
                 symbols = await fetch_symbols(client)
+                scan_stats["phase"] = "scanning"
+                scan_stats["totalCoins"] = len(symbols)
                 print(f"[Device Care] Scanning {len(symbols)} pairs...")
-                for sym in symbols:
+                for i, (sym, vol) in enumerate(symbols):
+                    scan_stats["currentCoin"] = sym
+                    scan_stats["scanned"] = i
+                    if i % 5 == 0:
+                        _broadcast_stats()
                     ohlc = await fetch_klines(client, sym)
                     if not ohlc:
+                        scan_stats["errors"] += 1
+                        await asyncio.sleep(0.08)
                         continue
                     hit = detect_breakout(ohlc)
-                    if not hit:
-                        continue
-                    key = f"{sym}:{hit['direction']}"
-                    if cooldown.get(key, 0) > time.time():
-                        continue
-                    cooldown[key] = time.time() + COOLDOWN_H * 3600
-                    alert = {"symbol": sym, **hit, "alertedAt": int(time.time() * 1000)}
-                    print(f"[Device Care] BREAKOUT {sym} {hit['side']}")
-                    _broadcast(alert)
-                    await asyncio.sleep(0.12)
+                    if hit:
+                        key = f"{sym}:{hit['direction']}"
+                        if cooldown.get(key, 0) <= time.time():
+                            cooldown[key] = time.time() + COOLDOWN_H * 3600
+                            alert = {
+                                "symbol": sym, **hit,
+                                "volume": vol,
+                                "alertedAt": int(time.time() * 1000),
+                            }
+                            print(f"[Device Care] BREAKOUT {sym} {hit['side']}")
+                            _broadcast(alert)
+                    await asyncio.sleep(0.08)
+                scan_stats["scanned"] = len(symbols)
+                scan_stats["currentCoin"] = ""
+                scan_stats["lastScanAt"] = int(time.time() * 1000)
+                scan_stats["lastDurationSec"] = round(time.time() - started)
+                scan_stats["phase"] = "waiting"
+                _broadcast_stats()
             except Exception as e:
+                scan_stats["phase"] = "error"
                 print(f"[Device Care] scan error: {e}")
-            await asyncio.sleep(SCAN_SEC)
+                _broadcast_stats()
+
+            for remaining in range(SCAN_SEC, 0, -1):
+                scan_stats["nextScanInSec"] = remaining
+                if remaining % 10 == 0:
+                    _broadcast_stats()
+                await asyncio.sleep(1)
 
 
 def start_device_care_scanner():

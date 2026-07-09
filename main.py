@@ -72,7 +72,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.9.0"   # Device Care PWA at /device-care
+API_VERSION = "3.9.1"   # Device Care live stats dashboard
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
