@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0a0a0f">
+  <meta name="theme-color" content="#07070d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Device Care">
@@ -11,97 +11,201 @@
   <link rel="apple-touch-icon" href="icon-192.svg">
   <title>Device Care</title>
   <style>
+    :root {
+      --bg: #07070d;
+      --card: rgba(18, 18, 30, 0.85);
+      --border: rgba(99, 102, 241, 0.18);
+      --text: #eef0ff;
+      --muted: #7c7f9a;
+      --blue: #60a5fa;
+      --green: #34d399;
+      --red: #f87171;
+      --amber: #fbbf24;
+      --purple: #a78bfa;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0f;
-      color: #e8e8ed;
+      background: var(--bg);
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.22), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 0%, rgba(52,211,153,0.08), transparent);
+      color: var(--text);
       min-height: 100vh;
-      padding: 16px;
-      padding-bottom: calc(16px + env(safe-area-inset-bottom));
+      padding: 14px;
+      padding-bottom: calc(20px + env(safe-area-inset-bottom));
     }
-    .header { text-align: center; padding: 12px 0 16px; }
+
+    .header { text-align: center; padding: 10px 0 14px; }
     .logo {
-      width: 52px; height: 52px; margin: 0 auto 10px;
-      background: linear-gradient(135deg, #1a1a2e, #16213e);
-      border-radius: 14px; display: flex; align-items: center; justify-content: center;
-      font-size: 26px; border: 1px solid #2a2a4a;
+      width: 56px; height: 56px; margin: 0 auto 10px;
+      background: linear-gradient(145deg, #1e1b4b, #312e81);
+      border-radius: 16px; display: flex; align-items: center; justify-content: center;
+      font-size: 28px; border: 1px solid var(--border);
+      box-shadow: 0 8px 32px rgba(99,102,241,0.2);
     }
-    h1 { font-size: 1.35rem; font-weight: 600; }
-    .sub { color: #6b6b80; font-size: 0.8rem; margin-top: 4px; }
+    h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
 
     .live {
       display: flex; align-items: center; justify-content: center; gap: 8px;
-      padding: 10px; background: #12121a; border-radius: 10px; margin-bottom: 12px;
-      border: 1px solid #1e1e2e; font-size: 0.85rem;
+      padding: 11px 14px; background: var(--card); backdrop-filter: blur(12px);
+      border-radius: 14px; margin-bottom: 12px; border: 1px solid var(--border);
+      font-size: 0.84rem;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; animation: pulse 2s infinite; }
-    .dot.wait { background: #f59e0b; animation: none; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); animation: pulse 2s infinite; }
+    .dot.wait { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: none; }
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.9)} }
 
-    .stats-grid {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;
-    }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
     .stat-card {
-      background: linear-gradient(145deg, #14141f, #0f0f18);
-      border: 1px solid #1e1e2e; border-radius: 12px; padding: 14px;
-      text-align: center;
+      background: var(--card); backdrop-filter: blur(10px);
+      border: 1px solid var(--border); border-radius: 16px; padding: 14px; text-align: center;
     }
     .stat-card.wide { grid-column: 1 / -1; text-align: left; }
-    .stat-num { font-size: 1.75rem; font-weight: 700; color: #60a5fa; line-height: 1.1; }
-    .stat-num.green { color: #22c55e; }
-    .stat-num.amber { color: #f59e0b; }
-    .stat-label { font-size: 0.7rem; color: #6b6b80; margin-top: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-num { font-size: 1.7rem; font-weight: 800; color: var(--blue); line-height: 1.1; }
+    .stat-num.green { color: var(--green); }
+    .stat-num.amber { color: var(--amber); }
+    .stat-label { font-size: 0.68rem; color: var(--muted); margin-top: 5px; text-transform: uppercase; letter-spacing: 0.6px; }
 
-    .progress-wrap {
-      background: #1a1a28; border-radius: 8px; height: 8px; margin-top: 10px; overflow: hidden;
+    .tf-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .tf-pill {
+      font-size: 0.65rem; padding: 4px 9px; border-radius: 20px;
+      background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.25);
     }
+
+    .progress-wrap { background: rgba(255,255,255,0.06); border-radius: 10px; height: 9px; margin-top: 10px; overflow: hidden; }
     .progress-bar {
-      height: 100%; background: linear-gradient(90deg, #3b82f6, #22c55e);
-      border-radius: 8px; transition: width 0.3s ease; width: 0%;
+      height: 100%; background: linear-gradient(90deg, #6366f1, #34d399);
+      border-radius: 10px; transition: width 0.35s ease; width: 0%;
     }
-    .scan-detail { font-size: 0.8rem; color: #9ca3af; margin-top: 8px; }
-    .scan-detail strong { color: #e8e8ed; }
+    .scan-detail { font-size: 0.78rem; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+    .scan-detail strong { color: var(--text); }
 
     .phase-badge {
-      display: inline-block; padding: 3px 10px; border-radius: 20px;
-      font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
+      display: inline-block; padding: 4px 11px; border-radius: 20px;
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;
     }
-    .phase-badge.scanning { background: #1e3a5f; color: #60a5fa; }
-    .phase-badge.waiting { background: #3d2e0a; color: #fbbf24; }
-    .phase-badge.fetching { background: #1a2e1a; color: #4ade80; }
+    .phase-badge.scanning { background: rgba(96,165,250,0.15); color: var(--blue); }
+    .phase-badge.waiting { background: rgba(251,191,36,0.12); color: var(--amber); }
+    .phase-badge.fetching { background: rgba(52,211,153,0.12); color: var(--green); }
 
-    .install {
-      background: #12121a; border: 1px dashed #2a2a4a; border-radius: 10px;
-      padding: 12px; font-size: 0.78rem; color: #8b8ba0; margin-bottom: 12px; line-height: 1.5;
+    .section {
+      background: var(--card); backdrop-filter: blur(10px);
+      border: 1px solid var(--border); border-radius: 16px;
+      padding: 14px; margin-bottom: 12px;
     }
-    .install b { color: #c4c4d4; }
+    .section-title {
+      font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.7px; color: var(--muted); margin-bottom: 10px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .section-title span { color: var(--blue); font-size: 0.75rem; }
+
+    .coin-grid {
+      display: flex; flex-wrap: wrap; gap: 6px;
+      max-height: 160px; overflow-y: auto;
+    }
+    .coin-chip {
+      font-size: 0.68rem; padding: 5px 9px; border-radius: 8px;
+      background: rgba(52,211,153,0.1); color: #6ee7b7;
+      border: 1px solid rgba(52,211,153,0.2);
+      animation: chipIn 0.25s ease;
+    }
+    .coin-chip.err { background: rgba(248,113,113,0.08); color: #fca5a5; border-color: rgba(248,113,113,0.2); }
+    .coin-chip.hit { background: rgba(251,191,36,0.12); color: #fde68a; border-color: rgba(251,191,36,0.3); }
+    @keyframes chipIn { from { opacity:0; transform:scale(0.9); } to { opacity:1; transform:scale(1); } }
+
+    .coin-empty { font-size: 0.78rem; color: #4a4a60; text-align: center; padding: 16px 8px; }
 
     .alerts { display: flex; flex-direction: column; gap: 10px; }
     .card {
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      border: 1px solid #2a2a4a; border-radius: 14px; padding: 16px;
-      animation: slideIn 0.35s ease;
+      background: linear-gradient(135deg, rgba(30,27,75,0.9) 0%, rgba(15,23,42,0.95) 100%);
+      border: 1px solid rgba(99,102,241,0.3); border-radius: 16px; padding: 16px;
+      animation: slideIn 0.4s ease; position: relative; overflow: hidden;
     }
-    @keyframes slideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
-    .card .sym { font-size: 1.2rem; font-weight: 700; }
-    .card .dir { font-size: 0.85rem; margin: 6px 0; }
-    .card .dir.up { color: #22c55e; }
-    .card .dir.down { color: #ef4444; }
-    .card .meta { font-size: 0.75rem; color: #6b6b80; }
+    .card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--green), var(--blue));
+    }
+    .card.down::before { background: linear-gradient(90deg, var(--red), #fb923c); }
+    @keyframes slideIn { from { opacity:0; transform:translateY(-10px); } to { opacity:1; transform:translateY(0); } }
+
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .card .sym { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.02em; }
+    .tf-badge {
+      font-size: 0.7rem; font-weight: 700; padding: 4px 10px; border-radius: 8px;
+      background: rgba(99,102,241,0.2); color: #c4b5fd;
+    }
+    .card .dir { font-size: 0.9rem; font-weight: 600; margin: 6px 0; }
+    .card .dir.up { color: var(--green); }
+    .card .dir.down { color: var(--red); }
+    .card .pattern {
+      font-size: 0.78rem; color: var(--purple); margin-bottom: 8px;
+      padding: 4px 8px; background: rgba(167,139,250,0.1); border-radius: 6px; display: inline-block;
+    }
+    .card .meta { font-size: 0.74rem; color: var(--muted); line-height: 1.6; }
+    .card .meta b { color: #c4c8e8; font-weight: 600; }
+
     .empty {
-      text-align: center; color: #4a4a5a; padding: 24px 16px; font-size: 0.85rem;
-      background: #0f0f16; border-radius: 12px; border: 1px dashed #1e1e2e;
+      text-align: center; color: #4a4a60; padding: 28px 16px; font-size: 0.84rem;
+      border: 1px dashed rgba(99,102,241,0.15); border-radius: 14px;
     }
-    .empty-icon { font-size: 2rem; margin-bottom: 8px; opacity: 0.5; }
-    .err { color: #f87171; font-size: 0.75rem; margin-top: 6px; }
+    .empty-icon { font-size: 2.2rem; margin-bottom: 10px; opacity: 0.45; }
+
+    /* Persistent alarm modal */
+    .alarm-overlay {
+      display: none; position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,0.88); backdrop-filter: blur(8px);
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .alarm-overlay.active { display: flex; animation: flashBg 1.2s infinite; }
+    @keyframes flashBg {
+      0%,100% { background: rgba(0,0,0,0.88); }
+      50% { background: rgba(30,10,10,0.92); }
+    }
+    .alarm-box {
+      background: linear-gradient(160deg, #1a0a0a, #0f0f1a);
+      border: 2px solid var(--red);
+      border-radius: 24px; padding: 28px 22px; max-width: 360px; width: 100%;
+      text-align: center; box-shadow: 0 0 60px rgba(248,113,113,0.4);
+      animation: shake 0.5s ease infinite;
+    }
+    .alarm-box.up { border-color: var(--green); box-shadow: 0 0 60px rgba(52,211,153,0.35); }
+    @keyframes shake {
+      0%,100% { transform: rotate(0deg); }
+      25% { transform: rotate(-1deg); }
+      75% { transform: rotate(1deg); }
+    }
+    .alarm-icon { font-size: 3.5rem; margin-bottom: 12px; animation: ring 0.8s ease infinite; }
+    @keyframes ring { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+    .alarm-sym { font-size: 1.8rem; font-weight: 900; margin-bottom: 6px; }
+    .alarm-dir { font-size: 1.1rem; font-weight: 700; margin-bottom: 10px; }
+    .alarm-dir.up { color: var(--green); }
+    .alarm-dir.down { color: var(--red); }
+    .alarm-info { font-size: 0.82rem; color: var(--muted); line-height: 1.7; margin-bottom: 20px; }
+    .alarm-close {
+      width: 100%; padding: 16px; border: none; border-radius: 14px;
+      background: linear-gradient(135deg, #ef4444, #dc2626);
+      color: white; font-size: 1.05rem; font-weight: 800; cursor: pointer;
+      letter-spacing: 0.3px; box-shadow: 0 4px 20px rgba(239,68,68,0.4);
+    }
+    .alarm-box.up .alarm-close {
+      background: linear-gradient(135deg, #10b981, #059669);
+      box-shadow: 0 4px 20px rgba(16,185,129,0.4);
+    }
+    .install {
+      font-size: 0.74rem; color: var(--muted); text-align: center;
+      padding: 10px; margin-bottom: 8px; line-height: 1.5;
+    }
+    .install b { color: #a0a4c0; }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">Background monitoring active</p>
+    <p class="sub">15M · 1H · 4H · D1 — S/R + Triangle scan</p>
   </div>
 
   <div class="live" id="liveBar">
@@ -116,60 +220,124 @@
     </div>
     <div class="stat-card">
       <div class="stat-num green" id="alertsTotal">0</div>
-      <div class="stat-label">Alerts aaj</div>
+      <div class="stat-label">Breakout alerts</div>
     </div>
     <div class="stat-card wide">
       <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span class="stat-label" style="margin:0">Scan progress</span>
+        <span class="stat-label" style="margin:0">Live scan</span>
         <span class="phase-badge waiting" id="phaseBadge">—</span>
       </div>
       <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
-      <div class="scan-detail" id="scanDetail">Loading status...</div>
+      <div class="scan-detail" id="scanDetail">Loading...</div>
+      <div class="tf-pills">
+        <span class="tf-pill">15M</span>
+        <span class="tf-pill">1H</span>
+        <span class="tf-pill">4H</span>
+        <span class="tf-pill">D1</span>
+        <span class="tf-pill">S/R</span>
+        <span class="tf-pill">Triangle</span>
+      </div>
     </div>
     <div class="stat-card">
       <div class="stat-num amber" id="lastDuration">—</div>
-      <div class="stat-label">Last scan (sec)</div>
+      <div class="stat-label">Last scan (s)</div>
     </div>
     <div class="stat-card">
       <div class="stat-num" id="nextScan">—</div>
-      <div class="stat-label">Next scan (sec)</div>
+      <div class="stat-label">Next scan (s)</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">
+      Scanned coins
+      <span id="scannedCount">0</span>
+    </div>
+    <div class="coin-grid" id="coinGrid">
+      <div class="coin-empty">Scan shuru hone par coins yahan dikhengi...</div>
+    </div>
+  </div>
+
+  <div class="section" style="padding-bottom:10px;">
+    <div class="section-title">Breakout alerts</div>
+    <div class="alerts" id="alerts"></div>
+    <div class="empty" id="empty">
+      <div class="empty-icon">📡</div>
+      Abhi koi breakout nahi<br>
+      <span style="font-size:0.75rem;color:#3a3a50">Alert aane par alarm tab tak bajay ga jab tak band na karo</span>
     </div>
   </div>
 
   <div class="install">
-    <b>App install:</b> Chrome menu (⋮) → <b>Add to Home screen</b> → Add
+    <b>App:</b> Chrome ⋮ → Add to Home screen
   </div>
 
-  <div class="alerts" id="alerts"></div>
-  <div class="empty" id="empty">
-    <div class="empty-icon">📡</div>
-    Abhi koi breakout nahi — scan chal rahi hai<br>
-    <span style="font-size:0.75rem;color:#3a3a4a">Alert aane par yahan + alarm bajay ga</span>
+  <!-- Persistent alarm -->
+  <div class="alarm-overlay" id="alarmOverlay">
+    <div class="alarm-box" id="alarmBox">
+      <div class="alarm-icon">🚨</div>
+      <div class="alarm-sym" id="alarmSym">BTCUSDT</div>
+      <div class="alarm-dir" id="alarmDir">▲ BREAKOUT UP</div>
+      <div class="alarm-info" id="alarmInfo"></div>
+      <button class="alarm-close" id="alarmClose">🔕 Band Karo (Stop Alarm)</button>
+    </div>
   </div>
 
   <script>
     const BASE = location.pathname.startsWith('/device-care') ? '/device-care' : '';
     const alertsEl = document.getElementById('alerts');
     const emptyEl = document.getElementById('empty');
+    const coinGrid = document.getElementById('coinGrid');
+    const alarmOverlay = document.getElementById('alarmOverlay');
+    const alarmBox = document.getElementById('alarmBox');
 
-    function fmtTime(iso) {
-      if (!iso) return '—';
+    let alarmTimer = null;
+    let audioCtx = null;
+    let activeAlert = null;
+
+    function fmtTime(ts) {
+      if (!ts) return '—';
       try {
-        const d = new Date(iso);
-        return d.toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const d = new Date(typeof ts === 'number' && ts < 1e12 ? ts * 1000 : ts);
+        return d.toLocaleString('en-PK', {
+          day: '2-digit', month: 'short',
+          hour: '2-digit', minute: '2-digit'
+        });
       } catch { return '—'; }
+    }
+
+    function fmtCandle(ts) {
+      if (!ts) return '—';
+      try {
+        const d = new Date(ts);
+        return d.toLocaleString('en-PK', {
+          day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit'
+        });
+      } catch { return '—'; }
+    }
+
+    function updateScannedCoins(coins) {
+      if (!coins || !coins.length) return;
+      document.getElementById('scannedCount').textContent = coins.length;
+      coinGrid.innerHTML = '';
+      coins.forEach(c => {
+        const chip = document.createElement('span');
+        chip.className = 'coin-chip' + (c.hits > 0 ? ' hit' : (!c.ok ? ' err' : ''));
+        chip.textContent = c.symbol.replace('USDT', '') + (c.hits > 0 ? ' ⚡' : '');
+        coinGrid.appendChild(chip);
+      });
     }
 
     function updateStats(s) {
       document.getElementById('totalCoins').textContent = s.totalCoins ?? '—';
       document.getElementById('alertsTotal').textContent = s.alertsTotal ?? 0;
-      document.getElementById('lastDuration').textContent =
-        s.lastDurationSec != null ? s.lastDurationSec : '—';
-      document.getElementById('nextScan').textContent =
-        s.nextScanInSec != null ? s.nextScanInSec : '—';
+      document.getElementById('lastDuration').textContent = s.lastDurationSec != null ? s.lastDurationSec : '—';
+      document.getElementById('nextScan').textContent = s.nextScanInSec != null ? s.nextScanInSec : '—';
 
       const pct = s.totalCoins > 0 ? Math.round((s.scanned / s.totalCoins) * 100) : 0;
-      document.getElementById('progressBar').style.width = s.phase === 'scanning' ? pct + '%' : (s.phase === 'waiting' ? '100%' : '0%');
+      document.getElementById('progressBar').style.width =
+        s.phase === 'scanning' ? pct + '%' : (s.phase === 'waiting' ? '100%' : '0%');
 
       const badge = document.getElementById('phaseBadge');
       const dot = document.getElementById('liveDot');
@@ -179,7 +347,8 @@
         badge.textContent = 'Scanning';
         badge.className = 'phase-badge scanning';
         dot.className = 'dot';
-        liveText.textContent = `Live — ${s.scanned}/${s.totalCoins} coins`;
+        const tf = s.currentTimeframe ? ` · ${s.currentTimeframe}` : '';
+        liveText.textContent = `Live ${s.scanned}/${s.totalCoins}${tf}`;
       } else if (s.phase === 'fetching_pairs') {
         badge.textContent = 'Loading';
         badge.className = 'phase-badge fetching';
@@ -189,71 +358,110 @@
         badge.textContent = 'Waiting';
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
-        liveText.textContent = `Live — ${s.totalCoins || '?'} coins monitor`;
+        liveText.textContent = `${s.totalCoins || '?'} coins · 4 timeframes`;
       }
 
       let detail = '';
       if (s.phase === 'scanning' && s.currentCoin) {
-        detail = `Ab scan: <strong>${s.currentCoin}</strong> (${s.scanned}/${s.totalCoins})`;
+        detail = `Scanning <strong>${s.currentCoin}</strong>`;
+        if (s.currentTimeframe) detail += ` on <strong>${s.currentTimeframe}</strong>`;
+        detail += ` (${s.scanned}/${s.totalCoins})`;
       } else if (s.lastScanAt) {
-        detail = `Last scan: <strong>${fmtTime(s.lastScanAt)}</strong>`;
+        detail = `Last: <strong>${fmtTime(s.lastScanAt)}</strong>`;
         if (s.lastDurationSec) detail += ` · ${s.lastDurationSec}s`;
         if (s.nextScanInSec != null) detail += ` · next ${s.nextScanInSec}s`;
       } else {
         detail = 'Pehli scan shuru ho rahi hai...';
       }
       document.getElementById('scanDetail').innerHTML = detail;
+
+      if (s.scannedCoins && s.scannedCoins.length) {
+        updateScannedCoins(s.scannedCoins);
+      }
     }
 
     async function loadStatus() {
       try {
         const r = await fetch(BASE + '/api/status');
-        const s = await r.json();
-        updateStats(s);
+        updateStats(await r.json());
       } catch (e) { console.warn(e); }
     }
 
     function addCard(a) {
       emptyEl.style.display = 'none';
-      const c = document.createElement('div');
-      c.className = 'card';
       const up = a.direction === 'UP';
+      const c = document.createElement('div');
+      c.className = 'card' + (up ? '' : ' down');
       c.innerHTML = `
-        <div class="sym">${a.symbol}</div>
+        <div class="card-top">
+          <div class="sym">${a.symbol.replace('USDT','')}</div>
+          <span class="tf-badge">${a.timeframe || '—'}</span>
+        </div>
         <div class="dir ${up ? 'up' : 'down'}">${up ? '▲ Breakout UP' : '▼ Breakout DOWN'}</div>
-        <div class="meta">4H · ${a.close} · ${a.volume ? 'Vol ' + (a.volume / 1e6).toFixed(1) + 'M · ' : ''}${a.at ? new Date(a.at).toLocaleTimeString() : ''}</div>
+        <div class="pattern">${a.pattern || 'Breakout'}</div>
+        <div class="meta">
+          <b>Candle time:</b> ${fmtCandle(a.candleTime)}<br>
+          <b>Close:</b> ${a.close ?? '—'} · <b>Level:</b> ${a.level ?? '—'}<br>
+          <b>Alert:</b> ${fmtTime(a.at)}
+        </div>
       `;
       alertsEl.insertBefore(c, alertsEl.firstChild);
-      while (alertsEl.children.length > 15) alertsEl.lastChild.remove();
+      while (alertsEl.children.length > 20) alertsEl.lastChild.remove();
     }
 
-    function playAlarm() {
+    function beep() {
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const play = (t, f, d) => {
-          const o = ctx.createOscillator();
-          const g = ctx.createGain();
-          o.connect(g); g.connect(ctx.destination);
-          o.frequency.value = f; o.type = 'square';
-          g.gain.setValueAtTime(0.35, t);
-          g.gain.exponentialRampToValueAtTime(0.01, t + d);
-          o.start(t); o.stop(t + d);
-        };
-        const n = ctx.currentTime;
-        for (let i = 0; i < 6; i++) play(n + i * 0.38, 880, 0.28);
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const t = audioCtx.currentTime;
+        const freqs = [880, 1100, 880, 1100];
+        freqs.forEach((f, i) => {
+          const o = audioCtx.createOscillator();
+          const g = audioCtx.createGain();
+          o.connect(g); g.connect(audioCtx.destination);
+          o.type = 'square';
+          o.frequency.value = f;
+          const start = t + i * 0.35;
+          g.gain.setValueAtTime(0.4, start);
+          g.gain.exponentialRampToValueAtTime(0.01, start + 0.3);
+          o.start(start); o.stop(start + 0.32);
+        });
       } catch (e) { console.warn(e); }
-      if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400]);
+      if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
     }
+
+    function startPersistentAlarm(a) {
+      activeAlert = a;
+      const up = a.direction === 'UP';
+      alarmBox.className = 'alarm-box' + (up ? ' up' : '');
+      document.getElementById('alarmSym').textContent = a.symbol;
+      document.getElementById('alarmDir').textContent = up ? '▲ BREAKOUT UP' : '▼ BREAKOUT DOWN';
+      document.getElementById('alarmDir').className = 'alarm-dir ' + (up ? 'up' : 'down');
+      document.getElementById('alarmInfo').innerHTML =
+        `<b>${a.timeframe}</b> · ${a.pattern}<br>Candle: ${fmtCandle(a.candleTime)}<br>Close: ${a.close}`;
+      alarmOverlay.classList.add('active');
+      beep();
+      if (alarmTimer) clearInterval(alarmTimer);
+      alarmTimer = setInterval(beep, 2800);
+    }
+
+    function stopAlarm() {
+      if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
+      alarmOverlay.classList.remove('active');
+      activeAlert = null;
+    }
+
+    document.getElementById('alarmClose').addEventListener('click', stopAlarm);
 
     async function notify(a) {
       if (!('Notification' in window)) return;
       if (Notification.permission === 'default') await Notification.requestPermission();
       if (Notification.permission !== 'granted') return;
       const up = a.direction === 'UP';
-      new Notification('Device Care', {
-        body: `${a.symbol} ${up ? '▲ UP' : '▼ DOWN'} breakout`,
+      new Notification('🚨 ' + a.symbol, {
+        body: `${a.timeframe} ${a.pattern} ${up ? '▲ UP' : '▼ DOWN'}`,
         icon: BASE + '/icon-192.svg',
-        tag: 'dc-' + a.symbol,
+        tag: 'dc-' + a.symbol + a.timeframe,
         requireInteraction: true
       });
     }
@@ -275,7 +483,7 @@
         if (msg.type === 'stats') updateStats(msg.data);
         if (msg.type === 'alert') {
           addCard(msg.data);
-          playAlarm();
+          startPersistentAlarm(msg.data);
           notify(msg.data);
         }
       } catch (e) { console.warn(e); }

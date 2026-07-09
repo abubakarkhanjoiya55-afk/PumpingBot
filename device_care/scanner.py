@@ -1,5 +1,5 @@
 """
-Device Care — MEXC 4H breakout PWA (trade nahi, sirf alarm).
+Device Care — MEXC multi-TF breakout PWA (trade nahi, sirf alarm).
 Mount: /device-care
 """
 import asyncio
@@ -14,9 +14,17 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 STATIC = Path(__file__).parent / "static"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
-SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "120"))
+SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
 COOLDOWN_H = int(os.environ.get("DC_COOLDOWN_H", "8"))
+TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
+
+TIMEFRAMES = [
+    ("15m", "15M", 80),
+    ("60m", "1H", 70),
+    ("4h", "4H", 60),
+    ("1d", "D1", 50),
+]
 
 router = APIRouter(prefix="/device-care", tags=["device-care"])
 sse_clients: list[asyncio.Queue] = []
@@ -28,16 +36,19 @@ scan_stats = {
     "totalCoins": 0,
     "scanned": 0,
     "currentCoin": "",
+    "currentTimeframe": "",
     "phase": "starting",
     "lastScanAt": None,
     "lastDurationSec": 0,
     "alertsTotal": 0,
     "errors": 0,
-    "timeframe": "4H",
+    "timeframes": [tf[1] for tf in TIMEFRAMES],
+    "patterns": ["S/R Breakout", "Triangle Breakout"],
     "exchange": "MEXC",
     "minVolumeUsdt": MIN_VOL,
     "lookback": LOOKBACK,
     "nextScanInSec": 0,
+    "scannedCoins": [],
 }
 
 
@@ -82,7 +93,7 @@ async def status():
 
 @router.get("/api/alerts")
 async def alerts():
-    return alert_history[:80]
+    return [_normalize_alert(a) for a in alert_history[:80]]
 
 
 async def _sse_stream():
@@ -128,22 +139,26 @@ def _broadcast_stats():
 
 def _normalize_alert(alert: dict) -> dict:
     direction = alert.get("direction", "")
-    if direction == "BULLISH":
+    if direction in ("BULLISH", "BUY"):
         direction = "UP"
-    elif direction == "BEARISH":
+    elif direction in ("BEARISH", "SELL"):
         direction = "DOWN"
     return {
+        "id": alert.get("id"),
         "symbol": alert["symbol"],
         "direction": direction,
+        "timeframe": alert.get("timeframe", ""),
+        "pattern": alert.get("pattern", "Breakout"),
+        "candleTime": alert.get("candleTime"),
         "close": alert.get("close"),
+        "level": alert.get("level"),
         "volume": alert.get("volume", 0),
         "at": alert.get("alertedAt") or alert.get("at"),
-        "side": alert.get("side"),
-        "level": alert.get("level"),
     }
 
 
 def _broadcast(alert: dict):
+    alert["id"] = alert.get("id") or f"{alert['symbol']}-{alert.get('timeframe')}-{int(time.time()*1000)}"
     alert_history.insert(0, alert)
     del alert_history[80:]
     scan_stats["alertsTotal"] = len(alert_history)
@@ -151,26 +166,122 @@ def _broadcast(alert: dict):
     _broadcast_stats()
 
 
-def detect_breakout(ohlc: dict) -> dict | None:
-    h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
-    if len(c) < LOOKBACK + 3:
-        return None
-    rh = max(h[-LOOKBACK - 1:-1])
-    rl = min(l[-LOOKBACK - 1:-1])
-    i = -2
-    body = abs(c[i] - o[i])
-    ranges = [h[j] - l[j] for j in range(max(0, len(h) - 12), len(h) - 1)]
+def _body_ok(highs, lows, closes, opens, idx: int) -> bool:
+    body = abs(closes[idx] - opens[idx])
+    ranges = [highs[j] - lows[j] for j in range(max(0, len(highs) - 12), len(highs) - 1)]
     avg = sum(ranges) / max(len(ranges), 1)
-    if c[i] > rh and c[i - 1] <= rh and body >= avg * 0.35:
-        return {"side": "BUY", "direction": "BULLISH", "level": rh, "close": c[i],
-                "rangeHigh": rh, "rangeLow": rl, "candleTime": t[i], "strength": 50}
-    if c[i] < rl and c[i - 1] >= rl and body >= avg * 0.35:
-        return {"side": "SELL", "direction": "BEARISH", "level": rl, "close": c[i],
-                "rangeHigh": rh, "rangeLow": rl, "candleTime": t[i], "strength": 50}
+    return body >= avg * 0.3
+
+
+def _slope(vals: list[float]) -> float:
+    n = len(vals)
+    if n < 2:
+        return 0.0
+    x = list(range(n))
+    xm = sum(x) / n
+    ym = sum(vals) / n
+    num = sum((x[i] - xm) * (vals[i] - ym) for i in range(n))
+    den = sum((x[i] - xm) ** 2 for i in range(n)) or 1
+    return num / den
+
+
+def detect_sr_breakout(ohlc: dict, lookback: int = LOOKBACK) -> dict | None:
+    h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
+    if len(c) < lookback + 3:
+        return None
+    rh = max(h[-lookback - 1:-1])
+    rl = min(l[-lookback - 1:-1])
+    i = -2
+    if not _body_ok(h, l, c, o, i):
+        return None
+    if c[i] > rh and c[i - 1] <= rh:
+        return {
+            "side": "BUY", "direction": "UP", "pattern": "S/R Breakout",
+            "patternDetail": "Resistance breakout",
+            "level": rh, "close": c[i], "candleTime": t[i],
+        }
+    if c[i] < rl and c[i - 1] >= rl:
+        return {
+            "side": "SELL", "direction": "DOWN", "pattern": "S/R Breakout",
+            "patternDetail": "Support breakdown",
+            "level": rl, "close": c[i], "candleTime": t[i],
+        }
     return None
 
 
-async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
+def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict | None:
+    h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
+    if len(c) < window + 3:
+        return None
+
+    seg_h = h[-window - 1:-1]
+    seg_l = l[-window - 1:-1]
+    avg_price = sum(c[-window - 1:-1]) / len(seg_h)
+    if avg_price <= 0:
+        return None
+
+    high_slope = _slope(seg_h)
+    low_slope = _slope(seg_l)
+    high_span = max(seg_h) - min(seg_h)
+    low_span = max(seg_l) - min(seg_l)
+    flat_tol = avg_price * 0.012
+
+    resistance = max(seg_h[-6:])
+    support = min(seg_l[-6:])
+    i = -2
+    if not _body_ok(h, l, c, o, i):
+        return None
+
+    flat_high = high_span < avg_price * 0.02 and abs(high_slope) < avg_price * 0.0008
+    flat_low = low_span < avg_price * 0.02 and abs(low_slope) < avg_price * 0.0008
+    rising_low = low_slope > avg_price * 0.0005
+    falling_high = high_slope < -avg_price * 0.0005
+    converging = falling_high and rising_low
+
+    if flat_high and rising_low and c[i] > resistance and c[i - 1] <= resistance:
+        return {
+            "side": "BUY", "direction": "UP", "pattern": "Triangle Breakout",
+            "patternDetail": "Ascending triangle",
+            "level": resistance, "close": c[i], "candleTime": t[i],
+        }
+    if flat_low and falling_high and c[i] < support and c[i - 1] >= support:
+        return {
+            "side": "SELL", "direction": "DOWN", "pattern": "Triangle Breakout",
+            "patternDetail": "Descending triangle",
+            "level": support, "close": c[i], "candleTime": t[i],
+        }
+    if converging:
+        upper = max(seg_h[-4:])
+        lower = min(seg_l[-4:])
+        mid = (upper + lower) / 2
+        inside_prev = lower <= c[i - 1] <= upper
+        if inside_prev and c[i] > upper:
+            return {
+                "side": "BUY", "direction": "UP", "pattern": "Triangle Breakout",
+                "patternDetail": "Symmetrical triangle UP",
+                "level": upper, "close": c[i], "candleTime": t[i],
+            }
+        if inside_prev and c[i] < lower:
+            return {
+                "side": "SELL", "direction": "DOWN", "pattern": "Triangle Breakout",
+                "patternDetail": "Symmetrical triangle DOWN",
+                "level": lower, "close": c[i], "candleTime": t[i],
+            }
+    return None
+
+
+def scan_ohlc(ohlc: dict) -> list[dict]:
+    hits = []
+    sr = detect_sr_breakout(ohlc)
+    if sr:
+        hits.append(sr)
+    tri = detect_triangle_breakout(ohlc)
+    if tri:
+        hits.append(tri)
+    return hits
+
+
+async def fetch_symbols(client: httpx.AsyncClient) -> list[tuple[str, float]]:
     r = await client.get("https://api.mexc.com/api/v3/ticker/24hr")
     r.raise_for_status()
     rows = []
@@ -184,10 +295,10 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[str]:
     return rows
 
 
-async def fetch_klines(client: httpx.AsyncClient, symbol: str) -> dict | None:
+async def fetch_klines(client: httpx.AsyncClient, symbol: str, interval: str, limit: int) -> dict | None:
     r = await client.get(
         "https://api.mexc.com/api/v3/klines",
-        params={"symbol": symbol, "interval": "4h", "limit": 60},
+        params={"symbol": symbol, "interval": interval, "limit": limit},
     )
     if r.status_code != 200:
         return None
@@ -204,44 +315,61 @@ async def fetch_klines(client: httpx.AsyncClient, symbol: str) -> dict | None:
 
 
 async def scan_loop():
-    print("[Device Care] Scanner started")
+    print("[Device Care] Multi-TF scanner started (15M/1H/4H/D1)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
             scan_stats["phase"] = "fetching_pairs"
             scan_stats["scanned"] = 0
             scan_stats["errors"] = 0
+            scan_stats["scannedCoins"] = []
             _broadcast_stats()
             try:
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                print(f"[Device Care] Scanning {len(symbols)} pairs...")
+                print(f"[Device Care] Scanning {len(symbols)} pairs × {len(TIMEFRAMES)} TFs...")
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
-                    if i % 5 == 0:
-                        _broadcast_stats()
-                    ohlc = await fetch_klines(client, sym)
-                    if not ohlc:
-                        scan_stats["errors"] += 1
-                        await asyncio.sleep(0.08)
-                        continue
-                    hit = detect_breakout(ohlc)
-                    if hit:
-                        key = f"{sym}:{hit['direction']}"
-                        if cooldown.get(key, 0) <= time.time():
-                            cooldown[key] = time.time() + COOLDOWN_H * 3600
-                            alert = {
-                                "symbol": sym, **hit,
-                                "volume": vol,
-                                "alertedAt": int(time.time() * 1000),
-                            }
-                            print(f"[Device Care] BREAKOUT {sym} {hit['side']}")
-                            _broadcast(alert)
-                    await asyncio.sleep(0.08)
+                    coin_hits = 0
+                    coin_err = False
+                    for interval, tf_label, limit in TIMEFRAMES:
+                        scan_stats["currentTimeframe"] = tf_label
+                        if i % 3 == 0:
+                            _broadcast_stats()
+                        ohlc = await fetch_klines(client, sym, interval, limit)
+                        if not ohlc:
+                            coin_err = True
+                            scan_stats["errors"] += 1
+                            await asyncio.sleep(0.05)
+                            continue
+                        for hit in scan_ohlc(ohlc):
+                            key = f"{sym}:{tf_label}:{hit['pattern']}:{hit['direction']}"
+                            if cooldown.get(key, 0) <= time.time():
+                                cooldown[key] = time.time() + COOLDOWN_H * 3600
+                                alert = {
+                                    "symbol": sym,
+                                    "timeframe": tf_label,
+                                    "volume": vol,
+                                    "alertedAt": int(time.time() * 1000),
+                                    **hit,
+                                }
+                                coin_hits += 1
+                                print(f"[Device Care] {sym} {tf_label} {hit['pattern']} {hit['direction']}")
+                                _broadcast(alert)
+                        await asyncio.sleep(0.05)
+                    scan_stats["scannedCoins"].append({
+                        "symbol": sym,
+                        "hits": coin_hits,
+                        "ok": not coin_err,
+                    })
+                    if len(scan_stats["scannedCoins"]) > 120:
+                        scan_stats["scannedCoins"] = scan_stats["scannedCoins"][-120:]
+                    _broadcast_stats()
                 scan_stats["scanned"] = len(symbols)
                 scan_stats["currentCoin"] = ""
+                scan_stats["currentTimeframe"] = ""
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"

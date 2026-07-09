@@ -72,7 +72,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.9.1"   # Device Care live stats dashboard
+API_VERSION = "3.10.0"   # Device Care multi-TF S/R + triangle alerts
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
