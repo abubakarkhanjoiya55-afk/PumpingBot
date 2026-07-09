@@ -7,7 +7,7 @@ on:
 
 env:
   RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
-  VITE_API_URL: https://web-production-6a35f.up.railway.app
+  VITE_API_URL: https://web-production-26ef9.up.railway.app
 
 jobs:
   railway:

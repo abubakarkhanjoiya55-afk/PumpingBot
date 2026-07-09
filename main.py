@@ -69,7 +69,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.7.0"   # Loss protection: tight entries + fast loss cut
+API_VERSION = "3.8.0"   # Breakout-only: M15 live trigger, no HTF block
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):

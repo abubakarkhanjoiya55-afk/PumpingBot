@@ -4,7 +4,7 @@
 #   ./scripts/deploy.sh
 
 set -e
-API_URL="${VITE_API_URL:-https://web-production-6a35f.up.railway.app}"
+API_URL="${VITE_API_URL:-https://web-production-26ef9.up.railway.app}"
 RAILWAY_SERVICE_ID="${RAILWAY_SERVICE_ID:-c2f246da-a5ec-4432-ad4e-925438b85982}"
 
 echo "=== PumpingBot Deploy ==="
