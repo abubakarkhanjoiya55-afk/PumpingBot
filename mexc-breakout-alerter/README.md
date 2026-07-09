@@ -14,27 +14,30 @@
 
 ## WSL Ubuntu — setup
 
-### 1. Node.js 18+
+### Option A — ek command (recommended)
+
+WSL terminal mein **yeh poora block copy-paste** karo:
 
 ```bash
-node -v
+git clone https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git ~/PumpingBot
+cd ~/PumpingBot/mexc-breakout-alerter
+bash setup-wsl.sh --run
 ```
 
-Agar nahi hai:
+Setup + server start ho jayega. Browser: **http://localhost:3847**
+
+---
+
+### Option B — manual
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-### 2. Project folder
-
-Repo clone ke baad:
-
-```bash
-cd mexc-breakout-alerter
+git clone https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git ~/PumpingBot
+cd ~/PumpingBot/mexc-breakout-alerter
 cp .env.example .env
+npm start
 ```
+
+**Note:** Folder `~/mexc-breakout-alerter` nahi — path hai `~/PumpingBot/mexc-breakout-alerter`
 
 ### 3. Telegram (phone alerts)
 
