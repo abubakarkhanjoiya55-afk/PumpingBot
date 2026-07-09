@@ -72,7 +72,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.10.3"   # Fixed signals + persisted dashboard alert history
+API_VERSION = "3.10.4"   # Fixed signals + reliable PWA cache refresh
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
