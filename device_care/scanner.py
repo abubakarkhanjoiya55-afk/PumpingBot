@@ -16,7 +16,6 @@ STATIC = Path(__file__).parent / "static"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
 SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
-COOLDOWN_H = int(os.environ.get("DC_COOLDOWN_H", "8"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 
@@ -170,7 +169,10 @@ def _normalize_alert(alert: dict) -> dict:
 
 
 def _broadcast(alert: dict):
-    alert["id"] = alert.get("id") or f"{alert['symbol']}-{alert.get('timeframe')}-{int(time.time()*1000)}"
+    alert["id"] = alert.get("id") or (
+        f"{alert['symbol']}-{alert.get('timeframe')}-{alert.get('pattern')}-"
+        f"{alert.get('direction')}-{alert.get('candleTime')}"
+    )
     alert_history.insert(0, alert)
     del alert_history[80:]
     scan_stats["alertsTotal"] = len(alert_history)
@@ -391,6 +393,10 @@ async def scan_loop():
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
+            stale_before = started - 8 * 86400
+            for key, seen_at in list(cooldown.items()):
+                if seen_at < stale_before:
+                    del cooldown[key]
             scan_stats["phase"] = "fetching_pairs"
             scan_stats["scanned"] = 0
             scan_stats["errors"] = 0
@@ -417,9 +423,12 @@ async def scan_loop():
                             await asyncio.sleep(0.05)
                             continue
                         for hit in scan_ohlc(ohlc):
-                            key = f"{sym}:{tf_label}:{hit['pattern']}:{hit['direction']}"
-                            if cooldown.get(key, 0) <= time.time():
-                                cooldown[key] = time.time() + COOLDOWN_H * 3600
+                            key = (
+                                f"{sym}:{tf_label}:{hit['pattern']}:"
+                                f"{hit['direction']}:{hit['candleTime']}"
+                            )
+                            if key not in cooldown:
+                                cooldown[key] = time.time()
                                 alert = {
                                     "symbol": sym,
                                     "timeframe": tf_label,

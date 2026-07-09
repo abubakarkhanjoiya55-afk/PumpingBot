@@ -294,6 +294,20 @@
     let alarmTimer = null;
     let audioCtx = null;
     let activeAlert = null;
+    const renderedAlertIds = new Set();
+    const acknowledgedAlertIds = new Set(
+      JSON.parse(localStorage.getItem('dcAcknowledgedAlerts') || '[]')
+    );
+
+    function alertId(a) {
+      return a.id || `${a.symbol}-${a.timeframe}-${a.pattern}-${a.direction}-${a.candleTime}`;
+    }
+
+    function acknowledgeAlert(a) {
+      acknowledgedAlertIds.add(alertId(a));
+      const recent = Array.from(acknowledgedAlertIds).slice(-200);
+      localStorage.setItem('dcAcknowledgedAlerts', JSON.stringify(recent));
+    }
 
     function fmtTime(ts) {
       if (!ts) return '—';
@@ -388,6 +402,9 @@
     }
 
     function addCard(a) {
+      const id = alertId(a);
+      if (renderedAlertIds.has(id)) return false;
+      renderedAlertIds.add(id);
       emptyEl.style.display = 'none';
       const up = a.direction === 'UP';
       const c = document.createElement('div');
@@ -407,6 +424,22 @@
       `;
       alertsEl.insertBefore(c, alertsEl.firstChild);
       while (alertsEl.children.length > 20) alertsEl.lastChild.remove();
+      return true;
+    }
+
+    async function loadAlerts() {
+      try {
+        const r = await fetch(BASE + '/api/alerts');
+        const alerts = await r.json();
+        [...alerts].reverse().forEach(addCard);
+        const latestUnacknowledged = alerts.find(
+          a => !acknowledgedAlertIds.has(alertId(a))
+        );
+        if (latestUnacknowledged) {
+          startPersistentAlarm(latestUnacknowledged);
+          notify(latestUnacknowledged);
+        }
+      } catch (e) { console.warn(e); }
     }
 
     function beep() {
@@ -447,6 +480,7 @@
 
     function stopAlarm() {
       if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
+      if (activeAlert) acknowledgeAlert(activeAlert);
       alarmOverlay.classList.remove('active');
       activeAlert = null;
     }
@@ -474,6 +508,7 @@
     }
 
     loadStatus();
+    loadAlerts();
     setInterval(loadStatus, 5000);
 
     const es = new EventSource(BASE + '/api/stream');
@@ -482,9 +517,10 @@
         const msg = JSON.parse(ev.data);
         if (msg.type === 'stats') updateStats(msg.data);
         if (msg.type === 'alert') {
-          addCard(msg.data);
-          startPersistentAlarm(msg.data);
-          notify(msg.data);
+          if (addCard(msg.data) && !acknowledgedAlertIds.has(alertId(msg.data))) {
+            startPersistentAlarm(msg.data);
+            notify(msg.data);
+          }
         }
       } catch (e) { console.warn(e); }
     };
