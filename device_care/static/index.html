@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Device Care">
   <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icon-192.svg">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <title>Device Care</title>
   <style>
     :root {
@@ -46,6 +46,48 @@
     }
     h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; }
     .sub { color: var(--muted); font-size: 0.78rem; margin-top: 4px; }
+
+    .activation {
+      background: linear-gradient(145deg, rgba(30,27,75,0.95), rgba(15,23,42,0.95));
+      border: 1px solid rgba(96,165,250,0.35); border-radius: 18px;
+      padding: 16px; margin-bottom: 12px; text-align: center;
+      box-shadow: 0 10px 36px rgba(0,0,0,0.22);
+    }
+    .activation.ready { border-color: rgba(52,211,153,0.4); }
+    .activation h2 { font-size: 1rem; margin-bottom: 7px; }
+    .activation-copy { color: #c4c8e8; font-size: 0.8rem; line-height: 1.5; }
+    .capabilities {
+      display: flex; justify-content: center; flex-wrap: wrap;
+      gap: 7px; margin: 12px 0;
+    }
+    .capability {
+      font-size: 0.7rem; font-weight: 700; padding: 6px 10px;
+      border-radius: 20px; border: 1px solid rgba(251,191,36,0.3);
+      color: #fde68a; background: rgba(251,191,36,0.1);
+    }
+    .capability.ok {
+      border-color: rgba(52,211,153,0.35); color: #6ee7b7;
+      background: rgba(52,211,153,0.1);
+    }
+    .capability.off {
+      border-color: rgba(248,113,113,0.3); color: #fca5a5;
+      background: rgba(248,113,113,0.08);
+    }
+    .activate-btn {
+      width: 100%; border: none; border-radius: 13px; padding: 14px 16px;
+      color: white; background: linear-gradient(135deg, #4f46e5, #2563eb);
+      font-size: 0.95rem; font-weight: 800; cursor: pointer;
+      box-shadow: 0 5px 22px rgba(79,70,229,0.35);
+    }
+    .activate-btn:disabled { opacity: 0.65; cursor: wait; }
+    .activation-message {
+      min-height: 1.2em; color: var(--muted); font-size: 0.73rem;
+      line-height: 1.45; margin-top: 9px;
+    }
+    .browser-note {
+      color: #5f627b; font-size: 0.68rem; line-height: 1.45;
+      margin-top: 8px;
+    }
 
     .live {
       display: flex; align-items: center; justify-content: center; gap: 8px;
@@ -184,6 +226,10 @@
     .alarm-dir.up { color: var(--green); }
     .alarm-dir.down { color: var(--red); }
     .alarm-info { font-size: 0.82rem; color: var(--muted); line-height: 1.7; margin-bottom: 20px; }
+    .alarm-delivery {
+      font-size: 0.72rem; color: #c4c8e8; line-height: 1.45;
+      margin: -10px 0 16px;
+    }
     .alarm-close {
       width: 100%; padding: 16px; border: none; border-radius: 14px;
       background: linear-gradient(135deg, #ef4444, #dc2626);
@@ -208,9 +254,21 @@
     <p class="sub">15M · 1H · 4H · D1 — S/R + Triangle scan</p>
   </div>
 
+  <section class="activation" id="activationCard" aria-labelledby="activationTitle">
+    <h2 id="activationTitle">Alarm activate karein</h2>
+    <p class="activation-copy">Har nayi page par ek tap zaroori hai. Is se browser awaaz allow karta hai.</p>
+    <div class="capabilities" aria-live="polite">
+      <span class="capability off" id="soundStatus">Awaaz: band</span>
+      <span class="capability" id="notificationStatus">Notifications: check ho rahi hain</span>
+    </div>
+    <button class="activate-btn" id="activateBtn" type="button">🔔 Alarm Chalu Karein</button>
+    <p class="activation-message" id="activationMessage">Tap ke baad test alarm bajay ga, phir live monitoring shuru hogi.</p>
+    <p class="browser-note">App/tab khuli ho to live alarm milega. App band ya phone ki battery policy mein musalsal background alarm guaranteed nahi.</p>
+  </section>
+
   <div class="live" id="liveBar">
-    <span class="dot" id="liveDot"></span>
-    <span id="liveText">Connecting...</span>
+    <span class="dot wait" id="liveDot"></span>
+    <span id="liveText">Pehle alarm activate karein</span>
   </div>
 
   <div class="stats-grid">
@@ -264,7 +322,7 @@
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi breakout nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">Alert aane par alarm tab tak bajay ga jab tak band na karo</span>
+      <span style="font-size:0.75rem;color:#3a3a50">Naya alert aaye to screen khulay gi; awaaz browser ki ijazat par chalegi</span>
     </div>
   </div>
 
@@ -279,6 +337,7 @@
       <div class="alarm-sym" id="alarmSym">BTCUSDT</div>
       <div class="alarm-dir" id="alarmDir">▲ BREAKOUT UP</div>
       <div class="alarm-info" id="alarmInfo"></div>
+      <div class="alarm-delivery" id="alarmDelivery"></div>
       <button class="alarm-close" id="alarmClose">🔕 Band Karo (Stop Alarm)</button>
     </div>
   </div>
@@ -290,10 +349,19 @@
     const coinGrid = document.getElementById('coinGrid');
     const alarmOverlay = document.getElementById('alarmOverlay');
     const alarmBox = document.getElementById('alarmBox');
+    const activationCard = document.getElementById('activationCard');
+    const activateBtn = document.getElementById('activateBtn');
+    const activationMessage = document.getElementById('activationMessage');
+    const soundStatus = document.getElementById('soundStatus');
+    const notificationStatus = document.getElementById('notificationStatus');
 
     let alarmTimer = null;
     let audioCtx = null;
     let activeAlert = null;
+    let pageActivated = false;
+    let eventStream = null;
+    let statusTimer = null;
+    let serviceWorkerRegistration = null;
     const renderedAlertIds = new Set();
     const acknowledgedAlertIds = new Set(
       JSON.parse(localStorage.getItem('dcAcknowledgedAlerts') || '[]')
@@ -432,21 +500,69 @@
         const r = await fetch(BASE + '/api/alerts');
         const alerts = await r.json();
         [...alerts].reverse().forEach(addCard);
-        const latestUnacknowledged = alerts.find(
-          a => !acknowledgedAlertIds.has(alertId(a))
-        );
-        if (latestUnacknowledged) {
-          startPersistentAlarm(latestUnacknowledged);
-          notify(latestUnacknowledged);
-        }
       } catch (e) { console.warn(e); }
     }
 
-    function beep() {
+    function setCapability(el, text, state = '') {
+      el.textContent = text;
+      el.className = 'capability' + (state ? ' ' + state : '');
+    }
+
+    function updateCapabilityStatus() {
+      const soundReady = pageActivated && audioCtx?.state === 'running';
+      setCapability(
+        soundStatus,
+        soundReady ? 'Awaaz: chalu' : (pageActivated ? 'Awaaz: ruki hui' : 'Awaaz: band'),
+        soundReady ? 'ok' : 'off'
+      );
+
+      if (!('Notification' in window)) {
+        setCapability(notificationStatus, 'Notifications: supported nahi', 'off');
+      } else if (Notification.permission === 'granted') {
+        setCapability(notificationStatus, 'Notifications: chalu', 'ok');
+      } else if (Notification.permission === 'denied') {
+        setCapability(notificationStatus, 'Notifications: browser mein blocked', 'off');
+      } else {
+        setCapability(notificationStatus, 'Notifications: ijazat chahiye');
+      }
+
+      if (pageActivated) {
+        activateBtn.textContent = soundReady ? '🔊 Alarm Dobara Test Karein' : '🔔 Awaaz Dobara Chalu Karein';
+      }
+      activationCard.classList.toggle('ready', soundReady);
+    }
+
+    async function ensureAudioReady() {
       try {
-        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioCtx.state === 'suspended') audioCtx.resume();
-        const t = audioCtx.currentTime;
+        if (!audioCtx) {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContextClass) return false;
+          audioCtx = new AudioContextClass();
+          audioCtx.addEventListener('statechange', updateCapabilityStatus);
+        }
+        if (audioCtx.state !== 'running') await audioCtx.resume();
+        updateCapabilityStatus();
+        return audioCtx.state === 'running';
+      } catch (e) {
+        console.warn('Audio start nahi ho saka', e);
+        updateCapabilityStatus();
+        return false;
+      }
+    }
+
+    function vibrate(pattern) {
+      if (!navigator.vibrate) return false;
+      if (navigator.userActivation && !navigator.userActivation.hasBeenActive) return false;
+      return navigator.vibrate(pattern);
+    }
+
+    function playAlarmPattern({ test = false } = {}) {
+      if (!audioCtx || audioCtx.state !== 'running') {
+        updateCapabilityStatus();
+        return false;
+      }
+      try {
+        const t = audioCtx.currentTime + 0.02;
         const freqs = [880, 1100, 880, 1100];
         freqs.forEach((f, i) => {
           const o = audioCtx.createOscillator();
@@ -459,8 +575,12 @@
           g.gain.exponentialRampToValueAtTime(0.01, start + 0.3);
           o.start(start); o.stop(start + 0.32);
         });
-      } catch (e) { console.warn(e); }
-      if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
+        vibrate(test ? [180, 100, 180] : [500, 200, 500, 200, 500]);
+        return true;
+      } catch (e) {
+        console.warn('Alarm play nahi ho saka', e);
+        return false;
+      }
     }
 
     function startPersistentAlarm(a) {
@@ -473,9 +593,21 @@
       document.getElementById('alarmInfo').innerHTML =
         `<b>${a.timeframe}</b> · ${a.pattern}<br>Candle: ${fmtCandle(a.candleTime)}<br>Close: ${a.close}`;
       alarmOverlay.classList.add('active');
-      beep();
+      const sounded = playAlarmPattern();
+      document.getElementById('alarmDelivery').textContent = sounded
+        ? 'Awaaz chal rahi hai — band karne ke liye neeche tap karein.'
+        : 'Awaaz browser ne rok di hai — alert screen par maujood hai. Dobara activation button tap karein.';
       if (alarmTimer) clearInterval(alarmTimer);
-      alarmTimer = setInterval(beep, 2800);
+      if (sounded) {
+        alarmTimer = setInterval(() => {
+          if (!playAlarmPattern()) {
+            clearInterval(alarmTimer);
+            alarmTimer = null;
+            document.getElementById('alarmDelivery').textContent =
+              'Awaaz ruk gayi hai — alert screen par maujood hai. Dobara activation button tap karein.';
+          }
+        }, 2800);
+      }
     }
 
     function stopAlarm() {
@@ -487,47 +619,108 @@
 
     document.getElementById('alarmClose').addEventListener('click', stopAlarm);
 
+    async function requestNotifications() {
+      if (!('Notification' in window)) return 'unsupported';
+      if (Notification.permission !== 'default') return Notification.permission;
+      try {
+        return await Notification.requestPermission();
+      } catch (e) {
+        console.warn('Notification ijazat nahi mili', e);
+        return Notification.permission;
+      }
+    }
+
     async function notify(a) {
-      if (!('Notification' in window)) return;
-      if (Notification.permission === 'default') await Notification.requestPermission();
-      if (Notification.permission !== 'granted') return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return false;
       const up = a.direction === 'UP';
-      new Notification('🚨 ' + a.symbol, {
+      const options = {
         body: `${a.timeframe} ${a.pattern} ${up ? '▲ UP' : '▼ DOWN'}`,
-        icon: BASE + '/icon-192.svg',
+        icon: BASE + '/icon-192.png',
+        badge: BASE + '/icon-192.png',
         tag: 'dc-' + a.symbol + a.timeframe,
         requireInteraction: true
-      });
+      };
+      try {
+        const registration = serviceWorkerRegistration || await navigator.serviceWorker?.ready;
+        if (registration) {
+          await registration.showNotification('🚨 ' + a.symbol, options);
+        } else {
+          new Notification('🚨 ' + a.symbol, options);
+        }
+        return true;
+      } catch (e) {
+        console.warn('Notification show nahi hui', e);
+        return false;
+      }
+    }
+
+    function startEventStream() {
+      if (eventStream) return;
+      eventStream = new EventSource(BASE + '/api/stream');
+      eventStream.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === 'stats') updateStats(msg.data);
+          if (msg.type === 'alert') {
+            if (addCard(msg.data) && !acknowledgedAlertIds.has(alertId(msg.data))) {
+              startPersistentAlarm(msg.data);
+              notify(msg.data);
+            }
+          }
+        } catch (e) { console.warn(e); }
+      };
+      eventStream.onerror = () => {
+        document.getElementById('liveText').textContent = 'Connection dobara ban rahi hai...';
+        document.getElementById('liveDot').className = 'dot wait';
+      };
+    }
+
+    async function activateAlarm() {
+      activateBtn.disabled = true;
+      activationMessage.textContent = 'Awaaz aur notifications tayyar ho rahi hain...';
+
+      const audioReadyPromise = ensureAudioReady();
+      const notificationPermissionPromise = requestNotifications();
+      const [audioReady, notificationPermission] = await Promise.all([
+        audioReadyPromise,
+        notificationPermissionPromise
+      ]);
+      const testPlayed = audioReady && playAlarmPattern({ test: true });
+      pageActivated = true;
+      updateCapabilityStatus();
+
+      if (testPlayed) {
+        activationMessage.textContent = notificationPermission === 'granted'
+          ? 'Test alarm baj gaya. Awaaz aur notifications chalu hain.'
+          : 'Test alarm baj gaya. Awaaz chalu hai; notifications chalu nahi hain.';
+      } else {
+        activationMessage.textContent =
+          'Test awaaz nahi baji. Phone volume check karke “Awaaz Dobara Chalu Karein” tap karein.';
+      }
+
+      if (!eventStream) {
+        document.getElementById('liveText').textContent = 'Live monitoring shuru ho rahi hai...';
+        await Promise.all([loadStatus(), loadAlerts()]);
+        startEventStream();
+        statusTimer = setInterval(loadStatus, 5000);
+      }
+      activateBtn.disabled = false;
     }
 
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' }).catch(() => {});
-    }
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
+      navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' })
+        .then(registration => { serviceWorkerRegistration = registration; })
+        .catch(e => console.warn('Service worker register nahi hua', e));
     }
 
-    loadStatus();
-    loadAlerts();
-    setInterval(loadStatus, 5000);
-
-    const es = new EventSource(BASE + '/api/stream');
-    es.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'stats') updateStats(msg.data);
-        if (msg.type === 'alert') {
-          if (addCard(msg.data) && !acknowledgedAlertIds.has(alertId(msg.data))) {
-            startPersistentAlarm(msg.data);
-            notify(msg.data);
-          }
-        }
-      } catch (e) { console.warn(e); }
-    };
-    es.onerror = () => {
-      document.getElementById('liveText').textContent = 'Reconnecting...';
-      document.getElementById('liveDot').className = 'dot wait';
-    };
+    activateBtn.addEventListener('click', activateAlarm);
+    document.addEventListener('visibilitychange', updateCapabilityStatus);
+    window.addEventListener('pagehide', () => {
+      if (eventStream) eventStream.close();
+      if (statusTimer) clearInterval(statusTimer);
+      if (alarmTimer) clearInterval(alarmTimer);
+    });
+    updateCapabilityStatus();
   </script>
 </body>
 </html>

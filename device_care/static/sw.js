@@ -1,10 +1,10 @@
 const BASE = "/device-care";
-const CACHE = "device-care-v3.10.3";
+const CACHE = "device-care-v3.11.0";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,
-  `${BASE}/icon-192.svg`,
-  `${BASE}/icon-512.svg`,
+  `${BASE}/icon-192.png`,
+  `${BASE}/icon-512.png`,
 ];
 
 self.addEventListener("install", (e) => {
@@ -21,6 +21,7 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
+  if (e.request.method !== "GET") return;
   if (e.request.url.includes("/events") || e.request.url.includes("/api/")) {
     return;
   }
@@ -45,11 +46,11 @@ self.addEventListener("message", (e) => {
   if (e.data?.type !== "breakout") return;
   const a = e.data.alert;
   const title = "Device Care";
-  const body = `${a.symbol} ${a.side} @ ${a.close}`;
+  const body = `${a.symbol} ${a.direction || ""} @ ${a.close}`;
   self.registration.showNotification(title, {
     body,
-    icon: `${BASE}/icon-192.svg`,
-    badge: `${BASE}/icon-192.svg`,
+    icon: `${BASE}/icon-192.png`,
+    badge: `${BASE}/icon-192.png`,
     vibrate: [300, 120, 300, 120, 300, 120, 500],
     tag: `bo-${a.symbol}`,
     renotify: true,
@@ -61,7 +62,7 @@ self.addEventListener("message", (e) => {
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   e.waitUntil(
-    self.clients.matchAll({ type: "window" }).then((list) => {
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
       if (list[0]) return list[0].focus();
       return self.clients.openWindow(`${BASE}/`);
     })

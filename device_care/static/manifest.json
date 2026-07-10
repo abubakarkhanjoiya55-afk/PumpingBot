@@ -1,25 +1,26 @@
 {
   "name": "Device Care",
   "short_name": "DeviceCare",
-  "description": "System notifications",
-  "start_url": "/device-care/",
-  "scope": "/device-care/",
+  "description": "Crypto breakout live alerts",
+  "id": "/device-care/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0d1117",
-  "theme_color": "#0d1117",
+  "background_color": "#07070d",
+  "theme_color": "#07070d",
   "icons": [
     {
-      "src": "/device-care/icon-192.svg",
+      "src": "icon-192.png",
       "sizes": "192x192",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/device-care/icon-512.svg",
+      "src": "icon-512.png",
       "sizes": "512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

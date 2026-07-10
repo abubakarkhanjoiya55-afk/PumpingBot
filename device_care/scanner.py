@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 STATIC = Path(__file__).parent / "static"
@@ -63,28 +63,27 @@ scan_stats = {
 }
 
 
-def _static(name: str):
+def _static(name: str, cache_control: str = "public, max-age=3600"):
     p = STATIC / name
-    return FileResponse(p) if p.exists() else None
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="Static asset not found")
+    return FileResponse(p, headers={"Cache-Control": cache_control})
 
 
 @router.get("")
 @router.get("/")
 async def app_home():
-    f = _static("index.html")
-    if f:
-        return f
-    return {"app": "Device Care", "status": "static missing"}
+    return _static("index.html", "no-cache")
 
 
 @router.get("/manifest.json")
 async def manifest():
-    return _static("manifest.json")
+    return _static("manifest.json", "no-cache")
 
 
 @router.get("/sw.js")
 async def sw():
-    return _static("sw.js")
+    return _static("sw.js", "no-cache")
 
 
 @router.get("/icon-192.svg")
@@ -95,6 +94,16 @@ async def icon192():
 @router.get("/icon-512.svg")
 async def icon512():
     return _static("icon-512.svg")
+
+
+@router.get("/icon-192.png")
+async def icon192_png():
+    return _static("icon-192.png")
+
+
+@router.get("/icon-512.png")
+async def icon512_png():
+    return _static("icon-512.png")
 
 
 @router.get("/api/status")
