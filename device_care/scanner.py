@@ -1,11 +1,17 @@
 """
-Device Care — MEXC multi-TF breakout PWA (trade nahi, sirf alarm).
+Device Care — MEXC Futures multi-TF breakout PWA (trade nahi, sirf alarm).
 Mount: /device-care
+
+Sirf USDT-M futures (spot nahi).
+Breakouts: 15M/1H/4H/D1 — din-raat 24/7 (alerts 1h baad clear)
+D1 candle patterns (Dragonfly Doji / Hammer / Doji+Green):
+  subah 5–9am PKT pe zor; alerts 8h baad clear
 """
 import asyncio
 import json
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -15,26 +21,38 @@ from fastapi.responses import FileResponse, StreamingResponse
 STATIC = Path(__file__).parent / "static"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
 SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
+# Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
+MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "60"))
+MORNING_START_HOUR = int(os.environ.get("DC_MORNING_START_HOUR", "5"))
+MORNING_END_HOUR = int(os.environ.get("DC_MORNING_END_HOUR", "9"))
+PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
+# Alert history TTL — breakouts jaldi clear, D1 patterns zyada der
+BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
+D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
 
-# Fiat, stablecoins, tokenized commodities — crypto breakout scan se bahar
+FUTURES_BASE = "https://contract.mexc.com"
+D1_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
+
+# Fiat, stablecoins, commodities — futures crypto scan se bahar
 STABLE_FIAT_BASES = frozenset({
     "USDC", "USDE", "USD1", "USDF", "DAI", "TUSD", "FDUSD", "BUSD",
     "EUR", "BRL", "EURI", "EURR", "GBP", "JPY", "AUD", "CAD", "CHF", "TRY",
-    "XAUT", "PAXG",
+    "XAUT", "PAXG", "XAU", "XAG", "SILVER", "GOLD",
 })
 
 _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
+# MEXC futures interval names
 TIMEFRAMES = [
-    ("15m", "15M", 80),
-    ("60m", "1H", 70),
-    ("4h", "4H", 60),
-    ("1d", "D1", 50),
+    ("Min15", "15M", 80),
+    ("Min60", "1H", 70),
+    ("Hour4", "4H", 60),
+    ("Day1", "D1", 50),
 ]
 
 router = APIRouter(prefix="/device-care", tags=["device-care"])
@@ -54,12 +72,23 @@ scan_stats = {
     "alertsTotal": 0,
     "errors": 0,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
-    "patterns": ["S/R Breakout", "Triangle Breakout"],
-    "exchange": "MEXC",
+    "patterns": [
+        "S/R Breakout",
+        "Triangle Breakout",
+        "Dragonfly Doji",
+        "Hammer",
+        "Doji + Green",
+    ],
+    "exchange": "MEXC Futures",
+    "market": "futures",
     "minVolumeUsdt": MIN_VOL,
     "lookback": LOOKBACK,
     "nextScanInSec": 0,
     "scannedCoins": [],
+    "morningWindow": False,
+    "d1PatternsEnabled": False,
+    "breakoutAlertTtlSec": BREAKOUT_ALERT_TTL_SEC,
+    "d1AlertTtlSec": D1_PATTERN_ALERT_TTL_SEC,
 }
 
 
@@ -108,11 +137,13 @@ async def icon512_png():
 
 @router.get("/api/status")
 async def status():
+    prune_alert_history()
     return {"ok": True, "app": "Device Care", **scan_stats}
 
 
 @router.get("/api/alerts")
 async def alerts():
+    prune_alert_history()
     return [_normalize_alert(a) for a in alert_history[:80]]
 
 
@@ -177,11 +208,47 @@ def _normalize_alert(alert: dict) -> dict:
     }
 
 
+def _is_d1_pattern_alert(alert: dict) -> bool:
+    return alert.get("pattern") in D1_PATTERNS
+
+
+def _alert_ttl_sec(alert: dict) -> int:
+    """Breakout alerts 1h, D1 doji/hammer patterns 8h."""
+    if _is_d1_pattern_alert(alert):
+        return D1_PATTERN_ALERT_TTL_SEC
+    return BREAKOUT_ALERT_TTL_SEC
+
+
+def prune_alert_history(now: float | None = None) -> list[dict]:
+    """
+    Purani alerts history se hatao:
+    - Breakouts (S/R, Triangle): 1 hour
+    - D1 patterns (Dragonfly/Hammer/Doji+Green): 8 hours
+    Returns list of removed alert ids (for SSE clear).
+    """
+    global alert_history
+    t = now if now is not None else time.time()
+    kept: list[dict] = []
+    removed_ids: list[dict] = []
+    for alert in alert_history:
+        at_ms = alert.get("alertedAt") or alert.get("at") or 0
+        age_sec = t - (at_ms / 1000.0)
+        if age_sec >= _alert_ttl_sec(alert):
+            removed_ids.append({"id": alert.get("id"), "symbol": alert.get("symbol")})
+        else:
+            kept.append(alert)
+    if len(kept) != len(alert_history):
+        alert_history[:] = kept
+        scan_stats["alertsTotal"] = len(alert_history)
+    return removed_ids
+
+
 def _broadcast(alert: dict):
     alert["id"] = alert.get("id") or (
         f"{alert['symbol']}-{alert.get('timeframe')}-{alert.get('pattern')}-"
         f"{alert.get('direction')}-{alert.get('candleTime')}"
     )
+    prune_alert_history()
     alert_history.insert(0, alert)
     del alert_history[80:]
     scan_stats["alertsTotal"] = len(alert_history)
@@ -295,7 +362,149 @@ def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict 
     return None
 
 
-def scan_ohlc(ohlc: dict) -> list[dict]:
+def _pkt_now() -> datetime:
+    """Pakistan Standard Time (UTC+5) — billing/scheduler ke saath consistent."""
+    return datetime.utcnow() + timedelta(hours=PKT_OFFSET_HOURS)
+
+
+def in_morning_window(now: datetime | None = None) -> bool:
+    """Subah 5am–9am PKT — daily candle close ke baad D1 patterns pe zor."""
+    t = now or _pkt_now()
+    return MORNING_START_HOUR <= t.hour < MORNING_END_HOUR
+
+
+def _candle_parts(
+    ohlc: dict, idx: int
+) -> tuple[float, float, float, float, float, float, float, float]:
+    """Return open, high, low, close, body, range, upper_wick, lower_wick for candle idx."""
+    o = ohlc["opens"][idx]
+    h = ohlc["highs"][idx]
+    l = ohlc["lows"][idx]
+    c = ohlc["closes"][idx]
+    body = abs(c - o)
+    rng = h - l if h != l else 0.0001
+    uw = h - max(o, c)
+    lw = min(o, c) - l
+    return o, h, l, c, body, rng, uw, lw
+
+
+def _is_doji(body: float, rng: float, max_body_pct: float = 0.1) -> bool:
+    """Small body relative to full range — classic doji."""
+    return body <= rng * max_body_pct
+
+
+def detect_dragonfly_doji(ohlc: dict) -> dict | None:
+    """
+    Dragonfly Doji on last closed candle (-2):
+    - Tiny body (doji)
+    - Long lower wick (>= 2x body, and majority of range)
+    - Little/no upper wick
+    Bullish reversal signal.
+    """
+    if len(ohlc["closes"]) < 3:
+        return None
+    i = -2
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    if not _is_doji(body, rng):
+        return None
+    # Long lower shadow, almost no upper shadow
+    if lw < rng * 0.6:
+        return None
+    if uw > rng * 0.1:
+        return None
+    if body > 0 and lw < body * 2:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Dragonfly Doji",
+        "patternDetail": "D1 dragonfly doji (long lower wick)",
+        "level": l,
+        "close": c,
+        "candleTime": ohlc["times"][i],
+    }
+
+
+def detect_hammer(ohlc: dict) -> dict | None:
+    """
+    Hammer on last closed candle (-2):
+    - Lower wick >= 2x body
+    - Upper wick <= 0.3x body
+    - Prefer green close (bullish hammer); allow small red if wick dominant
+    """
+    if len(ohlc["closes"]) < 3:
+        return None
+    i = -2
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    if body <= 0:
+        return None
+    # Not a doji — hammer has a real body (else dragonfly covers it)
+    if _is_doji(body, rng):
+        return None
+    if lw < body * 2:
+        return None
+    if uw > body * 0.3:
+        return None
+    if lw < rng * 0.5:
+        return None
+    # Bullish preference: green close, or body in upper third of range
+    if c < o and (c - l) < rng * 0.6:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Hammer",
+        "patternDetail": "D1 hammer (long lower wick)",
+        "level": l,
+        "close": c,
+        "candleTime": ohlc["times"][i],
+    }
+
+
+def detect_doji_then_green(ohlc: dict) -> dict | None:
+    """
+    Two-candle sequence on closed candles:
+    - Candle -3: doji (small body)
+    - Candle -2: green candle that closed above doji close (confirmation)
+    """
+    if len(ohlc["closes"]) < 4:
+        return None
+    doji_i = -3
+    green_i = -2
+    _, _, _, c_doji, body_d, rng_d, _, _ = _candle_parts(ohlc, doji_i)
+    o_g, _, l_g, c_g, body_g, rng_g, _, _ = _candle_parts(ohlc, green_i)
+
+    if not _is_doji(body_d, rng_d):
+        return None
+    # Green confirmation candle with meaningful body
+    if c_g <= o_g:
+        return None
+    if body_g < rng_g * 0.25:
+        return None
+    if c_g <= c_doji:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Doji + Green",
+        "patternDetail": "D1 doji then green close",
+        "level": l_g,
+        "close": c_g,
+        "candleTime": ohlc["times"][green_i],
+    }
+
+
+def scan_d1_patterns(ohlc: dict) -> list[dict]:
+    """D1-only bullish candle patterns. One hit per pattern type max."""
+    hits = []
+    for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
+        hit = detector(ohlc)
+        if hit:
+            hits.append(hit)
+    return hits
+
+
+def scan_ohlc(ohlc: dict, *, include_d1_patterns: bool = False) -> list[dict]:
     hits = []
     sr = detect_sr_breakout(ohlc)
     if sr:
@@ -303,10 +512,13 @@ def scan_ohlc(ohlc: dict) -> list[dict]:
     tri = detect_triangle_breakout(ohlc)
     if tri:
         hits.append(tri)
+    if include_d1_patterns:
+        hits.extend(scan_d1_patterns(ohlc))
     return hits
 
 
 async def _load_symbol_universe(client: httpx.AsyncClient) -> tuple[set[str], dict[str, dict]]:
+    """MEXC USDT-M futures contracts only (spot API use nahi hota)."""
     global _api_symbols_cache, _symbol_meta_cache, _symbol_cache_at
     if (
         _api_symbols_cache is not None
@@ -315,97 +527,157 @@ async def _load_symbol_universe(client: httpx.AsyncClient) -> tuple[set[str], di
     ):
         return _api_symbols_cache, _symbol_meta_cache
 
-    r_default = await client.get("https://api.mexc.com/api/v3/defaultSymbols")
-    r_default.raise_for_status()
-    payload = r_default.json()
-    api_syms = set(payload.get("data") or [])
+    r = await client.get(f"{FUTURES_BASE}/api/v1/contract/detail")
+    r.raise_for_status()
+    payload = r.json()
+    if not payload.get("success"):
+        raise RuntimeError(f"MEXC futures detail failed: {payload.get('code')}")
 
-    r_info = await client.get("https://api.mexc.com/api/v3/exchangeInfo")
-    r_info.raise_for_status()
-    meta = {s["symbol"]: s for s in r_info.json().get("symbols", [])}
+    meta: dict[str, dict] = {}
+    api_syms: set[str] = set()
+    for c in payload.get("data") or []:
+        sym = c.get("symbol") or ""
+        if not _is_crypto_futures_usdt(c):
+            continue
+        meta[sym] = c
+        api_syms.add(sym)
 
     _api_symbols_cache = api_syms
     _symbol_meta_cache = meta
     _symbol_cache_at = time.time()
-    print(f"[Device Care] MEXC API symbols loaded: {len(api_syms)} tradable")
+    print(f"[Device Care] MEXC Futures USDT contracts loaded: {len(api_syms)}")
     return api_syms, meta
 
 
-def _is_crypto_spot_usdt(symbol: str, meta: dict[str, dict]) -> bool:
-    """Sirf MEXC spot crypto/USDT — forex, stable, commodity exclude."""
-    s = meta.get(symbol)
-    if not s:
+def _is_crypto_futures_usdt(contract: dict) -> bool:
+    """Sirf active USDT-M crypto futures — spot/fiat/commodity/stocks exclude."""
+    if not contract:
         return False
-    if s.get("quoteAsset") != "USDT":
+    symbol = contract.get("symbol") or ""
+    if not symbol.endswith("_USDT"):
         return False
-    if str(s.get("status")) != "1":
+    if contract.get("quoteCoin") != "USDT":
         return False
-    if not s.get("isSpotTradingAllowed"):
+    if contract.get("settleCoin") != "USDT":
         return False
-    if "SPOT" not in s.get("permissions", []):
+    # state 0 = enabled
+    if contract.get("state") not in (0, "0", None):
         return False
-    if s.get("st"):
+    if contract.get("apiAllowed") is False:
         return False
-    if "(" in symbol or ")" in symbol or "_" in symbol:
+    if contract.get("isHidden"):
+        return False
+    # type 2 = stock/index/commodity style contracts on MEXC
+    if contract.get("type") == 2:
         return False
 
-    base = s.get("baseAsset", "")
+    base = (contract.get("baseCoin") or "").upper()
     if base in STABLE_FIAT_BASES:
         return False
-    if base.startswith(("GOLD", "SILVER", "OIL", "GAS")):
+    if base.startswith(("GOLD", "SILVER", "OIL", "GAS", "USOIL", "UKOIL")):
+        return False
+    # Stock-like tickers: AMDSTOCK, NVIDIA, SPX500, etc.
+    if "STOCK" in base or base.endswith(("500", "100", "30")):
+        return False
+    if any(x in base for x in ("SPX", "NAS", "DOW", "NIKKEI", "FTSE")):
         return False
     return True
 
 
 async def fetch_symbols(client: httpx.AsyncClient) -> list[tuple[str, float]]:
-    api_syms, meta = await _load_symbol_universe(client)
-    r = await client.get("https://api.mexc.com/api/v3/ticker/24hr")
+    api_syms, _meta = await _load_symbol_universe(client)
+    r = await client.get(f"{FUTURES_BASE}/api/v1/contract/ticker")
     r.raise_for_status()
+    payload = r.json()
+    if not payload.get("success"):
+        raise RuntimeError(f"MEXC futures ticker failed: {payload.get('code')}")
+
     rows = []
     skipped = 0
-    for t in r.json():
+    for t in payload.get("data") or []:
         sym = t.get("symbol", "")
         if sym not in api_syms:
-            continue
-        if not _is_crypto_spot_usdt(sym, meta):
             skipped += 1
             continue
-        vol = float(t.get("quoteVolume", 0))
+        # amount24 = 24h turnover in quote (USDT)
+        vol = float(t.get("amount24") or 0)
         if vol >= MIN_VOL:
             rows.append((sym, vol))
     rows.sort(key=lambda x: x[1], reverse=True)
-    print(f"[Device Care] Crypto USDT pairs: {len(rows)} (filtered {skipped} non-crypto/low-quality)")
+    print(
+        f"[Device Care] Futures USDT pairs: {len(rows)} "
+        f"(skipped {skipped} non-crypto/low-quality)"
+    )
     return rows
 
 
-async def fetch_klines(client: httpx.AsyncClient, symbol: str, interval: str, limit: int) -> dict | None:
+async def fetch_klines(
+    client: httpx.AsyncClient, symbol: str, interval: str, limit: int
+) -> dict | None:
+    """MEXC futures klines — times are unix seconds; convert to ms for UI."""
+    end = int(time.time())
+    # Interval seconds for start window (fetch a bit more than limit)
+    interval_sec = {
+        "Min15": 15 * 60,
+        "Min60": 60 * 60,
+        "Hour4": 4 * 3600,
+        "Day1": 86400,
+    }.get(interval, 3600)
+    start = end - interval_sec * (limit + 5)
     r = await client.get(
-        "https://api.mexc.com/api/v3/klines",
-        params={"symbol": symbol, "interval": interval, "limit": limit},
+        f"{FUTURES_BASE}/api/v1/contract/kline/{symbol}",
+        params={"interval": interval, "start": start, "end": end},
     )
     if r.status_code != 200:
         return None
-    data = r.json()
-    if not data or len(data) < LOOKBACK + 3:
+    payload = r.json()
+    if not payload.get("success"):
         return None
+    data = payload.get("data") or {}
+    times = data.get("time") or []
+    opens = data.get("open") or []
+    highs = data.get("high") or []
+    lows = data.get("low") or []
+    closes = data.get("close") or []
+    if not times or len(times) < LOOKBACK + 3:
+        return None
+    # Keep last `limit` candles; convert seconds → ms for frontend Date()
+    n = min(len(times), limit)
     return {
-        "opens": [float(x[1]) for x in data],
-        "highs": [float(x[2]) for x in data],
-        "lows": [float(x[3]) for x in data],
-        "closes": [float(x[4]) for x in data],
-        "times": [int(x[0]) for x in data],
+        "opens": [float(x) for x in opens[-n:]],
+        "highs": [float(x) for x in highs[-n:]],
+        "lows": [float(x) for x in lows[-n:]],
+        "closes": [float(x) for x in closes[-n:]],
+        "times": [int(x) * 1000 for x in times[-n:]],
     }
 
 
 async def scan_loop():
-    print("[Device Care] Multi-TF scanner started (15M/1H/4H/D1)")
+    print("[Device Care] Futures multi-TF scanner started (15M/1H/4H/D1 + D1 patterns)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
-            stale_before = started - 8 * 86400
+            morning = in_morning_window()
+            scan_stats["morningWindow"] = morning
+            scan_stats["d1PatternsEnabled"] = True
+            wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
+            # Subah: D1 pehle scan — daily close patterns jaldi milen
+            tf_order = (
+                list(reversed(TIMEFRAMES)) if morning else list(TIMEFRAMES)
+            )
+            # Cooldown: breakout keys 1h, D1 pattern keys 8h
             for key, seen_at in list(cooldown.items()):
-                if seen_at < stale_before:
+                is_d1 = any(p in key for p in D1_PATTERNS)
+                ttl = D1_PATTERN_ALERT_TTL_SEC if is_d1 else BREAKOUT_ALERT_TTL_SEC
+                if seen_at < started - ttl:
                     del cooldown[key]
+            removed = prune_alert_history(started)
+            if removed:
+                _push_sse({
+                    "type": "alerts_cleared",
+                    "data": {"ids": [r["id"] for r in removed if r.get("id")]},
+                })
+                _broadcast_stats()
             scan_stats["phase"] = "fetching_pairs"
             scan_stats["scanned"] = 0
             scan_stats["errors"] = 0
@@ -415,13 +687,17 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                print(f"[Device Care] Scanning {len(symbols)} pairs × {len(TIMEFRAMES)} TFs...")
+                mode = "MORNING D1+breakout" if morning else "24/7 breakout + D1 patterns"
+                print(
+                    f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
+                    f"({mode}, wait={wait_sec}s)..."
+                )
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
                     coin_hits = 0
                     coin_err = False
-                    for interval, tf_label, limit in TIMEFRAMES:
+                    for interval, tf_label, limit in tf_order:
                         scan_stats["currentTimeframe"] = tf_label
                         if i % 3 == 0:
                             _broadcast_stats()
@@ -431,7 +707,8 @@ async def scan_loop():
                             scan_stats["errors"] += 1
                             await asyncio.sleep(0.05)
                             continue
-                        for hit in scan_ohlc(ohlc):
+                        include_d1 = tf_label == "D1"
+                        for hit in scan_ohlc(ohlc, include_d1_patterns=include_d1):
                             key = (
                                 f"{sym}:{tf_label}:{hit['pattern']}:"
                                 f"{hit['direction']}:{hit['candleTime']}"
@@ -446,7 +723,10 @@ async def scan_loop():
                                     **hit,
                                 }
                                 coin_hits += 1
-                                print(f"[Device Care] {sym} {tf_label} {hit['pattern']} {hit['direction']}")
+                                print(
+                                    f"[Device Care] {sym} {tf_label} "
+                                    f"{hit['pattern']} {hit['direction']}"
+                                )
                                 _broadcast(alert)
                         await asyncio.sleep(0.05)
                     scan_stats["scannedCoins"].append({
@@ -469,9 +749,17 @@ async def scan_loop():
                 print(f"[Device Care] scan error: {e}")
                 _broadcast_stats()
 
-            for remaining in range(SCAN_SEC, 0, -1):
+            # Wait loop — also prune expired alerts so UI clears on schedule
+            for remaining in range(wait_sec, 0, -1):
                 scan_stats["nextScanInSec"] = remaining
+                scan_stats["morningWindow"] = in_morning_window()
                 if remaining % 10 == 0:
+                    removed = prune_alert_history()
+                    if removed:
+                        _push_sse({
+                            "type": "alerts_cleared",
+                            "data": {"ids": [r["id"] for r in removed if r.get("id")]},
+                        })
                     _broadcast_stats()
                 await asyncio.sleep(1)
 
@@ -482,4 +770,4 @@ def start_device_care_scanner():
         return
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Device Care] PWA → /device-care")
+    print("[Device Care] PWA → /device-care (MEXC Futures)")

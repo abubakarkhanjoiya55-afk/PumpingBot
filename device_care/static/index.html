@@ -251,7 +251,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">15M · 1H · 4H · D1 — S/R + Triangle scan</p>
+    <p class="sub">MEXC Futures · 15M/1H/4H/D1 · Breakouts + D1 Doji/Hammer</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -278,7 +278,7 @@
     </div>
     <div class="stat-card">
       <div class="stat-num green" id="alertsTotal">0</div>
-      <div class="stat-label">Breakout alerts</div>
+      <div class="stat-label">Alerts</div>
     </div>
     <div class="stat-card wide">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -294,6 +294,8 @@
         <span class="tf-pill">D1</span>
         <span class="tf-pill">S/R</span>
         <span class="tf-pill">Triangle</span>
+        <span class="tf-pill">Doji</span>
+        <span class="tf-pill">Hammer</span>
       </div>
     </div>
     <div class="stat-card">
@@ -317,12 +319,12 @@
   </div>
 
   <div class="section" style="padding-bottom:10px;">
-    <div class="section-title">Breakout alerts</div>
+    <div class="section-title">Alerts (breakout + D1 patterns)</div>
     <div class="alerts" id="alerts"></div>
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
-      Abhi koi breakout nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">Naya alert aaye to screen khulay gi; awaaz browser ki ijazat par chalegi</span>
+      Abhi koi alert nahi<br>
+      <span style="font-size:0.75rem;color:#3a3a50">Futures only · Breakouts 1h clear · D1 patterns 8h clear</span>
     </div>
   </div>
 
@@ -406,7 +408,7 @@
       coins.forEach(c => {
         const chip = document.createElement('span');
         chip.className = 'coin-chip' + (c.hits > 0 ? ' hit' : (!c.ok ? ' err' : ''));
-        chip.textContent = c.symbol.replace('USDT', '') + (c.hits > 0 ? ' ⚡' : '');
+        chip.textContent = c.symbol.replace('_USDT', '').replace('USDT', '') + (c.hits > 0 ? ' ⚡' : '');
         coinGrid.appendChild(chip);
       });
     }
@@ -426,7 +428,7 @@
       const liveText = document.getElementById('liveText');
 
       if (s.phase === 'scanning') {
-        badge.textContent = 'Scanning';
+        badge.textContent = s.morningWindow ? 'Morning scan' : 'Scanning';
         badge.className = 'phase-badge scanning';
         dot.className = 'dot';
         const tf = s.currentTimeframe ? ` · ${s.currentTimeframe}` : '';
@@ -437,10 +439,11 @@
         dot.className = 'dot wait';
         liveText.textContent = 'Pairs load ho rahi hain...';
       } else {
-        badge.textContent = 'Waiting';
+        badge.textContent = s.morningWindow ? 'Morning wait' : 'Waiting';
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
-        liveText.textContent = `${s.totalCoins || '?'} coins · 4 timeframes`;
+        const mode = s.morningWindow ? ' · subah 5–9am D1 zor' : '';
+        liveText.textContent = `${s.totalCoins || '?'} coins · breakouts + D1 patterns${mode}`;
       }
 
       let detail = '';
@@ -475,14 +478,20 @@
       renderedAlertIds.add(id);
       emptyEl.style.display = 'none';
       const up = a.direction === 'UP';
+      const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
+      const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
+      const dirLabel = up
+        ? (isPattern ? '▲ Bullish pattern' : '▲ Breakout UP')
+        : '▼ Breakout DOWN';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
+      c.dataset.alertId = id;
       c.innerHTML = `
         <div class="card-top">
-          <div class="sym">${a.symbol.replace('USDT','')}</div>
+          <div class="sym">${sym}</div>
           <span class="tf-badge">${a.timeframe || '—'}</span>
         </div>
-        <div class="dir ${up ? 'up' : 'down'}">${up ? '▲ Breakout UP' : '▼ Breakout DOWN'}</div>
+        <div class="dir ${up ? 'up' : 'down'}">${dirLabel}</div>
         <div class="pattern">${a.pattern || 'Breakout'}</div>
         <div class="meta">
           <b>Candle time:</b> ${fmtCandle(a.candleTime)}<br>
@@ -491,14 +500,39 @@
         </div>
       `;
       alertsEl.insertBefore(c, alertsEl.firstChild);
-      while (alertsEl.children.length > 20) alertsEl.lastChild.remove();
+      while (alertsEl.children.length > 20) {
+        const last = alertsEl.lastChild;
+        if (last?.dataset?.alertId) renderedAlertIds.delete(last.dataset.alertId);
+        last.remove();
+      }
       return true;
+    }
+
+    function removeAlertCards(ids) {
+      if (!ids || !ids.length) return;
+      const idSet = new Set(ids);
+      [...alertsEl.children].forEach((card) => {
+        const id = card.dataset.alertId;
+        if (id && idSet.has(id)) {
+          renderedAlertIds.delete(id);
+          acknowledgedAlertIds.delete(id);
+          card.remove();
+        }
+      });
+      if (!alertsEl.children.length) emptyEl.style.display = '';
     }
 
     async function loadAlerts() {
       try {
         const r = await fetch(BASE + '/api/alerts');
         const alerts = await r.json();
+        // Server already pruned — rebuild list from fresh data
+        alertsEl.innerHTML = '';
+        renderedAlertIds.clear();
+        if (!alerts.length) {
+          emptyEl.style.display = '';
+          return;
+        }
         [...alerts].reverse().forEach(addCard);
       } catch (e) { console.warn(e); }
     }
@@ -666,6 +700,9 @@
               startPersistentAlarm(msg.data);
               notify(msg.data);
             }
+          }
+          if (msg.type === 'alerts_cleared') {
+            removeAlertCards(msg.data?.ids || []);
           }
         } catch (e) { console.warn(e); }
       };
