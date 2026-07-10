@@ -3,7 +3,7 @@ Device Care — MEXC Futures multi-TF breakout PWA (trade nahi, sirf alarm).
 Mount: /device-care
 
 Sirf USDT-M futures (spot nahi).
-Breakouts: 15M/1H/4H/D1 — din-raat 24/7 (alerts 1h baad clear)
+Breakouts: 1H/4H/D1/1W — din-raat 24/7 (alerts 1h baad clear)
 D1 candle patterns (Dragonfly Doji / Hammer / Doji+Green):
   subah 5–9am PKT pe zor; alerts 8h baad clear
 """
@@ -47,12 +47,12 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# MEXC futures interval names
+# MEXC futures interval names — 15M hata diya; 1H/4H/D1/1W
 TIMEFRAMES = [
-    ("Min15", "15M", 80),
     ("Min60", "1H", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
+    ("Week1", "1W", 40),
 ]
 
 router = APIRouter(prefix="/device-care", tags=["device-care"])
@@ -618,10 +618,10 @@ async def fetch_klines(
     end = int(time.time())
     # Interval seconds for start window (fetch a bit more than limit)
     interval_sec = {
-        "Min15": 15 * 60,
         "Min60": 60 * 60,
         "Hour4": 4 * 3600,
         "Day1": 86400,
+        "Week1": 7 * 86400,
     }.get(interval, 3600)
     start = end - interval_sec * (limit + 5)
     r = await client.get(
@@ -653,7 +653,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Futures multi-TF scanner started (15M/1H/4H/D1 + D1 patterns)")
+    print("[Device Care] Futures multi-TF scanner started (1H/4H/D1/1W + D1 patterns)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
