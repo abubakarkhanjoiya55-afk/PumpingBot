@@ -176,5 +176,108 @@ class MorningWindowTests(unittest.TestCase):
         self.assertFalse(in_morning_window(datetime(2026, 7, 10, 14, 0)))
 
 
+class AlertTtlTests(unittest.TestCase):
+    def setUp(self):
+        import device_care.scanner as sc
+        self.sc = sc
+        sc.alert_history.clear()
+        sc.scan_stats["alertsTotal"] = 0
+
+    def tearDown(self):
+        self.sc.alert_history.clear()
+        self.sc.scan_stats["alertsTotal"] = 0
+
+    def test_breakout_clears_after_1h_d1_after_8h(self):
+        now = 1_800_000_000.0  # fixed epoch
+        self.sc.alert_history.extend([
+            {
+                "id": "brk",
+                "symbol": "BTC_USDT",
+                "pattern": "S/R Breakout",
+                "direction": "UP",
+                "alertedAt": int((now - 3601) * 1000),
+            },
+            {
+                "id": "tri",
+                "symbol": "ETH_USDT",
+                "pattern": "Triangle Breakout",
+                "direction": "UP",
+                "alertedAt": int((now - 1800) * 1000),
+            },
+            {
+                "id": "d1-old",
+                "symbol": "SOL_USDT",
+                "pattern": "Dragonfly Doji",
+                "direction": "UP",
+                "alertedAt": int((now - 8 * 3600 - 1) * 1000),
+            },
+            {
+                "id": "d1-keep",
+                "symbol": "DOGE_USDT",
+                "pattern": "Hammer",
+                "direction": "UP",
+                "alertedAt": int((now - 4 * 3600) * 1000),
+            },
+        ])
+
+        removed = self.sc.prune_alert_history(now)
+        removed_ids = {r["id"] for r in removed}
+
+        self.assertEqual({"brk", "d1-old"}, removed_ids)
+        kept_ids = {a["id"] for a in self.sc.alert_history}
+        self.assertEqual({"tri", "d1-keep"}, kept_ids)
+        self.assertEqual(2, self.sc.scan_stats["alertsTotal"])
+
+
+class FuturesFilterTests(unittest.TestCase):
+    def test_accepts_crypto_usdt_perp(self):
+        from device_care.scanner import _is_crypto_futures_usdt
+
+        self.assertTrue(_is_crypto_futures_usdt({
+            "symbol": "BTC_USDT",
+            "baseCoin": "BTC",
+            "quoteCoin": "USDT",
+            "settleCoin": "USDT",
+            "state": 0,
+            "apiAllowed": True,
+            "isHidden": False,
+            "type": 1,
+        }))
+
+    def test_rejects_spot_style_and_non_crypto(self):
+        from device_care.scanner import _is_crypto_futures_usdt
+
+        self.assertFalse(_is_crypto_futures_usdt({
+            "symbol": "BTCUSDT",  # spot-style, no underscore
+            "baseCoin": "BTC",
+            "quoteCoin": "USDT",
+            "settleCoin": "USDT",
+            "state": 0,
+            "apiAllowed": True,
+            "isHidden": False,
+            "type": 1,
+        }))
+        self.assertFalse(_is_crypto_futures_usdt({
+            "symbol": "XAU_USDT",
+            "baseCoin": "XAU",
+            "quoteCoin": "USDT",
+            "settleCoin": "USDT",
+            "state": 0,
+            "apiAllowed": True,
+            "isHidden": False,
+            "type": 1,
+        }))
+        self.assertFalse(_is_crypto_futures_usdt({
+            "symbol": "NVIDIA_USDT",
+            "baseCoin": "NVIDIA",
+            "quoteCoin": "USDT",
+            "settleCoin": "USDT",
+            "state": 0,
+            "apiAllowed": True,
+            "isHidden": False,
+            "type": 2,
+        }))
+
+
 if __name__ == "__main__":
     unittest.main()
