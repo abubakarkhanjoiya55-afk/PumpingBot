@@ -1,11 +1,16 @@
 """
 Device Care — MEXC multi-TF breakout PWA (trade nahi, sirf alarm).
 Mount: /device-care
+
+Breakouts: 15M/1H/4H/D1 — din-raat 24/7
+D1 candle patterns (Dragonfly Doji / Hammer / Doji+Green):
+  subah 5–9am PKT pe zor (daily candle UTC midnight = 5am PKT close)
 """
 import asyncio
 import json
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -15,6 +20,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 STATIC = Path(__file__).parent / "static"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
 SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
+# Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
+MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "60"))
+MORNING_START_HOUR = int(os.environ.get("DC_MORNING_START_HOUR", "5"))
+MORNING_END_HOUR = int(os.environ.get("DC_MORNING_END_HOUR", "9"))
+PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
@@ -54,12 +64,20 @@ scan_stats = {
     "alertsTotal": 0,
     "errors": 0,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
-    "patterns": ["S/R Breakout", "Triangle Breakout"],
+    "patterns": [
+        "S/R Breakout",
+        "Triangle Breakout",
+        "Dragonfly Doji",
+        "Hammer",
+        "Doji + Green",
+    ],
     "exchange": "MEXC",
     "minVolumeUsdt": MIN_VOL,
     "lookback": LOOKBACK,
     "nextScanInSec": 0,
     "scannedCoins": [],
+    "morningWindow": False,
+    "d1PatternsEnabled": False,
 }
 
 
@@ -295,7 +313,149 @@ def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict 
     return None
 
 
-def scan_ohlc(ohlc: dict) -> list[dict]:
+def _pkt_now() -> datetime:
+    """Pakistan Standard Time (UTC+5) — billing/scheduler ke saath consistent."""
+    return datetime.utcnow() + timedelta(hours=PKT_OFFSET_HOURS)
+
+
+def in_morning_window(now: datetime | None = None) -> bool:
+    """Subah 5am–9am PKT — daily candle close ke baad D1 patterns pe zor."""
+    t = now or _pkt_now()
+    return MORNING_START_HOUR <= t.hour < MORNING_END_HOUR
+
+
+def _candle_parts(
+    ohlc: dict, idx: int
+) -> tuple[float, float, float, float, float, float, float, float]:
+    """Return open, high, low, close, body, range, upper_wick, lower_wick for candle idx."""
+    o = ohlc["opens"][idx]
+    h = ohlc["highs"][idx]
+    l = ohlc["lows"][idx]
+    c = ohlc["closes"][idx]
+    body = abs(c - o)
+    rng = h - l if h != l else 0.0001
+    uw = h - max(o, c)
+    lw = min(o, c) - l
+    return o, h, l, c, body, rng, uw, lw
+
+
+def _is_doji(body: float, rng: float, max_body_pct: float = 0.1) -> bool:
+    """Small body relative to full range — classic doji."""
+    return body <= rng * max_body_pct
+
+
+def detect_dragonfly_doji(ohlc: dict) -> dict | None:
+    """
+    Dragonfly Doji on last closed candle (-2):
+    - Tiny body (doji)
+    - Long lower wick (>= 2x body, and majority of range)
+    - Little/no upper wick
+    Bullish reversal signal.
+    """
+    if len(ohlc["closes"]) < 3:
+        return None
+    i = -2
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    if not _is_doji(body, rng):
+        return None
+    # Long lower shadow, almost no upper shadow
+    if lw < rng * 0.6:
+        return None
+    if uw > rng * 0.1:
+        return None
+    if body > 0 and lw < body * 2:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Dragonfly Doji",
+        "patternDetail": "D1 dragonfly doji (long lower wick)",
+        "level": l,
+        "close": c,
+        "candleTime": ohlc["times"][i],
+    }
+
+
+def detect_hammer(ohlc: dict) -> dict | None:
+    """
+    Hammer on last closed candle (-2):
+    - Lower wick >= 2x body
+    - Upper wick <= 0.3x body
+    - Prefer green close (bullish hammer); allow small red if wick dominant
+    """
+    if len(ohlc["closes"]) < 3:
+        return None
+    i = -2
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    if body <= 0:
+        return None
+    # Not a doji — hammer has a real body (else dragonfly covers it)
+    if _is_doji(body, rng):
+        return None
+    if lw < body * 2:
+        return None
+    if uw > body * 0.3:
+        return None
+    if lw < rng * 0.5:
+        return None
+    # Bullish preference: green close, or body in upper third of range
+    if c < o and (c - l) < rng * 0.6:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Hammer",
+        "patternDetail": "D1 hammer (long lower wick)",
+        "level": l,
+        "close": c,
+        "candleTime": ohlc["times"][i],
+    }
+
+
+def detect_doji_then_green(ohlc: dict) -> dict | None:
+    """
+    Two-candle sequence on closed candles:
+    - Candle -3: doji (small body)
+    - Candle -2: green candle that closed above doji close (confirmation)
+    """
+    if len(ohlc["closes"]) < 4:
+        return None
+    doji_i = -3
+    green_i = -2
+    _, _, _, c_doji, body_d, rng_d, _, _ = _candle_parts(ohlc, doji_i)
+    o_g, _, l_g, c_g, body_g, rng_g, _, _ = _candle_parts(ohlc, green_i)
+
+    if not _is_doji(body_d, rng_d):
+        return None
+    # Green confirmation candle with meaningful body
+    if c_g <= o_g:
+        return None
+    if body_g < rng_g * 0.25:
+        return None
+    if c_g <= c_doji:
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Doji + Green",
+        "patternDetail": "D1 doji then green close",
+        "level": l_g,
+        "close": c_g,
+        "candleTime": ohlc["times"][green_i],
+    }
+
+
+def scan_d1_patterns(ohlc: dict) -> list[dict]:
+    """D1-only bullish candle patterns. One hit per pattern type max."""
+    hits = []
+    for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
+        hit = detector(ohlc)
+        if hit:
+            hits.append(hit)
+    return hits
+
+
+def scan_ohlc(ohlc: dict, *, include_d1_patterns: bool = False) -> list[dict]:
     hits = []
     sr = detect_sr_breakout(ohlc)
     if sr:
@@ -303,6 +463,8 @@ def scan_ohlc(ohlc: dict) -> list[dict]:
     tri = detect_triangle_breakout(ohlc)
     if tri:
         hits.append(tri)
+    if include_d1_patterns:
+        hits.extend(scan_d1_patterns(ohlc))
     return hits
 
 
@@ -398,10 +560,18 @@ async def fetch_klines(client: httpx.AsyncClient, symbol: str, interval: str, li
 
 
 async def scan_loop():
-    print("[Device Care] Multi-TF scanner started (15M/1H/4H/D1)")
+    print("[Device Care] Multi-TF scanner started (15M/1H/4H/D1 + D1 candle patterns)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
+            morning = in_morning_window()
+            scan_stats["morningWindow"] = morning
+            scan_stats["d1PatternsEnabled"] = True
+            wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
+            # Subah: D1 pehle scan — daily close patterns jaldi milen
+            tf_order = (
+                list(reversed(TIMEFRAMES)) if morning else list(TIMEFRAMES)
+            )
             stale_before = started - 8 * 86400
             for key, seen_at in list(cooldown.items()):
                 if seen_at < stale_before:
@@ -415,13 +585,17 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                print(f"[Device Care] Scanning {len(symbols)} pairs × {len(TIMEFRAMES)} TFs...")
+                mode = "MORNING D1+breakout" if morning else "24/7 breakout + D1 patterns"
+                print(
+                    f"[Device Care] Scanning {len(symbols)} pairs × {len(TIMEFRAMES)} TFs "
+                    f"({mode}, wait={wait_sec}s)..."
+                )
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
                     coin_hits = 0
                     coin_err = False
-                    for interval, tf_label, limit in TIMEFRAMES:
+                    for interval, tf_label, limit in tf_order:
                         scan_stats["currentTimeframe"] = tf_label
                         if i % 3 == 0:
                             _broadcast_stats()
@@ -431,7 +605,8 @@ async def scan_loop():
                             scan_stats["errors"] += 1
                             await asyncio.sleep(0.05)
                             continue
-                        for hit in scan_ohlc(ohlc):
+                        include_d1 = tf_label == "D1"
+                        for hit in scan_ohlc(ohlc, include_d1_patterns=include_d1):
                             key = (
                                 f"{sym}:{tf_label}:{hit['pattern']}:"
                                 f"{hit['direction']}:{hit['candleTime']}"
@@ -446,7 +621,10 @@ async def scan_loop():
                                     **hit,
                                 }
                                 coin_hits += 1
-                                print(f"[Device Care] {sym} {tf_label} {hit['pattern']} {hit['direction']}")
+                                print(
+                                    f"[Device Care] {sym} {tf_label} "
+                                    f"{hit['pattern']} {hit['direction']}"
+                                )
                                 _broadcast(alert)
                         await asyncio.sleep(0.05)
                     scan_stats["scannedCoins"].append({
@@ -469,8 +647,10 @@ async def scan_loop():
                 print(f"[Device Care] scan error: {e}")
                 _broadcast_stats()
 
-            for remaining in range(SCAN_SEC, 0, -1):
+            # Re-check morning window for wait interval (window may end mid-wait)
+            for remaining in range(wait_sec, 0, -1):
                 scan_stats["nextScanInSec"] = remaining
+                scan_stats["morningWindow"] = in_morning_window()
                 if remaining % 10 == 0:
                     _broadcast_stats()
                 await asyncio.sleep(1)

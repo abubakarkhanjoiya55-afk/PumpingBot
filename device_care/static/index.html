@@ -251,7 +251,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">15M · 1H · 4H · D1 — S/R + Triangle scan</p>
+    <p class="sub">15M · 1H · 4H · D1 — Breakouts + D1 Doji/Hammer</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -278,7 +278,7 @@
     </div>
     <div class="stat-card">
       <div class="stat-num green" id="alertsTotal">0</div>
-      <div class="stat-label">Breakout alerts</div>
+      <div class="stat-label">Alerts</div>
     </div>
     <div class="stat-card wide">
       <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -294,6 +294,8 @@
         <span class="tf-pill">D1</span>
         <span class="tf-pill">S/R</span>
         <span class="tf-pill">Triangle</span>
+        <span class="tf-pill">Doji</span>
+        <span class="tf-pill">Hammer</span>
       </div>
     </div>
     <div class="stat-card">
@@ -317,12 +319,12 @@
   </div>
 
   <div class="section" style="padding-bottom:10px;">
-    <div class="section-title">Breakout alerts</div>
+    <div class="section-title">Alerts (breakout + D1 patterns)</div>
     <div class="alerts" id="alerts"></div>
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
-      Abhi koi breakout nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">Naya alert aaye to screen khulay gi; awaaz browser ki ijazat par chalegi</span>
+      Abhi koi alert nahi<br>
+      <span style="font-size:0.75rem;color:#3a3a50">Breakouts din-raat · D1 Doji/Hammer subah 5–9am PKT pe zor</span>
     </div>
   </div>
 
@@ -426,7 +428,7 @@
       const liveText = document.getElementById('liveText');
 
       if (s.phase === 'scanning') {
-        badge.textContent = 'Scanning';
+        badge.textContent = s.morningWindow ? 'Morning scan' : 'Scanning';
         badge.className = 'phase-badge scanning';
         dot.className = 'dot';
         const tf = s.currentTimeframe ? ` · ${s.currentTimeframe}` : '';
@@ -437,10 +439,11 @@
         dot.className = 'dot wait';
         liveText.textContent = 'Pairs load ho rahi hain...';
       } else {
-        badge.textContent = 'Waiting';
+        badge.textContent = s.morningWindow ? 'Morning wait' : 'Waiting';
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
-        liveText.textContent = `${s.totalCoins || '?'} coins · 4 timeframes`;
+        const mode = s.morningWindow ? ' · subah 5–9am D1 zor' : '';
+        liveText.textContent = `${s.totalCoins || '?'} coins · breakouts + D1 patterns${mode}`;
       }
 
       let detail = '';
