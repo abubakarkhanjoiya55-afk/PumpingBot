@@ -1,11 +1,12 @@
 """
-Device Care — MEXC Futures multi-TF breakout PWA (trade nahi, sirf alarm).
+Device Care — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
 Mount: /device-care
 
 Sirf USDT-M futures (spot nahi).
-Breakouts: 1H/4H/D1/1W — din-raat 24/7 (alerts 1h baad clear)
-D1 candle patterns (Dragonfly Doji / Hammer / Doji+Green):
-  subah 5–9am PKT pe zor; alerts 8h baad clear
+Strategy:
+  - 1H / 4H  → Triangle Breakout only (alerts 1h baad clear)
+  - D1 / 1W  → Dragonfly Doji / Hammer / Doji+Green only (alerts 8h baad clear)
+Har alert ke sath: score (0–100), entry, SL, TP
 """
 import asyncio
 import json
@@ -29,12 +30,16 @@ PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
-# Alert history TTL — breakouts jaldi clear, D1 patterns zyada der
+# Alert history TTL — triangles jaldi clear, candle patterns zyada der
 BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
 D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
 
 FUTURES_BASE = "https://contract.mexc.com"
-D1_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
+CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
+# Back-compat alias used by TTL helpers
+D1_PATTERNS = CANDLE_PATTERNS
+TRIANGLE_TFS = frozenset({"1H", "4H"})
+CANDLE_TFS = frozenset({"D1", "1W"})
 
 # Fiat, stablecoins, commodities — futures crypto scan se bahar
 STABLE_FIAT_BASES = frozenset({
@@ -47,7 +52,7 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# MEXC futures interval names — 15M hata diya; 1H/4H/D1/1W
+# MEXC futures interval names — 1H/4H triangles, D1/1W candle patterns
 TIMEFRAMES = [
     ("Min60", "1H", 70),
     ("Hour4", "4H", 60),
@@ -73,12 +78,17 @@ scan_stats = {
     "errors": 0,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
     "patterns": [
-        "S/R Breakout",
         "Triangle Breakout",
         "Dragonfly Doji",
         "Hammer",
         "Doji + Green",
     ],
+    "strategy": {
+        "1H": "Triangle Breakout",
+        "4H": "Triangle Breakout",
+        "D1": "Doji/Hammer patterns",
+        "1W": "Doji/Hammer patterns",
+    },
     "exchange": "MEXC Futures",
     "market": "futures",
     "minVolumeUsdt": MIN_VOL,
@@ -200,20 +210,26 @@ def _normalize_alert(alert: dict) -> dict:
         "direction": direction,
         "timeframe": alert.get("timeframe", ""),
         "pattern": alert.get("pattern", "Breakout"),
+        "patternDetail": alert.get("patternDetail", ""),
         "candleTime": alert.get("candleTime"),
         "close": alert.get("close"),
         "level": alert.get("level"),
         "volume": alert.get("volume", 0),
+        "score": alert.get("score"),
+        "entry": alert.get("entry"),
+        "sl": alert.get("sl"),
+        "tp": alert.get("tp"),
+        "riskReward": alert.get("riskReward"),
         "at": alert.get("alertedAt") or alert.get("at"),
     }
 
 
 def _is_d1_pattern_alert(alert: dict) -> bool:
-    return alert.get("pattern") in D1_PATTERNS
+    return alert.get("pattern") in CANDLE_PATTERNS
 
 
 def _alert_ttl_sec(alert: dict) -> int:
-    """Breakout alerts 1h, D1 doji/hammer patterns 8h."""
+    """Triangle alerts 1h, candle patterns (D1/1W) 8h."""
     if _is_d1_pattern_alert(alert):
         return D1_PATTERN_ALERT_TTL_SEC
     return BREAKOUT_ALERT_TTL_SEC
@@ -222,8 +238,8 @@ def _alert_ttl_sec(alert: dict) -> int:
 def prune_alert_history(now: float | None = None) -> list[dict]:
     """
     Purani alerts history se hatao:
-    - Breakouts (S/R, Triangle): 1 hour
-    - D1 patterns (Dragonfly/Hammer/Doji+Green): 8 hours
+    - Triangle breakouts: 1 hour
+    - Candle patterns (Dragonfly/Hammer/Doji+Green): 8 hours
     Returns list of removed alert ids (for SSE clear).
     """
     global alert_history
@@ -254,6 +270,149 @@ def _broadcast(alert: dict):
     scan_stats["alertsTotal"] = len(alert_history)
     _push_sse({"type": "alert", "data": _normalize_alert(alert)})
     _broadcast_stats()
+
+
+def _round_price(price: float) -> float:
+    """Readable price rounding by magnitude."""
+    p = abs(price)
+    if p >= 1000:
+        return round(price, 2)
+    if p >= 100:
+        return round(price, 3)
+    if p >= 1:
+        return round(price, 4)
+    if p >= 0.01:
+        return round(price, 6)
+    return round(price, 8)
+
+
+def _avg_range(ohlc: dict, look: int = 12) -> float:
+    h, l = ohlc["highs"], ohlc["lows"]
+    # Exclude forming candle (-1)
+    end = len(h) - 1
+    start = max(0, end - look)
+    ranges = [h[j] - l[j] for j in range(start, end)]
+    return sum(ranges) / max(len(ranges), 1)
+
+
+def _body_strength(ohlc: dict, idx: int = -2) -> float:
+    """Body vs recent avg range — 0..~2+."""
+    body = abs(ohlc["closes"][idx] - ohlc["opens"][idx])
+    avg = _avg_range(ohlc) or 0.0001
+    return body / avg
+
+
+def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
+    """
+    Attach score (0–100), entry, SL, TP.
+    Stronger / cleaner signal → higher score → wider RR target.
+    """
+    i = -2
+    h = ohlc["highs"]
+    l = ohlc["lows"]
+    c = ohlc["closes"]
+    o = ohlc["opens"]
+    direction = hit.get("direction", "UP")
+    pattern = hit.get("pattern", "")
+    detail = hit.get("patternDetail", "")
+    level = float(hit.get("level") or c[i])
+    close = float(hit.get("close") or c[i])
+    entry = close
+    candle_low = float(l[i])
+    candle_high = float(h[i])
+    avg_rng = _avg_range(ohlc) or abs(close) * 0.01
+    body_str = _body_strength(ohlc, i)
+
+    score = 50
+    sl = candle_low
+    buffer = max(avg_rng * 0.15, abs(close) * 0.001)
+
+    if pattern == "Triangle Breakout":
+        # Base by triangle type
+        if "Ascending" in detail:
+            score = 72
+        elif "Descending" in detail:
+            score = 72
+        else:
+            score = 60  # symmetrical
+        # Breakout distance beyond level
+        if direction == "UP":
+            dist = (close - level) / (avg_rng or 0.0001)
+            sl = min(float(hit.get("level") or candle_low), candle_low) - buffer
+            # Prefer triangle support if available via level for descending/sym
+            if "Ascending" in detail or "Symmetrical" in detail:
+                # SL under recent swing low before breakout
+                sl = min(l[-TRIANGLE_WINDOW - 2:i][-6:]) - buffer
+        else:
+            dist = (level - close) / (avg_rng or 0.0001)
+            sl = max(float(hit.get("level") or candle_high), candle_high) + buffer
+            if "Descending" in detail or "Symmetrical" in detail:
+                sl = max(h[-TRIANGLE_WINDOW - 2:i][-6:]) + buffer
+        score += min(18, int(dist * 10))
+        score += min(12, int(body_str * 8))
+        # Clean close beyond level
+        if direction == "UP" and close > level * 1.002:
+            score += 5
+        if direction == "DOWN" and close < level * 0.998:
+            score += 5
+
+    elif pattern in CANDLE_PATTERNS:
+        _, _, _, _, body, rng, uw, lw = _candle_parts(ohlc, i)
+        if pattern == "Dragonfly Doji":
+            score = 70
+            wick_ratio = lw / (rng or 0.0001)
+            score += min(20, int(wick_ratio * 25))
+            if uw / (rng or 0.0001) < 0.05:
+                score += 5
+            sl = candle_low - buffer
+        elif pattern == "Hammer":
+            score = 65
+            wick_ratio = lw / max(body, 0.0001)
+            score += min(18, int(wick_ratio * 4))
+            if close > o[i]:
+                score += 8  # green hammer
+            sl = candle_low - buffer
+        else:  # Doji + Green
+            score = 75
+            # Confirmation body strength
+            score += min(15, int(body_str * 10))
+            # Doji quality at -3
+            _, _, _, _, body_d, rng_d, _, lw_d = _candle_parts(ohlc, -3)
+            if body_d <= rng_d * 0.05:
+                score += 5
+            if lw_d >= rng_d * 0.4:
+                score += 5
+            sl = min(float(l[-3]), candle_low) - buffer
+        # Close near highs of pattern candle
+        if (close - candle_low) / (rng or 0.0001) > 0.7:
+            score += 4
+
+    score = max(1, min(100, int(score)))
+
+    # RR scales with score: 1.5 @50 → ~3.0 @100
+    rr = round(1.2 + (score / 100.0) * 2.0, 2)
+    risk = abs(entry - sl)
+    if risk <= 0:
+        risk = avg_rng * 0.5 or abs(entry) * 0.01
+        if direction == "UP":
+            sl = entry - risk
+        else:
+            sl = entry + risk
+
+    if direction == "UP":
+        tp = entry + risk * rr
+    else:
+        tp = entry - risk * rr
+
+    hit["score"] = score
+    hit["entry"] = _round_price(entry)
+    hit["sl"] = _round_price(sl)
+    hit["tp"] = _round_price(tp)
+    hit["riskReward"] = rr
+    hit["close"] = _round_price(close)
+    if hit.get("level") is not None:
+        hit["level"] = _round_price(float(hit["level"]))
+    return hit
 
 
 def _body_ok(highs, lows, closes, opens, idx: int) -> bool:
@@ -418,7 +577,7 @@ def detect_dragonfly_doji(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Dragonfly Doji",
-        "patternDetail": "D1 dragonfly doji (long lower wick)",
+        "patternDetail": "Dragonfly doji (long lower wick)",
         "level": l,
         "close": c,
         "candleTime": ohlc["times"][i],
@@ -454,7 +613,7 @@ def detect_hammer(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Hammer",
-        "patternDetail": "D1 hammer (long lower wick)",
+        "patternDetail": "Hammer (long lower wick)",
         "level": l,
         "close": c,
         "candleTime": ohlc["times"][i],
@@ -487,15 +646,15 @@ def detect_doji_then_green(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Doji + Green",
-        "patternDetail": "D1 doji then green close",
+        "patternDetail": "Doji then green close",
         "level": l_g,
         "close": c_g,
         "candleTime": ohlc["times"][green_i],
     }
 
 
-def scan_d1_patterns(ohlc: dict) -> list[dict]:
-    """D1-only bullish candle patterns. One hit per pattern type max."""
+def scan_candle_patterns(ohlc: dict) -> list[dict]:
+    """D1/1W bullish candle patterns. One hit per pattern type max."""
     hits = []
     for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
         hit = detector(ohlc)
@@ -504,16 +663,30 @@ def scan_d1_patterns(ohlc: dict) -> list[dict]:
     return hits
 
 
-def scan_ohlc(ohlc: dict, *, include_d1_patterns: bool = False) -> list[dict]:
-    hits = []
-    sr = detect_sr_breakout(ohlc)
-    if sr:
-        hits.append(sr)
-    tri = detect_triangle_breakout(ohlc)
-    if tri:
-        hits.append(tri)
-    if include_d1_patterns:
-        hits.extend(scan_d1_patterns(ohlc))
+# Back-compat alias
+scan_d1_patterns = scan_candle_patterns
+
+
+def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
+    """
+    TF-gated strategy:
+      1H/4H → Triangle Breakout only
+      D1/1W → Dragonfly/Hammer/Doji+Green only
+    include_d1_patterns: legacy test flag for candle patterns when timeframe omitted.
+    """
+    hits: list[dict] = []
+    tf = timeframe or ""
+
+    run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
+    run_candles = tf in CANDLE_TFS or include_d1_patterns
+
+    if run_triangle:
+        tri = detect_triangle_breakout(ohlc)
+        if tri:
+            hits.append(enrich_trade_plan(ohlc, tri))
+    if run_candles:
+        for hit in scan_candle_patterns(ohlc):
+            hits.append(enrich_trade_plan(ohlc, hit))
     return hits
 
 
@@ -653,7 +826,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Futures multi-TF scanner started (1H/4H/D1/1W + D1 patterns)")
+    print("[Device Care] Strategy: 1H/4H triangle · D1/1W doji/hammer (+ score/entry/SL/TP)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -661,14 +834,14 @@ async def scan_loop():
             scan_stats["morningWindow"] = morning
             scan_stats["d1PatternsEnabled"] = True
             wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
-            # Subah: D1 pehle scan — daily close patterns jaldi milen
+            # Subah: D1/1W pehle — daily/weekly candle patterns jaldi milen
             tf_order = (
                 list(reversed(TIMEFRAMES)) if morning else list(TIMEFRAMES)
             )
-            # Cooldown: breakout keys 1h, D1 pattern keys 8h
+            # Cooldown: triangle keys 1h, candle pattern keys 8h
             for key, seen_at in list(cooldown.items()):
-                is_d1 = any(p in key for p in D1_PATTERNS)
-                ttl = D1_PATTERN_ALERT_TTL_SEC if is_d1 else BREAKOUT_ALERT_TTL_SEC
+                is_candle = any(p in key for p in CANDLE_PATTERNS)
+                ttl = D1_PATTERN_ALERT_TTL_SEC if is_candle else BREAKOUT_ALERT_TTL_SEC
                 if seen_at < started - ttl:
                     del cooldown[key]
             removed = prune_alert_history(started)
@@ -687,7 +860,7 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = "MORNING D1+breakout" if morning else "24/7 breakout + D1 patterns"
+                mode = "MORNING D1/1W patterns" if morning else "1H/4H triangle + D1/1W patterns"
                 print(
                     f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
@@ -707,8 +880,7 @@ async def scan_loop():
                             scan_stats["errors"] += 1
                             await asyncio.sleep(0.05)
                             continue
-                        include_d1 = tf_label == "D1"
-                        for hit in scan_ohlc(ohlc, include_d1_patterns=include_d1):
+                        for hit in scan_ohlc(ohlc, timeframe=tf_label):
                             key = (
                                 f"{sym}:{tf_label}:{hit['pattern']}:"
                                 f"{hit['direction']}:{hit['candleTime']}"
@@ -725,7 +897,9 @@ async def scan_loop():
                                 coin_hits += 1
                                 print(
                                     f"[Device Care] {sym} {tf_label} "
-                                    f"{hit['pattern']} {hit['direction']}"
+                                    f"{hit['pattern']} {hit['direction']} "
+                                    f"score={hit.get('score')} "
+                                    f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
                                 )
                                 _broadcast(alert)
                         await asyncio.sleep(0.05)

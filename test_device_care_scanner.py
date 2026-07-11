@@ -165,6 +165,58 @@ class D1CandlePatternTests(unittest.TestCase):
 
         self.assertFalse(any(h["pattern"] == "Dragonfly Doji" for h in without))
         self.assertTrue(any(h["pattern"] == "Dragonfly Doji" for h in with_d1))
+        dragon = next(h for h in with_d1 if h["pattern"] == "Dragonfly Doji")
+        self.assertIn("score", dragon)
+        self.assertIn("entry", dragon)
+        self.assertIn("sl", dragon)
+        self.assertIn("tp", dragon)
+        self.assertGreaterEqual(dragon["score"], 1)
+        self.assertLessEqual(dragon["score"], 100)
+        self.assertLess(dragon["sl"], dragon["entry"])
+        self.assertGreater(dragon["tp"], dragon["entry"])
+
+    def test_tf_gating_1h_triangle_only_d1_candles_only(self):
+        size = 25
+        # Dragonfly candle — should fire on D1/1W, not on 1H/4H
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [95.0] * size
+        closes = [95.0] * size
+        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 80.0, 99.5, 99.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+
+        self.assertFalse(any(
+            h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="1H")
+        ))
+        self.assertFalse(any(
+            h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="4H")
+        ))
+        self.assertTrue(any(
+            h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="D1")
+        ))
+        self.assertTrue(any(
+            h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="1W")
+        ))
+
+        # Ascending triangle — should fire on 1H/4H, not on D1/1W
+        size = 21
+        highs = [100.0] * size
+        lows = [89.0] + [90.0 + 0.45 * i for i in range(18)] + [98.0, 98.0]
+        opens = [95.0] * size
+        closes = [95.0] * size
+        highs[-2], lows[-2], opens[-2], closes[-2] = 102.0, 98.0, 99.0, 101.0
+        tri = _ohlc(highs, lows, opens, closes)
+
+        h1 = scan_ohlc(tri, timeframe="1H")
+        d1 = scan_ohlc(tri, timeframe="D1")
+        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h1))
+        self.assertFalse(any(h["pattern"] == "Triangle Breakout" for h in d1))
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in h1))
+        tri_hit = next(h for h in h1 if h["pattern"] == "Triangle Breakout")
+        self.assertGreaterEqual(tri_hit["score"], 50)
+        self.assertIsNotNone(tri_hit["entry"])
+        self.assertIsNotNone(tri_hit["sl"])
+        self.assertIsNotNone(tri_hit["tp"])
 
 
 class MorningWindowTests(unittest.TestCase):
@@ -193,7 +245,7 @@ class AlertTtlTests(unittest.TestCase):
             {
                 "id": "brk",
                 "symbol": "BTC_USDT",
-                "pattern": "S/R Breakout",
+                "pattern": "Triangle Breakout",
                 "direction": "UP",
                 "alertedAt": int((now - 3601) * 1000),
             },

@@ -186,6 +186,26 @@
       font-size: 0.78rem; color: var(--purple); margin-bottom: 8px;
       padding: 4px 8px; background: rgba(167,139,250,0.1); border-radius: 6px; display: inline-block;
     }
+    .card .score-row {
+      display: flex; align-items: center; gap: 8px; margin: 6px 0 10px;
+    }
+    .card .score-badge {
+      font-size: 0.78rem; font-weight: 800; padding: 4px 10px; border-radius: 8px;
+      background: rgba(52,211,153,0.15); color: var(--green);
+    }
+    .card .score-badge.mid { background: rgba(251,191,36,0.15); color: #fbbf24; }
+    .card .score-badge.low { background: rgba(248,113,113,0.12); color: #f87171; }
+    .card .rr { font-size: 0.72rem; color: var(--muted); }
+    .card .levels {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin: 8px 0 6px;
+    }
+    .card .lvl {
+      background: rgba(255,255,255,0.03); border-radius: 8px; padding: 6px 8px; text-align: center;
+    }
+    .card .lvl .lbl { font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .card .lvl .val { font-size: 0.78rem; font-weight: 700; color: #e8eaf8; margin-top: 2px; }
+    .card .lvl.sl .val { color: var(--red); }
+    .card .lvl.tp .val { color: var(--green); }
     .card .meta { font-size: 0.74rem; color: var(--muted); line-height: 1.6; }
     .card .meta b { color: #c4c8e8; font-weight: 600; }
 
@@ -251,7 +271,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">MEXC Futures · 1H/4H/D1/1W · Breakouts + D1 Doji/Hammer</p>
+    <p class="sub">MEXC Futures · 1H/4H Triangle · D1/1W Doji · Score+SL/TP</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -292,7 +312,6 @@
         <span class="tf-pill">4H</span>
         <span class="tf-pill">D1</span>
         <span class="tf-pill">1W</span>
-        <span class="tf-pill">S/R</span>
         <span class="tf-pill">Triangle</span>
         <span class="tf-pill">Doji</span>
         <span class="tf-pill">Hammer</span>
@@ -319,12 +338,12 @@
   </div>
 
   <div class="section" style="padding-bottom:10px;">
-    <div class="section-title">Alerts (breakout + D1 patterns)</div>
+    <div class="section-title">Alerts (triangle + D1/1W patterns)</div>
     <div class="alerts" id="alerts"></div>
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi alert nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">Futures only · Breakouts 1h clear · D1 patterns 8h clear</span>
+      <span style="font-size:0.75rem;color:#3a3a50">1H/4H Triangle · D1/1W Doji · Score + Entry/SL/TP</span>
     </div>
   </div>
 
@@ -442,8 +461,8 @@
         badge.textContent = s.morningWindow ? 'Morning wait' : 'Waiting';
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
-        const mode = s.morningWindow ? ' · subah 5–9am D1 zor' : '';
-        liveText.textContent = `${s.totalCoins || '?'} coins · breakouts + D1 patterns${mode}`;
+        const mode = s.morningWindow ? ' · subah 5–9am D1/1W zor' : '';
+        liveText.textContent = `${s.totalCoins || '?'} coins · triangle + doji${mode}`;
       }
 
       let detail = '';
@@ -481,8 +500,23 @@
       const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
       const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
       const dirLabel = up
-        ? (isPattern ? '▲ Bullish pattern' : '▲ Breakout UP')
-        : '▼ Breakout DOWN';
+        ? (isPattern ? '▲ Bullish pattern' : '▲ Triangle UP')
+        : '▼ Triangle DOWN';
+      const score = a.score != null ? Number(a.score) : null;
+      const scoreClass = score == null ? '' : (score >= 75 ? '' : (score >= 60 ? ' mid' : ' low'));
+      const scoreHtml = score != null
+        ? `<div class="score-row">
+             <span class="score-badge${scoreClass}">Score ${score}/100</span>
+             ${a.riskReward != null ? `<span class="rr">RR 1:${a.riskReward}</span>` : ''}
+           </div>`
+        : '';
+      const levelsHtml = (a.entry != null || a.sl != null || a.tp != null)
+        ? `<div class="levels">
+             <div class="lvl"><div class="lbl">Entry</div><div class="val">${a.entry ?? '—'}</div></div>
+             <div class="lvl sl"><div class="lbl">SL</div><div class="val">${a.sl ?? '—'}</div></div>
+             <div class="lvl tp"><div class="lbl">TP</div><div class="val">${a.tp ?? '—'}</div></div>
+           </div>`
+        : '';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
       c.dataset.alertId = id;
@@ -492,10 +526,11 @@
           <span class="tf-badge">${a.timeframe || '—'}</span>
         </div>
         <div class="dir ${up ? 'up' : 'down'}">${dirLabel}</div>
-        <div class="pattern">${a.pattern || 'Breakout'}</div>
+        <div class="pattern">${a.pattern || 'Alert'}${a.patternDetail ? ' · ' + a.patternDetail : ''}</div>
+        ${scoreHtml}
+        ${levelsHtml}
         <div class="meta">
-          <b>Candle time:</b> ${fmtCandle(a.candleTime)}<br>
-          <b>Close:</b> ${a.close ?? '—'} · <b>Level:</b> ${a.level ?? '—'}<br>
+          <b>Candle:</b> ${fmtCandle(a.candleTime)} · <b>Close:</b> ${a.close ?? '—'}<br>
           <b>Alert:</b> ${fmtTime(a.at)}
         </div>
       `;
@@ -625,7 +660,9 @@
       document.getElementById('alarmDir').textContent = up ? '▲ BREAKOUT UP' : '▼ BREAKOUT DOWN';
       document.getElementById('alarmDir').className = 'alarm-dir ' + (up ? 'up' : 'down');
       document.getElementById('alarmInfo').innerHTML =
-        `<b>${a.timeframe}</b> · ${a.pattern}<br>Candle: ${fmtCandle(a.candleTime)}<br>Close: ${a.close}`;
+        `<b>${a.timeframe}</b> · ${a.pattern}` +
+        (a.score != null ? ` · Score ${a.score}` : '') +
+        `<br>Entry: ${a.entry ?? a.close} · SL: ${a.sl ?? '—'} · TP: ${a.tp ?? '—'}`;
       alarmOverlay.classList.add('active');
       const sounded = playAlarmPattern();
       document.getElementById('alarmDelivery').textContent = sounded
@@ -668,7 +705,9 @@
       if (!('Notification' in window) || Notification.permission !== 'granted') return false;
       const up = a.direction === 'UP';
       const options = {
-        body: `${a.timeframe} ${a.pattern} ${up ? '▲ UP' : '▼ DOWN'}`,
+        body: `${a.timeframe} ${a.pattern} ${up ? '▲ UP' : '▼ DOWN'}` +
+          (a.score != null ? ` · ${a.score}/100` : '') +
+          `\nE ${a.entry ?? a.close} · SL ${a.sl ?? '—'} · TP ${a.tp ?? '—'}`,
         icon: BASE + '/icon-192.png',
         badge: BASE + '/icon-192.png',
         tag: 'dc-' + a.symbol + a.timeframe,
