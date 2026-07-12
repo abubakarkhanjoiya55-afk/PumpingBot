@@ -175,7 +175,7 @@ class D1CandlePatternTests(unittest.TestCase):
         self.assertLess(dragon["sl"], dragon["entry"])
         self.assertGreater(dragon["tp"], dragon["entry"])
 
-    def test_tf_gating_1h_triangle_only_d1_candles_only(self):
+    def test_tf_gating_1h_breakouts_d1_candles_only(self):
         size = 25
         # Dragonfly candle — should fire on D1/1W, not on 1H/4H
         highs = [100.0] * size
@@ -211,12 +211,33 @@ class D1CandlePatternTests(unittest.TestCase):
         d1 = scan_ohlc(tri, timeframe="D1")
         self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h1))
         self.assertFalse(any(h["pattern"] == "Triangle Breakout" for h in d1))
-        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in h1))
+        # Triangle fixture is short for LOOKBACK=20 S/R; D1 must never emit breakouts
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
         tri_hit = next(h for h in h1 if h["pattern"] == "Triangle Breakout")
         self.assertGreaterEqual(tri_hit["score"], 50)
         self.assertIsNotNone(tri_hit["entry"])
         self.assertIsNotNone(tri_hit["sl"])
         self.assertIsNotNone(tri_hit["tp"])
+
+    def test_scan_ohlc_sr_breakout_on_1h_with_plan(self):
+        size = 23
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        highs[-2], lows[-2], opens[-2], closes[-2] = 106.0, 94.0, 95.0, 105.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+
+        h1 = scan_ohlc(ohlc, timeframe="1H")
+        d1 = scan_ohlc(ohlc, timeframe="D1")
+
+        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h1))
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
+        sr = next(h for h in h1 if h["pattern"] == "S/R Breakout")
+        self.assertEqual("UP", sr["direction"])
+        self.assertEqual(100.0, sr["level"])
+        self.assertLess(sr["sl"], sr["entry"])
+        self.assertGreater(sr["tp"], sr["entry"])
 
 
 class MorningWindowTests(unittest.TestCase):

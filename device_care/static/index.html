@@ -271,7 +271,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">MEXC Futures · 1H/4H Triangle · D1/1W Doji · Score+SL/TP</p>
+    <p class="sub">MEXC Futures · 1H/4H S/R+Triangle · D1/1W Doji · Score+SL/TP</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -312,6 +312,7 @@
         <span class="tf-pill">4H</span>
         <span class="tf-pill">D1</span>
         <span class="tf-pill">1W</span>
+        <span class="tf-pill">S/R</span>
         <span class="tf-pill">Triangle</span>
         <span class="tf-pill">Doji</span>
         <span class="tf-pill">Hammer</span>
@@ -338,12 +339,12 @@
   </div>
 
   <div class="section" style="padding-bottom:10px;">
-    <div class="section-title">Alerts (triangle + D1/1W patterns)</div>
+    <div class="section-title">Alerts (S/R + triangle + D1/1W patterns)</div>
     <div class="alerts" id="alerts"></div>
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi alert nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">1H/4H Triangle · D1/1W Doji · Score + Entry/SL/TP</span>
+      <span style="font-size:0.75rem;color:#3a3a50">1H/4H S/R+Triangle · D1/1W Doji · Score + Entry/SL/TP</span>
     </div>
   </div>
 
@@ -499,9 +500,10 @@
       const up = a.direction === 'UP';
       const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
       const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
+      const isTriangle = a.pattern === 'Triangle Breakout';
       const dirLabel = up
-        ? (isPattern ? '▲ Bullish pattern' : '▲ Triangle UP')
-        : '▼ Triangle DOWN';
+        ? (isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : '▲ Breakout UP'))
+        : (isTriangle ? '▼ Triangle DOWN' : '▼ Breakout DOWN');
       const score = a.score != null ? Number(a.score) : null;
       const scoreClass = score == null ? '' : (score >= 75 ? '' : (score >= 60 ? ' mid' : ' low'));
       const scoreHtml = score != null

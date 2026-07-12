@@ -4,7 +4,7 @@ Mount: /device-care
 
 Sirf USDT-M futures (spot nahi).
 Strategy:
-  - 1H / 4H  → Triangle Breakout only (alerts 1h baad clear)
+  - 1H / 4H  → S/R Breakout + Triangle Breakout (alerts 1h baad clear)
   - D1 / 1W  → Dragonfly Doji / Hammer / Doji+Green only (alerts 8h baad clear)
 Har alert ke sath: score (0–100), entry, SL, TP
 """
@@ -78,14 +78,15 @@ scan_stats = {
     "errors": 0,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
     "patterns": [
+        "S/R Breakout",
         "Triangle Breakout",
         "Dragonfly Doji",
         "Hammer",
         "Doji + Green",
     ],
     "strategy": {
-        "1H": "Triangle Breakout",
-        "4H": "Triangle Breakout",
+        "1H": "S/R + Triangle Breakout",
+        "4H": "S/R + Triangle Breakout",
         "D1": "Doji/Hammer patterns",
         "1W": "Doji/Hammer patterns",
     },
@@ -229,7 +230,7 @@ def _is_d1_pattern_alert(alert: dict) -> bool:
 
 
 def _alert_ttl_sec(alert: dict) -> int:
-    """Triangle alerts 1h, candle patterns (D1/1W) 8h."""
+    """S/R + Triangle alerts 1h, candle patterns (D1/1W) 8h."""
     if _is_d1_pattern_alert(alert):
         return D1_PATTERN_ALERT_TTL_SEC
     return BREAKOUT_ALERT_TTL_SEC
@@ -238,7 +239,7 @@ def _alert_ttl_sec(alert: dict) -> int:
 def prune_alert_history(now: float | None = None) -> list[dict]:
     """
     Purani alerts history se hatao:
-    - Triangle breakouts: 1 hour
+    - Breakouts (S/R, Triangle): 1 hour
     - Candle patterns (Dragonfly/Hammer/Doji+Green): 8 hours
     Returns list of removed alert ids (for SSE clear).
     """
@@ -351,6 +352,22 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
         score += min(18, int(dist * 10))
         score += min(12, int(body_str * 8))
         # Clean close beyond level
+        if direction == "UP" and close > level * 1.002:
+            score += 5
+        if direction == "DOWN" and close < level * 0.998:
+            score += 5
+
+    elif pattern == "S/R Breakout":
+        # Clean level break — slightly below triangle confidence baseline
+        score = 68
+        if direction == "UP":
+            dist = (close - level) / (avg_rng or 0.0001)
+            sl = candle_low - buffer
+        else:
+            dist = (level - close) / (avg_rng or 0.0001)
+            sl = candle_high + buffer
+        score += min(18, int(dist * 10))
+        score += min(12, int(body_str * 8))
         if direction == "UP" and close > level * 1.002:
             score += 5
         if direction == "DOWN" and close < level * 0.998:
@@ -670,17 +687,20 @@ scan_d1_patterns = scan_candle_patterns
 def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
     """
     TF-gated strategy:
-      1H/4H → Triangle Breakout only
+      1H/4H → S/R Breakout + Triangle Breakout
       D1/1W → Dragonfly/Hammer/Doji+Green only
     include_d1_patterns: legacy test flag for candle patterns when timeframe omitted.
     """
     hits: list[dict] = []
     tf = timeframe or ""
 
-    run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
+    run_breakouts = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
     run_candles = tf in CANDLE_TFS or include_d1_patterns
 
-    if run_triangle:
+    if run_breakouts:
+        sr = detect_sr_breakout(ohlc)
+        if sr:
+            hits.append(enrich_trade_plan(ohlc, sr))
         tri = detect_triangle_breakout(ohlc)
         if tri:
             hits.append(enrich_trade_plan(ohlc, tri))
@@ -826,7 +846,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Strategy: 1H/4H triangle · D1/1W doji/hammer (+ score/entry/SL/TP)")
+    print("[Device Care] Strategy: 1H/4H S/R+triangle · D1/1W doji/hammer (+ score/entry/SL/TP)")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -838,7 +858,7 @@ async def scan_loop():
             tf_order = (
                 list(reversed(TIMEFRAMES)) if morning else list(TIMEFRAMES)
             )
-            # Cooldown: triangle keys 1h, candle pattern keys 8h
+            # Cooldown: breakout keys 1h, candle pattern keys 8h
             for key, seen_at in list(cooldown.items()):
                 is_candle = any(p in key for p in CANDLE_PATTERNS)
                 ttl = D1_PATTERN_ALERT_TTL_SEC if is_candle else BREAKOUT_ALERT_TTL_SEC
@@ -860,7 +880,11 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = "MORNING D1/1W patterns" if morning else "1H/4H triangle + D1/1W patterns"
+                mode = (
+                    "MORNING D1/1W patterns"
+                    if morning
+                    else "1H/4H S/R+triangle + D1/1W patterns"
+                )
                 print(
                     f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
