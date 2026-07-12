@@ -4,9 +4,8 @@ Mount: /device-care
 
 Sirf USDT-M futures (spot nahi).
 Strategy:
-  - 15M / 1H / 4H → S/R Breakout (closed + LIVE forming candle)
-  - 1H / 4H       → Triangle Breakout (closed)
-  - D1 / 1W       → Dragonfly / Hammer / Doji + last candle green close
+  - 1H / 4H → S/R Breakout (closed + LIVE forming candle) + Triangle
+  - D1 / 1W → Dragonfly / Hammer / Doji + last candle green close
 Har alert ke sath: score (0–100), entry, SL, TP
 """
 import asyncio
@@ -41,7 +40,7 @@ FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
-BREAKOUT_TFS = frozenset({"15M", "1H", "4H"})
+BREAKOUT_TFS = frozenset({"1H", "4H"})
 TRIANGLE_TFS = frozenset({"1H", "4H"})
 CANDLE_TFS = frozenset({"D1", "1W"})
 
@@ -56,9 +55,8 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# 15M pe frequent S/R, 1H/4H S/R+triangle, D1/1W candle patterns
+# 1H/4H S/R+triangle, D1/1W candle patterns
 TIMEFRAMES = [
-    ("Min15", "15M", 80),
     ("Min60", "1H", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
@@ -90,7 +88,6 @@ scan_stats = {
         "Doji + Green",
     ],
     "strategy": {
-        "15M": "S/R Breakout (live+closed)",
         "1H": "S/R + Triangle (live+closed)",
         "4H": "S/R + Triangle (live+closed)",
         "D1": "Doji/Hammer + green close",
@@ -796,9 +793,8 @@ scan_d1_patterns = scan_candle_patterns
 def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
     """
     TF-gated strategy:
-      15M/1H/4H → S/R Breakout (closed + LIVE)
-      1H/4H     → Triangle Breakout (closed)
-      D1/1W     → Dragonfly/Hammer/Doji + green close confirmation
+      1H/4H → S/R Breakout (closed + LIVE) + Triangle Breakout (closed)
+      D1/1W → Dragonfly/Hammer/Doji + green close confirmation
     """
     hits: list[dict] = []
     tf = timeframe or ""
@@ -930,7 +926,6 @@ async def fetch_klines(
     end = int(time.time())
     # Interval seconds for start window (fetch a bit more than limit)
     interval_sec = {
-        "Min15": 15 * 60,
         "Min60": 60 * 60,
         "Hour4": 4 * 3600,
         "Day1": 86400,
@@ -966,7 +961,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Strategy: 15M/1H/4H S/R live+closed · D1/1W doji+green")
+    print("[Device Care] Strategy: 1H/4H S/R live+closed · D1/1W doji+green")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -1003,7 +998,7 @@ async def scan_loop():
                 mode = (
                     "MORNING D1/1W patterns"
                     if morning
-                    else "15M/1H/4H S/R live+closed + D1/1W"
+                    else "1H/4H S/R live+closed + D1/1W"
                 )
                 print(
                     f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
