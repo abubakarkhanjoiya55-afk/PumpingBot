@@ -271,7 +271,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>Device Care</h1>
-    <p class="sub">MEXC Futures · 1H/4H S/R+Triangle · D1 Doji/Hammer + green · Score+SL/TP</p>
+    <p class="sub">MEXC Futures · 15M/1H/4H live S/R · D1 Doji+green · Alarm</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -308,14 +308,14 @@
       <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
       <div class="scan-detail" id="scanDetail">Loading...</div>
       <div class="tf-pills">
+        <span class="tf-pill">15M</span>
         <span class="tf-pill">1H</span>
         <span class="tf-pill">4H</span>
         <span class="tf-pill">D1</span>
         <span class="tf-pill">1W</span>
         <span class="tf-pill">S/R</span>
-        <span class="tf-pill">Triangle</span>
+        <span class="tf-pill">LIVE</span>
         <span class="tf-pill">Doji</span>
-        <span class="tf-pill">Hammer</span>
       </div>
     </div>
     <div class="stat-card">
@@ -339,12 +339,12 @@
   </div>
 
   <div class="section" style="padding-bottom:10px;">
-    <div class="section-title">Alerts (S/R + triangle + D1 green-confirm patterns)</div>
+    <div class="section-title">Alerts / Signals (auto-refresh)</div>
     <div class="alerts" id="alerts"></div>
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
-      Abhi koi alert nahi<br>
-      <span style="font-size:0.75rem;color:#3a3a50">1H/4H S/R+Triangle · D1 Doji/Hammer + green close</span>
+      Abhi koi alert nahi — scan chal raha hai<br>
+      <span style="font-size:0.75rem;color:#3a3a50">15M/1H/4H live S/R · D1 Doji/Hammer + green</span>
     </div>
   </div>
 
@@ -383,7 +383,9 @@
     let pageActivated = false;
     let eventStream = null;
     let statusTimer = null;
+    let alertsTimer = null;
     let serviceWorkerRegistration = null;
+    let monitoringStarted = false;
     const renderedAlertIds = new Set();
     const acknowledgedAlertIds = new Set(
       JSON.parse(localStorage.getItem('dcAcknowledgedAlerts') || '[]')
@@ -492,7 +494,7 @@
       } catch (e) { console.warn(e); }
     }
 
-    function addCard(a) {
+    function addCard(a, { alarm = false } = {}) {
       const id = alertId(a);
       if (renderedAlertIds.has(id)) return false;
       renderedAlertIds.add(id);
@@ -501,9 +503,10 @@
       const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
       const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
       const isTriangle = a.pattern === 'Triangle Breakout';
+      const isLive = (a.patternDetail || '').includes('LIVE');
       const dirLabel = up
-        ? (isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : '▲ Breakout UP'))
-        : (isTriangle ? '▼ Triangle DOWN' : '▼ Breakout DOWN');
+        ? (isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : (isLive ? '▲ LIVE Breakout UP' : '▲ Breakout UP')))
+        : (isTriangle ? '▼ Triangle DOWN' : (isLive ? '▼ LIVE Breakout DOWN' : '▼ Breakout DOWN'));
       const score = a.score != null ? Number(a.score) : null;
       const scoreClass = score == null ? '' : (score >= 75 ? '' : (score >= 60 ? ' mid' : ' low'));
       const scoreHtml = score != null
@@ -525,7 +528,7 @@
       c.innerHTML = `
         <div class="card-top">
           <div class="sym">${sym}</div>
-          <span class="tf-badge">${a.timeframe || '—'}</span>
+          <span class="tf-badge">${a.timeframe || '—'}${isLive ? ' LIVE' : ''}</span>
         </div>
         <div class="dir ${up ? 'up' : 'down'}">${dirLabel}</div>
         <div class="pattern">${a.pattern || 'Alert'}${a.patternDetail ? ' · ' + a.patternDetail : ''}</div>
@@ -536,11 +539,18 @@
           <b>Alert:</b> ${fmtTime(a.at)}
         </div>
       `;
+      c.addEventListener('click', () => {
+        if (pageActivated) startPersistentAlarm(a);
+      });
       alertsEl.insertBefore(c, alertsEl.firstChild);
-      while (alertsEl.children.length > 20) {
+      while (alertsEl.children.length > 40) {
         const last = alertsEl.lastChild;
         if (last?.dataset?.alertId) renderedAlertIds.delete(last.dataset.alertId);
         last.remove();
+      }
+      if (alarm && pageActivated && !acknowledgedAlertIds.has(id)) {
+        startPersistentAlarm(a);
+        notify(a);
       }
       return true;
     }
@@ -559,19 +569,51 @@
       if (!alertsEl.children.length) emptyEl.style.display = '';
     }
 
-    async function loadAlerts() {
+    async function loadAlerts({ alarmNew = false } = {}) {
       try {
         const r = await fetch(BASE + '/api/alerts');
         const alerts = await r.json();
-        // Server already pruned — rebuild list from fresh data
-        alertsEl.innerHTML = '';
-        renderedAlertIds.clear();
-        if (!alerts.length) {
-          emptyEl.style.display = '';
-          return;
+        if (!Array.isArray(alerts)) return [];
+        if (!alarmNew) {
+          alertsEl.innerHTML = '';
+          renderedAlertIds.clear();
+          if (!alerts.length) {
+            emptyEl.style.display = '';
+            return alerts;
+          }
+          [...alerts].reverse().forEach((a) => addCard(a));
+          return alerts;
         }
-        [...alerts].reverse().forEach(addCard);
-      } catch (e) { console.warn(e); }
+        // Poll mode: only append truly new alerts and optionally alarm
+        let newest = null;
+        [...alerts].reverse().forEach((a) => {
+          const added = addCard(a, { alarm: false });
+          if (added) newest = a;
+        });
+        if (newest && pageActivated && !acknowledgedAlertIds.has(alertId(newest))) {
+          startPersistentAlarm(newest);
+          notify(newest);
+        }
+        if (!alertsEl.children.length) emptyEl.style.display = '';
+        return alerts;
+      } catch (e) {
+        console.warn(e);
+        return [];
+      }
+    }
+
+    function startMonitoring() {
+      if (monitoringStarted) return;
+      monitoringStarted = true;
+      document.getElementById('liveText').textContent = 'Signals load ho rahe hain...';
+      Promise.all([loadStatus(), loadAlerts()]).then(() => {
+        startEventStream();
+        statusTimer = setInterval(loadStatus, 5000);
+        alertsTimer = setInterval(() => loadAlerts({ alarmNew: true }), 8000);
+        document.getElementById('liveText').textContent = pageActivated
+          ? 'Live signals ON'
+          : 'Signals dikh rahe hain — alarm ke liye Activate dabao';
+      });
     }
 
     function setCapability(el, text, state = '') {
@@ -737,10 +779,7 @@
           const msg = JSON.parse(ev.data);
           if (msg.type === 'stats') updateStats(msg.data);
           if (msg.type === 'alert') {
-            if (addCard(msg.data) && !acknowledgedAlertIds.has(alertId(msg.data))) {
-              startPersistentAlarm(msg.data);
-              notify(msg.data);
-            }
+            addCard(msg.data, { alarm: true });
           }
           if (msg.type === 'alerts_cleared') {
             removeAlertCards(msg.data?.ids || []);
@@ -769,18 +808,22 @@
 
       if (testPlayed) {
         activationMessage.textContent = notificationPermission === 'granted'
-          ? 'Test alarm baj gaya. Awaaz aur notifications chalu hain.'
+          ? 'Test alarm baj gaya. Ab naye signals pe awaaz + notification aayegi.'
           : 'Test alarm baj gaya. Awaaz chalu hai; notifications chalu nahi hain.';
       } else {
         activationMessage.textContent =
           'Test awaaz nahi baji. Phone volume check karke “Awaaz Dobara Chalu Karein” tap karein.';
       }
 
-      if (!eventStream) {
-        document.getElementById('liveText').textContent = 'Live monitoring shuru ho rahi hai...';
-        await Promise.all([loadStatus(), loadAlerts()]);
-        startEventStream();
-        statusTimer = setInterval(loadStatus, 5000);
+      startMonitoring();
+      // Pending unacked signal pe turant alarm
+      const alerts = await loadAlerts();
+      const pending = (alerts || []).find((a) => !acknowledgedAlertIds.has(alertId(a)));
+      if (pending && testPlayed) {
+        startPersistentAlarm(pending);
+        notify(pending);
+        activationMessage.textContent =
+          `Alarm chalu — latest signal: ${(pending.symbol || '').replace('_USDT','')}`;
       }
       activateBtn.disabled = false;
     }
@@ -796,9 +839,12 @@
     window.addEventListener('pagehide', () => {
       if (eventStream) eventStream.close();
       if (statusTimer) clearInterval(statusTimer);
+      if (alertsTimer) clearInterval(alertsTimer);
       if (alarmTimer) clearInterval(alarmTimer);
     });
     updateCapabilityStatus();
+    // Signals page open hote hi dikhao — awaaz ke liye Activate zaroori
+    startMonitoring();
   </script>
 </body>
 </html>
