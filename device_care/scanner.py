@@ -5,7 +5,8 @@ Mount: /device-care
 Sirf USDT-M futures (spot nahi).
 Strategy:
   - 1H / 4H  → S/R Breakout + Triangle Breakout (alerts 1h baad clear)
-  - D1 / 1W  → Dragonfly Doji / Hammer / Doji+Green only (alerts 8h baad clear)
+  - D1 / 1W  → Dragonfly / Hammer / Doji — sirf jab uske BAAD last closed
+               candle green close ho (confirmation). Alerts 8h baad clear.
 Har alert ke sath: score (0–100), entry, SL, TP
 """
 import asyncio
@@ -87,8 +88,8 @@ scan_stats = {
     "strategy": {
         "1H": "S/R + Triangle Breakout",
         "4H": "S/R + Triangle Breakout",
-        "D1": "Doji/Hammer patterns",
-        "1W": "Doji/Hammer patterns",
+        "D1": "Doji/Hammer + green close",
+        "1W": "Doji/Hammer + green close",
     },
     "exchange": "MEXC Futures",
     "market": "futures",
@@ -374,35 +375,35 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 5
 
     elif pattern in CANDLE_PATTERNS:
-        _, _, _, _, body, rng, uw, lw = _candle_parts(ohlc, i)
+        # Pattern candle is -3; confirmation (last closed) is -2
+        _, _, _, _, body_p, rng_p, uw_p, lw_p = _candle_parts(ohlc, -3)
+        _, _, _, _, body_g, rng_g, _, _ = _candle_parts(ohlc, -2)
+        pattern_low = float(l[-3])
+        conf_low = candle_low
+        score = 70
         if pattern == "Dragonfly Doji":
-            score = 70
-            wick_ratio = lw / (rng or 0.0001)
-            score += min(20, int(wick_ratio * 25))
-            if uw / (rng or 0.0001) < 0.05:
-                score += 5
-            sl = candle_low - buffer
+            score = 78
+            wick_ratio = lw_p / (rng_p or 0.0001)
+            score += min(15, int(wick_ratio * 20))
+            if uw_p / (rng_p or 0.0001) < 0.05:
+                score += 4
         elif pattern == "Hammer":
-            score = 65
-            wick_ratio = lw / max(body, 0.0001)
-            score += min(18, int(wick_ratio * 4))
-            if close > o[i]:
-                score += 8  # green hammer
-            sl = candle_low - buffer
+            score = 74
+            wick_ratio = lw_p / max(body_p, 0.0001)
+            score += min(14, int(wick_ratio * 3))
         else:  # Doji + Green
-            score = 75
-            # Confirmation body strength
-            score += min(15, int(body_str * 10))
-            # Doji quality at -3
-            _, _, _, _, body_d, rng_d, _, lw_d = _candle_parts(ohlc, -3)
-            if body_d <= rng_d * 0.05:
+            score = 72
+            if body_p <= rng_p * 0.05:
                 score += 5
-            if lw_d >= rng_d * 0.4:
+            if lw_p >= rng_p * 0.4:
                 score += 5
-            sl = min(float(l[-3]), candle_low) - buffer
-        # Close near highs of pattern candle
-        if (close - candle_low) / (rng or 0.0001) > 0.7:
+        # Green confirmation strength on last closed candle
+        score += min(15, int(body_str * 10))
+        if body_g >= rng_g * 0.4:
             score += 4
+        if (close - conf_low) / (rng_g or 0.0001) > 0.7:
+            score += 4
+        sl = min(pattern_low, conf_low) - buffer
 
     score = max(1, min(100, int(score)))
 
@@ -569,21 +570,30 @@ def _is_doji(body: float, rng: float, max_body_pct: float = 0.1) -> bool:
     return body <= rng * max_body_pct
 
 
-def detect_dragonfly_doji(ohlc: dict) -> dict | None:
+def _is_green_confirmation(ohlc: dict, pattern_close: float, idx: int = -2) -> bool:
     """
-    Dragonfly Doji on last closed candle (-2):
-    - Tiny body (doji)
-    - Long lower wick (>= 2x body, and majority of range)
-    - Little/no upper wick
-    Bullish reversal signal.
+    Last closed candle must be green and close above the pattern candle close.
+    Yeh confirmation Dragonfly / Hammer / Doji — teeno pe apply hoti hai.
     """
-    if len(ohlc["closes"]) < 3:
+    if len(ohlc["closes"]) < abs(idx):
+        return False
+    o_g, _, _, c_g, body_g, rng_g, _, _ = _candle_parts(ohlc, idx)
+    if c_g <= o_g:
+        return False
+    if body_g < rng_g * 0.2:
+        return False
+    if c_g <= pattern_close:
+        return False
+    return True
+
+
+def _dragonfly_shape_at(ohlc: dict, idx: int) -> dict | None:
+    """Dragonfly Doji shape check at candle idx (no confirmation)."""
+    if len(ohlc["closes"]) < abs(idx):
         return None
-    i = -2
-    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, idx)
     if not _is_doji(body, rng):
         return None
-    # Long lower shadow, almost no upper shadow
     if lw < rng * 0.6:
         return None
     if uw > rng * 0.1:
@@ -594,27 +604,22 @@ def detect_dragonfly_doji(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Dragonfly Doji",
-        "patternDetail": "Dragonfly doji (long lower wick)",
+        "patternDetail": "Dragonfly doji + green close",
         "level": l,
         "close": c,
-        "candleTime": ohlc["times"][i],
+        "candleTime": ohlc["times"][idx],
+        "_pattern_idx": idx,
+        "_pattern_close": c,
     }
 
 
-def detect_hammer(ohlc: dict) -> dict | None:
-    """
-    Hammer on last closed candle (-2):
-    - Lower wick >= 2x body
-    - Upper wick <= 0.3x body
-    - Prefer green close (bullish hammer); allow small red if wick dominant
-    """
-    if len(ohlc["closes"]) < 3:
+def _hammer_shape_at(ohlc: dict, idx: int) -> dict | None:
+    """Hammer shape check at candle idx (no confirmation)."""
+    if len(ohlc["closes"]) < abs(idx):
         return None
-    i = -2
-    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, i)
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, idx)
     if body <= 0:
         return None
-    # Not a doji — hammer has a real body (else dragonfly covers it)
     if _is_doji(body, rng):
         return None
     if lw < body * 2:
@@ -623,42 +628,92 @@ def detect_hammer(ohlc: dict) -> dict | None:
         return None
     if lw < rng * 0.5:
         return None
-    # Bullish preference: green close, or body in upper third of range
+    # Bullish preference on pattern candle itself
     if c < o and (c - l) < rng * 0.6:
         return None
     return {
         "side": "BUY",
         "direction": "UP",
         "pattern": "Hammer",
-        "patternDetail": "Hammer (long lower wick)",
+        "patternDetail": "Hammer + green close",
         "level": l,
         "close": c,
-        "candleTime": ohlc["times"][i],
+        "candleTime": ohlc["times"][idx],
+        "_pattern_idx": idx,
+        "_pattern_close": c,
+    }
+
+
+def detect_dragonfly_doji(ohlc: dict) -> dict | None:
+    """
+    Dragonfly Doji on candle -3, then last closed candle (-2) green close.
+    User rule: pattern ke BAAD last 1D candle green close hui ho.
+    """
+    if len(ohlc["closes"]) < 4:
+        return None
+    shape = _dragonfly_shape_at(ohlc, -3)
+    if not shape:
+        return None
+    if not _is_green_confirmation(ohlc, shape["_pattern_close"], -2):
+        return None
+    # Alert timestamps / levels follow confirmation candle (entry at green close)
+    o_g, _, l_g, c_g, _, _, _, _ = _candle_parts(ohlc, -2)
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Dragonfly Doji",
+        "patternDetail": "Dragonfly doji + green close",
+        "level": min(float(shape["level"]), l_g),
+        "close": c_g,
+        "candleTime": ohlc["times"][-2],
+    }
+
+
+def detect_hammer(ohlc: dict) -> dict | None:
+    """
+    Hammer on candle -3, then last closed candle (-2) green close.
+    User rule: pattern ke BAAD last 1D candle green close hui ho.
+    """
+    if len(ohlc["closes"]) < 4:
+        return None
+    shape = _hammer_shape_at(ohlc, -3)
+    if not shape:
+        return None
+    if not _is_green_confirmation(ohlc, shape["_pattern_close"], -2):
+        return None
+    o_g, _, l_g, c_g, _, _, _, _ = _candle_parts(ohlc, -2)
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Hammer",
+        "patternDetail": "Hammer + green close",
+        "level": min(float(shape["level"]), l_g),
+        "close": c_g,
+        "candleTime": ohlc["times"][-2],
     }
 
 
 def detect_doji_then_green(ohlc: dict) -> dict | None:
     """
     Two-candle sequence on closed candles:
-    - Candle -3: doji (small body)
+    - Candle -3: plain doji (not already classified as dragonfly)
     - Candle -2: green candle that closed above doji close (confirmation)
+    Same green-close rule as Dragonfly/Hammer.
     """
     if len(ohlc["closes"]) < 4:
         return None
     doji_i = -3
     green_i = -2
     _, _, _, c_doji, body_d, rng_d, _, _ = _candle_parts(ohlc, doji_i)
-    o_g, _, l_g, c_g, body_g, rng_g, _, _ = _candle_parts(ohlc, green_i)
 
     if not _is_doji(body_d, rng_d):
         return None
-    # Green confirmation candle with meaningful body
-    if c_g <= o_g:
+    # Dragonfly is handled by detect_dragonfly_doji — avoid double alert
+    if _dragonfly_shape_at(ohlc, doji_i):
         return None
-    if body_g < rng_g * 0.25:
+    if not _is_green_confirmation(ohlc, c_doji, green_i):
         return None
-    if c_g <= c_doji:
-        return None
+    o_g, _, l_g, c_g, _, _, _, _ = _candle_parts(ohlc, green_i)
     return {
         "side": "BUY",
         "direction": "UP",
@@ -671,7 +726,10 @@ def detect_doji_then_green(ohlc: dict) -> dict | None:
 
 
 def scan_candle_patterns(ohlc: dict) -> list[dict]:
-    """D1/1W bullish candle patterns. One hit per pattern type max."""
+    """
+    D1/1W bullish candle patterns — har pattern ke baad last closed candle
+    green close confirmation zaroori. One hit per pattern type max.
+    """
     hits = []
     for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
         hit = detector(ohlc)
@@ -688,7 +746,7 @@ def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = Fa
     """
     TF-gated strategy:
       1H/4H → S/R Breakout + Triangle Breakout
-      D1/1W → Dragonfly/Hammer/Doji+Green only
+      D1/1W → Dragonfly/Hammer/Doji + green close confirmation
     include_d1_patterns: legacy test flag for candle patterns when timeframe omitted.
     """
     hits: list[dict] = []

@@ -65,57 +65,79 @@ class BreakoutDetectorTests(unittest.TestCase):
 
 
 class D1CandlePatternTests(unittest.TestCase):
-    def test_dragonfly_doji_on_closed_candle(self):
-        size = 5
+    def test_dragonfly_doji_requires_green_confirmation(self):
+        size = 6
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        # Closed candle (-2): open≈close near high, long lower wick
-        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 80.0, 99.5, 99.0
+        # Pattern at -3: dragonfly doji
+        highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 80.0, 99.5, 99.0
+        # Last closed (-2): green confirmation above pattern close
+        highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 98.0, 99.0, 104.0
 
         hit = detect_dragonfly_doji(_ohlc(highs, lows, opens, closes))
 
         self.assertIsNotNone(hit)
         self.assertEqual("Dragonfly Doji", hit["pattern"])
         self.assertEqual("UP", hit["direction"])
-        self.assertEqual(80.0, hit["level"])
+        self.assertEqual(104.0, hit["close"])
+        self.assertEqual(80.0, hit["level"])  # min(pattern low, green low)
 
-    def test_dragonfly_rejects_long_upper_wick(self):
-        size = 5
+    def test_dragonfly_rejects_without_green_followup(self):
+        size = 6
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 110.0, 80.0, 95.0, 95.5
+        highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 80.0, 99.5, 99.0
+        # Red follow-up — no alert
+        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 90.0, 99.0, 92.0
 
         hit = detect_dragonfly_doji(_ohlc(highs, lows, opens, closes))
 
         self.assertIsNone(hit)
 
-    def test_hammer_on_closed_candle(self):
-        size = 5
+    def test_dragonfly_rejects_long_upper_wick(self):
+        size = 6
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        # Green hammer: body in upper third, long lower wick, tiny upper wick
-        highs[-2], lows[-2], opens[-2], closes[-2] = 101.2, 90.0, 98.0, 101.0
+        highs[-3], lows[-3], opens[-3], closes[-3] = 110.0, 80.0, 95.0, 95.5
+        highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 95.0, 96.0, 104.0
+
+        hit = detect_dragonfly_doji(_ohlc(highs, lows, opens, closes))
+
+        self.assertIsNone(hit)
+
+    def test_hammer_requires_green_confirmation(self):
+        size = 6
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [95.0] * size
+        closes = [95.0] * size
+        # Pattern at -3: green hammer
+        highs[-3], lows[-3], opens[-3], closes[-3] = 101.2, 90.0, 98.0, 101.0
+        # Last closed (-2): green confirmation
+        highs[-2], lows[-2], opens[-2], closes[-2] = 108.0, 100.0, 101.0, 107.0
 
         hit = detect_hammer(_ohlc(highs, lows, opens, closes))
 
         self.assertIsNotNone(hit)
         self.assertEqual("Hammer", hit["pattern"])
         self.assertEqual("UP", hit["direction"])
+        self.assertEqual(107.0, hit["close"])
 
     def test_hammer_rejects_doji_body(self):
         """Tiny body is dragonfly territory, not hammer."""
-        size = 5
+        size = 6
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 80.0, 99.5, 99.2
+        highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 80.0, 99.5, 99.2
+        highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 98.0, 99.0, 104.0
 
         hit = detect_hammer(_ohlc(highs, lows, opens, closes))
 
@@ -127,7 +149,7 @@ class D1CandlePatternTests(unittest.TestCase):
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        # Doji at -3
+        # Doji at -3 (not dragonfly — short lower wick relative to full range)
         highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 90.0, 95.2, 95.0
         # Green confirmation at -2 closing above doji
         highs[-2], lows[-2], opens[-2], closes[-2] = 102.0, 94.0, 95.0, 101.0
@@ -158,7 +180,9 @@ class D1CandlePatternTests(unittest.TestCase):
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 80.0, 99.5, 99.0
+        # Dragonfly at -3 + green at -2
+        highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 80.0, 99.5, 99.0
+        highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 98.0, 99.0, 104.0
 
         without = scan_ohlc(_ohlc(highs, lows, opens, closes), include_d1_patterns=False)
         with_d1 = scan_ohlc(_ohlc(highs, lows, opens, closes), include_d1_patterns=True)
@@ -177,12 +201,13 @@ class D1CandlePatternTests(unittest.TestCase):
 
     def test_tf_gating_1h_breakouts_d1_candles_only(self):
         size = 25
-        # Dragonfly candle — should fire on D1/1W, not on 1H/4H
+        # Dragonfly + green — should fire on D1/1W, not on 1H/4H
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
         closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 100.0, 80.0, 99.5, 99.0
+        highs[-3], lows[-3], opens[-3], closes[-3] = 100.0, 80.0, 99.5, 99.0
+        highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 98.0, 99.0, 104.0
         ohlc = _ohlc(highs, lows, opens, closes)
 
         self.assertFalse(any(
