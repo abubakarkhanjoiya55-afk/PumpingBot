@@ -255,11 +255,13 @@ class D1CandlePatternTests(unittest.TestCase):
 
         h1 = scan_ohlc(ohlc, timeframe="1H")
         d1 = scan_ohlc(ohlc, timeframe="D1")
-        m15 = scan_ohlc(ohlc, timeframe="15M")
+        h4 = scan_ohlc(ohlc, timeframe="4H")
 
         self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h1))
-        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in m15))
+        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h4))
         self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
+        # 15M removed from strategy
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in scan_ohlc(ohlc, timeframe="15M")))
         sr = next(h for h in h1 if h["pattern"] == "S/R Breakout")
         self.assertEqual("UP", sr["direction"])
         self.assertEqual(100.0, sr["level"])
@@ -286,7 +288,7 @@ class D1CandlePatternTests(unittest.TestCase):
         # Closed candle still inside range — no closed alert
         self.assertIsNone(closed)
 
-        hits = scan_ohlc(ohlc, timeframe="15M")
+        hits = scan_ohlc(ohlc, timeframe="1H")
         self.assertTrue(any(h.get("live") for h in hits if h["pattern"] == "S/R Breakout"))
 
 
