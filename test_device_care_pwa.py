@@ -28,15 +28,19 @@ class DeviceCarePwaTests(unittest.TestCase):
         self.assertIn('id="activateBtn"', html)
         self.assertIn("Har nayi page par ek tap zaroori hai", html)
         self.assertIn("musalsal background alarm guaranteed nahi", html)
+        self.assertIn("startMonitoring()", html)
 
         script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
         activate = script[script.index("async function activateAlarm()"):]
         self.assertLess(activate.index("ensureAudioReady()"), activate.index("requestNotifications()"))
         self.assertLess(activate.index("requestNotifications()"), activate.index("playAlarmPattern"))
-        self.assertLess(activate.index("playAlarmPattern"), activate.index("loadAlerts()"))
-        self.assertLess(activate.index("loadAlerts()"), activate.index("startEventStream()"))
+        self.assertLess(activate.index("playAlarmPattern"), activate.index("startMonitoring()"))
+        self.assertLess(activate.index("startMonitoring()"), activate.index("loadAlerts()"))
+        self.assertIn("startPersistentAlarm(pending)", activate)
         self.assertEqual(1, script.count("Notification.requestPermission()"))
         self.assertIn("activateBtn.addEventListener('click', activateAlarm)", script)
+        # Signals list page-open pe load; awaaz ke liye Activate
+        self.assertIn("startMonitoring();", script.split("updateCapabilityStatus();")[-1])
 
     def test_manifest_icons_are_routable_pngs_with_declared_sizes(self):
         response = self.client.get("/device-care/manifest.json")

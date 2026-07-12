@@ -4,9 +4,9 @@ Mount: /device-care
 
 Sirf USDT-M futures (spot nahi).
 Strategy:
-  - 1H / 4H  → S/R Breakout + Triangle Breakout (alerts 1h baad clear)
-  - D1 / 1W  → Dragonfly / Hammer / Doji — sirf jab uske BAAD last closed
-               candle green close ho (confirmation). Alerts 8h baad clear.
+  - 15M / 1H / 4H → S/R Breakout (closed + LIVE forming candle)
+  - 1H / 4H       → Triangle Breakout (closed)
+  - D1 / 1W       → Dragonfly / Hammer / Doji + last candle green close
 Har alert ke sath: score (0–100), entry, SL, TP
 """
 import asyncio
@@ -21,14 +21,16 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 STATIC = Path(__file__).parent / "static"
+DATA_DIR = Path(__file__).parent / "data"
+ALERT_STORE = DATA_DIR / "alerts.json"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
-SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "180"))
+SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "90"))
 # Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
-MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "60"))
+MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "45"))
 MORNING_START_HOUR = int(os.environ.get("DC_MORNING_START_HOUR", "5"))
 MORNING_END_HOUR = int(os.environ.get("DC_MORNING_END_HOUR", "9"))
 PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
-MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "500000"))
+MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "300000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 # Alert history TTL — triangles jaldi clear, candle patterns zyada der
@@ -39,6 +41,7 @@ FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
+BREAKOUT_TFS = frozenset({"15M", "1H", "4H"})
 TRIANGLE_TFS = frozenset({"1H", "4H"})
 CANDLE_TFS = frozenset({"D1", "1W"})
 
@@ -53,8 +56,9 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# MEXC futures interval names — 1H/4H triangles, D1/1W candle patterns
+# 15M pe frequent S/R, 1H/4H S/R+triangle, D1/1W candle patterns
 TIMEFRAMES = [
+    ("Min15", "15M", 80),
     ("Min60", "1H", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
@@ -86,8 +90,9 @@ scan_stats = {
         "Doji + Green",
     ],
     "strategy": {
-        "1H": "S/R + Triangle Breakout",
-        "4H": "S/R + Triangle Breakout",
+        "15M": "S/R Breakout (live+closed)",
+        "1H": "S/R + Triangle (live+closed)",
+        "4H": "S/R + Triangle (live+closed)",
         "D1": "Doji/Hammer + green close",
         "1W": "Doji/Hammer + green close",
     },
@@ -237,6 +242,33 @@ def _alert_ttl_sec(alert: dict) -> int:
     return BREAKOUT_ALERT_TTL_SEC
 
 
+def _load_persisted_alerts():
+    """Restart ke baad purani alerts wapas lao."""
+    global alert_history
+    try:
+        if not ALERT_STORE.is_file():
+            return
+        raw = json.loads(ALERT_STORE.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            alert_history[:] = raw[:80]
+            prune_alert_history()
+            scan_stats["alertsTotal"] = len(alert_history)
+            print(f"[Device Care] Restored {len(alert_history)} alerts from disk")
+    except Exception as e:
+        print(f"[Device Care] alert restore failed: {e}")
+
+
+def _persist_alerts():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ALERT_STORE.write_text(
+            json.dumps(alert_history[:80], ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[Device Care] alert persist failed: {e}")
+
+
 def prune_alert_history(now: float | None = None) -> list[dict]:
     """
     Purani alerts history se hatao:
@@ -258,6 +290,7 @@ def prune_alert_history(now: float | None = None) -> list[dict]:
     if len(kept) != len(alert_history):
         alert_history[:] = kept
         scan_stats["alertsTotal"] = len(alert_history)
+        _persist_alerts()
     return removed_ids
 
 
@@ -265,11 +298,13 @@ def _broadcast(alert: dict):
     alert["id"] = alert.get("id") or (
         f"{alert['symbol']}-{alert.get('timeframe')}-{alert.get('pattern')}-"
         f"{alert.get('direction')}-{alert.get('candleTime')}"
+        f"{'-LIVE' if alert.get('live') else ''}"
     )
     prune_alert_history()
     alert_history.insert(0, alert)
     del alert_history[80:]
     scan_stats["alertsTotal"] = len(alert_history)
+    _persist_alerts()
     _push_sse({"type": "alert", "data": _normalize_alert(alert)})
     _broadcast_stats()
 
@@ -309,7 +344,7 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     Attach score (0–100), entry, SL, TP.
     Stronger / cleaner signal → higher score → wider RR target.
     """
-    i = -2
+    i = -1 if hit.get("live") else -2
     h = ohlc["highs"]
     l = ohlc["lows"]
     c = ohlc["closes"]
@@ -433,11 +468,11 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     return hit
 
 
-def _body_ok(highs, lows, closes, opens, idx: int) -> bool:
+def _body_ok(highs, lows, closes, opens, idx: int, min_frac: float = 0.3) -> bool:
     body = abs(closes[idx] - opens[idx])
     ranges = [highs[j] - lows[j] for j in range(max(0, len(highs) - 12), len(highs) - 1)]
     avg = sum(ranges) / max(len(ranges), 1)
-    return body >= avg * 0.3
+    return body >= avg * min_frac
 
 
 def _slope(vals: list[float]) -> float:
@@ -452,27 +487,43 @@ def _slope(vals: list[float]) -> float:
     return num / den
 
 
-def detect_sr_breakout(ohlc: dict, lookback: int = LOOKBACK) -> dict | None:
+def detect_sr_breakout(
+    ohlc: dict, lookback: int = LOOKBACK, *, live: bool = False
+) -> dict | None:
+    """
+    S/R breakout on closed candle (-2) or LIVE forming candle (-1).
+    Live signals fire during the candle so alerts keep coming between closes.
+    """
     h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
-    if len(c) < lookback + 3:
+    i = -1 if live else -2
+    need = lookback + (2 if live else 3)
+    if len(c) < need:
         return None
-    i = -2
-    # Reference levels must end before the closed candle being evaluated.
-    rh = max(h[-lookback - 2:i])
-    rl = min(l[-lookback - 2:i])
-    if not _body_ok(h, l, c, o, i):
+    # Reference levels must end before the candle being evaluated.
+    if live:
+        rh = max(h[-lookback - 1:-1])
+        rl = min(l[-lookback - 1:-1])
+        body_frac = 0.22
+    else:
+        rh = max(h[-lookback - 2:i])
+        rl = min(l[-lookback - 2:i])
+        body_frac = 0.28
+    if not _body_ok(h, l, c, o, i, min_frac=body_frac):
         return None
+    detail_suffix = " (LIVE)" if live else ""
     if c[i] > rh and c[i - 1] <= rh:
         return {
             "side": "BUY", "direction": "UP", "pattern": "S/R Breakout",
-            "patternDetail": "Resistance breakout",
+            "patternDetail": f"Resistance breakout{detail_suffix}",
             "level": rh, "close": c[i], "candleTime": t[i],
+            "live": live,
         }
     if c[i] < rl and c[i - 1] >= rl:
         return {
             "side": "SELL", "direction": "DOWN", "pattern": "S/R Breakout",
-            "patternDetail": "Support breakdown",
+            "patternDetail": f"Support breakdown{detail_suffix}",
             "level": rl, "close": c[i], "candleTime": t[i],
+            "live": live,
         }
     return None
 
@@ -745,23 +796,33 @@ scan_d1_patterns = scan_candle_patterns
 def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
     """
     TF-gated strategy:
-      1H/4H → S/R Breakout + Triangle Breakout
-      D1/1W → Dragonfly/Hammer/Doji + green close confirmation
-    include_d1_patterns: legacy test flag for candle patterns when timeframe omitted.
+      15M/1H/4H → S/R Breakout (closed + LIVE)
+      1H/4H     → Triangle Breakout (closed)
+      D1/1W     → Dragonfly/Hammer/Doji + green close confirmation
     """
     hits: list[dict] = []
     tf = timeframe or ""
 
-    run_breakouts = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
+    run_breakouts = tf in BREAKOUT_TFS or (not tf and not include_d1_patterns)
+    run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
     run_candles = tf in CANDLE_TFS or include_d1_patterns
 
     if run_breakouts:
-        sr = detect_sr_breakout(ohlc)
-        if sr:
+        # Prefer closed confirmation; also emit LIVE forming-candle breakouts
+        seen_dirs: set[str] = set()
+        for live in (False, True):
+            sr = detect_sr_breakout(ohlc, live=live)
+            if not sr:
+                continue
+            # Same direction closed+live same candle → keep closed only
+            if sr["direction"] in seen_dirs:
+                continue
+            seen_dirs.add(sr["direction"])
             hits.append(enrich_trade_plan(ohlc, sr))
-        tri = detect_triangle_breakout(ohlc)
-        if tri:
-            hits.append(enrich_trade_plan(ohlc, tri))
+        if run_triangle:
+            tri = detect_triangle_breakout(ohlc)
+            if tri:
+                hits.append(enrich_trade_plan(ohlc, tri))
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
             hits.append(enrich_trade_plan(ohlc, hit))
@@ -869,6 +930,7 @@ async def fetch_klines(
     end = int(time.time())
     # Interval seconds for start window (fetch a bit more than limit)
     interval_sec = {
+        "Min15": 15 * 60,
         "Min60": 60 * 60,
         "Hour4": 4 * 3600,
         "Day1": 86400,
@@ -904,7 +966,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Strategy: 1H/4H S/R+triangle · D1/1W doji/hammer (+ score/entry/SL/TP)")
+    print("[Device Care] Strategy: 15M/1H/4H S/R live+closed · D1/1W doji+green")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -941,12 +1003,13 @@ async def scan_loop():
                 mode = (
                     "MORNING D1/1W patterns"
                     if morning
-                    else "1H/4H S/R+triangle + D1/1W patterns"
+                    else "15M/1H/4H S/R live+closed + D1/1W"
                 )
                 print(
                     f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
                 )
+                new_alerts = 0
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
@@ -960,12 +1023,13 @@ async def scan_loop():
                         if not ohlc:
                             coin_err = True
                             scan_stats["errors"] += 1
-                            await asyncio.sleep(0.05)
+                            await asyncio.sleep(0.04)
                             continue
                         for hit in scan_ohlc(ohlc, timeframe=tf_label):
+                            live_tag = "LIVE" if hit.get("live") else "CLOSED"
                             key = (
                                 f"{sym}:{tf_label}:{hit['pattern']}:"
-                                f"{hit['direction']}:{hit['candleTime']}"
+                                f"{hit['direction']}:{hit['candleTime']}:{live_tag}"
                             )
                             if key not in cooldown:
                                 cooldown[key] = time.time()
@@ -977,14 +1041,15 @@ async def scan_loop():
                                     **hit,
                                 }
                                 coin_hits += 1
+                                new_alerts += 1
                                 print(
                                     f"[Device Care] {sym} {tf_label} "
                                     f"{hit['pattern']} {hit['direction']} "
-                                    f"score={hit.get('score')} "
+                                    f"{live_tag} score={hit.get('score')} "
                                     f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
                                 )
                                 _broadcast(alert)
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.04)
                     scan_stats["scannedCoins"].append({
                         "symbol": sym,
                         "hits": coin_hits,
@@ -999,6 +1064,7 @@ async def scan_loop():
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"
+                print(f"[Device Care] Scan done — {new_alerts} new alert(s)")
                 _broadcast_stats()
             except Exception as e:
                 scan_stats["phase"] = "error"
@@ -1024,6 +1090,7 @@ def start_device_care_scanner():
     global _scan_task
     if _scan_task is not None:
         return
+    _load_persisted_alerts()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Device Care] PWA → /device-care (MEXC Futures)")
+    print("[Device Care] PWA → /device-care (MEXC Futures, live+closed alerts)")

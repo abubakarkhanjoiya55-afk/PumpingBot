@@ -255,14 +255,39 @@ class D1CandlePatternTests(unittest.TestCase):
 
         h1 = scan_ohlc(ohlc, timeframe="1H")
         d1 = scan_ohlc(ohlc, timeframe="D1")
+        m15 = scan_ohlc(ohlc, timeframe="15M")
 
         self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h1))
+        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in m15))
         self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
         sr = next(h for h in h1 if h["pattern"] == "S/R Breakout")
         self.assertEqual("UP", sr["direction"])
         self.assertEqual(100.0, sr["level"])
         self.assertLess(sr["sl"], sr["entry"])
         self.assertGreater(sr["tp"], sr["entry"])
+
+    def test_live_sr_breakout_on_forming_candle(self):
+        size = 23
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        # Forming candle (-1) breaks resistance
+        highs[-1], lows[-1], opens[-1], closes[-1] = 108.0, 96.0, 97.0, 107.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+
+        live = detect_sr_breakout(ohlc, live=True)
+        closed = detect_sr_breakout(ohlc, live=False)
+
+        self.assertIsNotNone(live)
+        self.assertTrue(live["live"])
+        self.assertIn("LIVE", live["patternDetail"])
+        self.assertEqual("UP", live["direction"])
+        # Closed candle still inside range — no closed alert
+        self.assertIsNone(closed)
+
+        hits = scan_ohlc(ohlc, timeframe="15M")
+        self.assertTrue(any(h.get("live") for h in hits if h["pattern"] == "S/R Breakout"))
 
 
 class MorningWindowTests(unittest.TestCase):
