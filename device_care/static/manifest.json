@@ -1,8 +1,8 @@
 {
-  "name": "Device Care",
-  "short_name": "DeviceCare",
-  "description": "Crypto breakout live alerts",
-  "id": "/device-care/",
+  "name": "My Signals",
+  "short_name": "My Signals",
+  "description": "4H + 1D LIVE crypto breakout alerts",
+  "id": "/my-signals/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

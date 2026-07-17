@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#07070d">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Device Care">
+  <meta name="apple-mobile-web-app-title" content="My Signals">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <title>Device Care</title>
+  <title>My Signals</title>
   <style>
     :root {
       --bg: #07070d;
@@ -293,7 +293,7 @@
 <body>
   <div class="header">
     <div class="logo">⚙️</div>
-    <h1>Device Care</h1>
+    <h1>My Signals</h1>
     <p class="sub">MEXC Futures · sirf 4H + 1D LIVE breakout · Alarm</p>
   </div>
 
@@ -397,7 +397,9 @@
   </div>
 
   <script>
-    const BASE = location.pathname.startsWith('/device-care') ? '/device-care' : '';
+    const BASE = location.pathname.startsWith('/my-signals')
+      ? '/my-signals'
+      : (location.pathname.startsWith('/device-care') ? '/device-care' : '/my-signals');
     const alertsEl = document.getElementById('alerts');
     const emptyEl = document.getElementById('empty');
     const coinGrid = document.getElementById('coinGrid');

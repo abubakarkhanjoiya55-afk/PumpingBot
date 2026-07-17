@@ -532,7 +532,7 @@ export default function App() {
           <>
             <h1>📡 Signals (4H + 1D)</h1>
             <p style={{ color: '#888', marginBottom: '1rem', fontSize: '.9rem' }}>
-              App signals Device Care (/device-care) pe LIVE 4H/1D breakouts se aate hain.
+              App signals <strong>My Signals</strong> (/my-signals) pe LIVE 4H/1D breakouts se aate hain.
               Score 90+ app band ho tab bhi ntfy push milta hai.
             </p>
             <div className="table-container">

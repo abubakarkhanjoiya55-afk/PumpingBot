@@ -1,6 +1,6 @@
 """
-Device Care — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
-Mount: /device-care
+My Signals — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
+Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
 Strategy (signals ONLY on 4H + 1D):
@@ -18,8 +18,12 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
+
+APP_NAME = "My Signals"
+APP_PREFIX = "/my-signals"
+LEGACY_PREFIX = "/device-care"
 
 STATIC = Path(__file__).parent / "static"
 DATA_DIR = Path(__file__).parent / "data"
@@ -40,7 +44,7 @@ D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 360
 STRONG_SCORE = int(os.environ.get("DC_STRONG_SCORE", "90"))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-NTFY_TITLE = os.environ.get("NTFY_TITLE", "PumpingBot Signal")
+NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
@@ -86,7 +90,8 @@ enabled_tfs: dict[str, bool] = {
     "D1": True,
 }
 
-router = APIRouter(prefix="/device-care", tags=["device-care"])
+router = APIRouter(prefix=APP_PREFIX, tags=["my-signals"])
+legacy_router = APIRouter(prefix=LEGACY_PREFIX, tags=["my-signals-legacy"])
 sse_clients: list[asyncio.Queue] = []
 alert_history: list[dict] = []
 cooldown: dict[str, float] = {}
@@ -102,6 +107,7 @@ scan_stats = {
     "lastDurationSec": 0,
     "alertsTotal": 0,
     "errors": 0,
+    "appName": APP_NAME,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
     "tfButtons": TF_BUTTONS,
     "enabledTfs": dict(enabled_tfs),
@@ -187,7 +193,7 @@ async def status():
     prune_alert_history()
     scan_stats["enabledTfs"] = dict(enabled_tfs)
     scan_stats["tfButtons"] = TF_BUTTONS
-    return {"ok": True, "app": "Device Care", **scan_stats}
+    return {"ok": True, "app": APP_NAME, **scan_stats}
 
 
 @router.get("/api/alerts")
@@ -1191,6 +1197,15 @@ async def scan_loop():
                 await asyncio.sleep(1)
 
 
+@legacy_router.get("")
+@legacy_router.get("/")
+@legacy_router.get("/{path:path}")
+async def legacy_device_care_redirect(path: str = ""):
+    """Old /device-care links → /my-signals"""
+    target = f"{APP_PREFIX}/" if not path else f"{APP_PREFIX}/{path}"
+    return RedirectResponse(url=target, status_code=307)
+
+
 def start_device_care_scanner():
     global _scan_task
     if _scan_task is not None:
@@ -1198,4 +1213,4 @@ def start_device_care_scanner():
     _load_persisted_alerts()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Device Care] PWA → /device-care (4H/D1 LIVE breakouts, score>=90 ntfy)")
+    print("[My Signals] PWA → /my-signals (4H/D1 LIVE breakouts, score>=90 ntfy)")

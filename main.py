@@ -64,12 +64,13 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-from device_care.scanner import router as device_care_router, start_device_care_scanner
+from device_care.scanner import router as device_care_router, legacy_router as my_signals_legacy_router, start_device_care_scanner
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="PumpingBot Platform")
 app.include_router(device_care_router)
+app.include_router(my_signals_legacy_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -2044,7 +2045,7 @@ async def startup_event():
     threading.Thread(target=daily_scheduler, daemon=True).start()
     start_copy_watcher()
     start_device_care_scanner()
-    print("[STARTUP] Daily scheduler + copy watcher + Device Care started")
+    print("[STARTUP] Daily scheduler + copy watcher + My Signals started")
 
     db = SessionLocal()
     try:
