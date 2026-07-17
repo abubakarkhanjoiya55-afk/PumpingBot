@@ -288,9 +288,124 @@
     .tf-toggle:disabled {
       opacity: 0.45; cursor: not-allowed; text-decoration: line-through;
     }
+
+    .hidden { display: none !important; }
+    .auth-screen, .sub-screen, .admin-screen {
+      max-width: 420px; margin: 0 auto 16px;
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 18px; padding: 18px 16px;
+    }
+    .auth-screen h2, .sub-screen h2, .admin-screen h2 {
+      text-align: center; margin-bottom: 6px; font-size: 1.15rem;
+    }
+    .auth-tabs { display: flex; gap: 8px; margin: 12px 0; }
+    .auth-tabs button {
+      flex: 1; padding: 10px; border: none; border-radius: 10px;
+      background: #1a1a2e; color: #aaa; font-weight: 700; cursor: pointer;
+    }
+    .auth-tabs button.on { background: #f0b90b; color: #111; }
+    .auth-form input, .sub-screen input[type=file] {
+      width: 100%; padding: 12px; margin: 6px 0; border-radius: 10px;
+      border: 1px solid #333; background: #0f1117; color: #fff; font-size: 0.95rem;
+    }
+    .auth-form button[type=submit], .btn-gold, .btn-green, .btn-red {
+      width: 100%; padding: 12px; margin-top: 10px; border: none; border-radius: 10px;
+      font-weight: 800; cursor: pointer; font-size: 0.95rem;
+    }
+    .btn-gold { background: #f0b90b; color: #111; }
+    .btn-green { background: #10b981; color: #fff; width: auto; padding: 8px 12px; margin: 0; }
+    .btn-red { background: #ef4444; color: #fff; width: auto; padding: 8px 12px; margin: 0; }
+    .auth-error { color: #f87171; font-size: 0.85rem; margin-top: 8px; text-align: center; }
+    .auth-hint { color: var(--muted); font-size: 0.78rem; text-align: center; margin-top: 10px; }
+    .top-user {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; margin-bottom: 10px; flex-wrap: wrap;
+    }
+    .top-user .who { font-size: 0.8rem; color: #a0a4c0; }
+    .top-user .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .top-user button {
+      border: 1px solid #444; background: #1a1a2e; color: #ddd;
+      border-radius: 8px; padding: 6px 10px; font-size: 0.75rem; cursor: pointer;
+    }
+    .nav-pills { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+    .nav-pills button {
+      flex: 1; min-width: 90px; padding: 10px; border-radius: 10px; border: 1px solid #333;
+      background: #1a1a2e; color: #888; font-weight: 700; cursor: pointer;
+    }
+    .nav-pills button.on { background: #312e81; color: #fff; border-color: #6366f1; }
+    .admin-table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+    .admin-table th, .admin-table td {
+      text-align: left; padding: 8px 6px; border-bottom: 1px solid #2a2d3a; vertical-align: top;
+    }
+    .admin-table th { color: #888; font-weight: 600; }
+    .badge-sub {
+      display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: 700;
+    }
+    .badge-sub.active { background: rgba(16,185,129,.2); color: #34d399; }
+    .badge-sub.expired, .badge-sub.overdue { background: rgba(248,113,113,.2); color: #f87171; }
+    .badge-sub.pending_review { background: rgba(251,191,36,.2); color: #fbbf24; }
+    .admin-actions { display: flex; gap: 4px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
+  <!-- LOGIN / REGISTER -->
+  <section class="auth-screen" id="authScreen">
+    <div class="header" style="padding-top:0">
+      <div class="logo">📡</div>
+      <h1>My Signals</h1>
+      <p class="sub">$20 / 30 days · Email account</p>
+    </div>
+    <div class="auth-tabs">
+      <button type="button" class="on" id="tabLogin">Login</button>
+      <button type="button" id="tabRegister">Register</button>
+    </div>
+    <form class="auth-form" id="loginForm">
+      <input type="text" id="loginEmail" placeholder="Email or Username" required autocomplete="username" />
+      <input type="password" id="loginPassword" placeholder="Password" required autocomplete="current-password" />
+      <button type="submit" class="btn-gold">Login</button>
+    </form>
+    <form class="auth-form hidden" id="registerForm">
+      <input type="text" id="regUsername" placeholder="Username" required />
+      <input type="email" id="regEmail" placeholder="Email" required />
+      <input type="password" id="regPassword" placeholder="Password (min 6)" required minlength="6" />
+      <input type="text" id="regReferral" placeholder="Referral code (optional)" />
+      <button type="submit" class="btn-gold">Create Account</button>
+    </form>
+    <p class="auth-error hidden" id="authError"></p>
+    <p class="auth-hint">Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
+  </section>
+
+  <!-- SUBSCRIPTION GATE -->
+  <section class="sub-screen hidden" id="subScreen">
+    <h2>💳 Subscription</h2>
+    <p class="auth-hint" style="margin-bottom:12px">
+      Package: <b>$<span id="subFee">20</span> / 30 days</b><br>
+      Status: <span class="badge-sub" id="subStatusBadge">expired</span><br>
+      Admin: <span id="subAdminEmail">—</span>
+    </p>
+    <p class="auth-hint" id="subMessage">Payment screenshot upload karo. Admin approve ke baad signals start.</p>
+    <input type="file" id="subFile" accept="image/*,.pdf" />
+    <button type="button" class="btn-gold" id="subUploadBtn">Upload Payment Screenshot</button>
+    <p class="auth-error hidden" id="subError"></p>
+    <button type="button" class="btn-gold" id="subLogoutBtn" style="background:#333;color:#ccc;margin-top:12px">Logout</button>
+  </section>
+
+  <!-- APP SHELL (after login + active sub) -->
+  <div id="appShell" class="hidden">
+  <div class="top-user">
+    <div class="who" id="userWho">—</div>
+    <div class="actions">
+      <button type="button" id="btnAdminNav" class="hidden">Admin</button>
+      <button type="button" id="btnSignalsNav">Signals</button>
+      <button type="button" id="btnLogout">Logout</button>
+    </div>
+  </div>
+  <div class="nav-pills" id="mainNav">
+    <button type="button" class="on" data-view="signals" id="navSignals">📡 Signals</button>
+    <button type="button" data-view="admin" id="navAdmin" class="hidden">⚡ Admin</button>
+  </div>
+
+  <div id="signalsView">
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>My Signals</h1>
@@ -383,6 +498,29 @@
   <div class="install">
     <b>App:</b> Chrome ⋮ → Add to Home screen
   </div>
+  </div><!-- /signalsView -->
+
+  <!-- ADMIN PANEL -->
+  <section class="admin-screen hidden" id="adminView">
+    <h2>⚡ Admin Panel</h2>
+    <div class="stats-grid" id="adminStats" style="margin:12px 0"></div>
+    <h3 style="font-size:.95rem;margin:14px 0 8px">Pending payments</h3>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead><tr><th>User</th><th>Fee</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody id="adminPendingBody"><tr><td colspan="4">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <h3 style="font-size:.95rem;margin:18px 0 8px">All users</h3>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead><tr><th>User</th><th>Sub</th><th>Expires</th><th>Bot</th><th>Action</th></tr></thead>
+        <tbody id="adminUsersBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn-gold" id="adminRefreshBtn" style="margin-top:12px">Refresh</button>
+  </section>
+  </div><!-- /appShell -->
 
   <!-- Persistent alarm -->
   <div class="alarm-overlay" id="alarmOverlay">
@@ -400,6 +538,302 @@
     const BASE = location.pathname.startsWith('/my-signals')
       ? '/my-signals'
       : (location.pathname.startsWith('/device-care') ? '/device-care' : '/my-signals');
+    const API_ROOT = '';
+    const TOKEN_KEY = 'ms_token';
+
+    function getToken() { return localStorage.getItem(TOKEN_KEY); }
+    function setToken(t) {
+      if (t) localStorage.setItem(TOKEN_KEY, t);
+      else localStorage.removeItem(TOKEN_KEY);
+    }
+    function authHeaders() {
+      const t = getToken();
+      return t ? { Authorization: 'Bearer ' + t } : {};
+    }
+
+    let currentUser = null;
+    let monitoringAllowed = false;
+
+    const authScreen = document.getElementById('authScreen');
+    const subScreen = document.getElementById('subScreen');
+    const appShell = document.getElementById('appShell');
+    const signalsView = document.getElementById('signalsView');
+    const adminView = document.getElementById('adminView');
+    const authError = document.getElementById('authError');
+    const subError = document.getElementById('subError');
+
+    function showAuthError(msg) {
+      authError.textContent = msg || '';
+      authError.classList.toggle('hidden', !msg);
+    }
+    function showSubError(msg) {
+      subError.textContent = msg || '';
+      subError.classList.toggle('hidden', !msg);
+    }
+
+    function setView(mode) {
+      // mode: auth | sub | signals | admin
+      authScreen.classList.toggle('hidden', mode !== 'auth');
+      subScreen.classList.toggle('hidden', mode !== 'sub');
+      appShell.classList.toggle('hidden', mode !== 'signals' && mode !== 'admin');
+      signalsView.classList.toggle('hidden', mode !== 'signals');
+      adminView.classList.toggle('hidden', mode !== 'admin');
+      document.getElementById('navSignals').classList.toggle('on', mode === 'signals');
+      document.getElementById('navAdmin').classList.toggle('on', mode === 'admin');
+    }
+
+    async function apiLogin(email, password) {
+      const form = new URLSearchParams();
+      form.append('username', email);
+      form.append('password', password);
+      const r = await fetch(API_ROOT + '/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: form,
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || 'Login failed');
+      setToken(data.access_token);
+      return data;
+    }
+
+    async function apiRegister(username, email, password, referral) {
+      const r = await fetch(API_ROOT + '/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username, email, password,
+          referral_code: referral || null,
+        }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Register failed');
+      return data;
+    }
+
+    async function apiMe() {
+      const r = await fetch(API_ROOT + '/me', { headers: authHeaders() });
+      if (r.status === 401) { setToken(null); throw new Error('Session expired'); }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || 'Failed to load profile');
+      return data;
+    }
+
+    function isSubActive(me) {
+      return !!(me && (me.is_admin || me.username === 'admin' || me.subscription_status === 'active'));
+    }
+
+    async function enterApp(me) {
+      currentUser = me;
+      const isAdmin = !!(me.is_admin || me.username === 'admin');
+      document.getElementById('userWho').textContent =
+        `${me.email || me.username} · ${me.subscription_status || '—'}`;
+      document.getElementById('navAdmin').classList.toggle('hidden', !isAdmin);
+      document.getElementById('btnAdminNav').classList.toggle('hidden', !isAdmin);
+
+      if (!isSubActive(me)) {
+        monitoringAllowed = false;
+        document.getElementById('subFee').textContent = me.subscription_fee ?? 20;
+        document.getElementById('subAdminEmail').textContent = me.admin_email || 'admin';
+        const badge = document.getElementById('subStatusBadge');
+        badge.textContent = me.subscription_status || 'expired';
+        badge.className = 'badge-sub ' + (me.subscription_status || 'expired');
+        document.getElementById('subMessage').textContent =
+          me.subscription_status === 'pending_review'
+            ? 'Screenshot uploaded — admin approval ka wait.'
+            : `$20 pay karke screenshot upload karo. Admin approve karega tab signals chalu.`;
+        setView('sub');
+        return;
+      }
+
+      monitoringAllowed = true;
+      setView('signals');
+      // Start live monitoring only when subscription active
+      if (typeof startMonitoring === 'function') startMonitoring();
+    }
+
+    async function bootAuth() {
+      if (!getToken()) {
+        setView('auth');
+        return;
+      }
+      try {
+        const me = await apiMe();
+        await enterApp(me);
+      } catch (e) {
+        setToken(null);
+        setView('auth');
+        showAuthError(e.message);
+      }
+    }
+
+    document.getElementById('tabLogin').onclick = () => {
+      document.getElementById('tabLogin').classList.add('on');
+      document.getElementById('tabRegister').classList.remove('on');
+      document.getElementById('loginForm').classList.remove('hidden');
+      document.getElementById('registerForm').classList.add('hidden');
+      showAuthError('');
+    };
+    document.getElementById('tabRegister').onclick = () => {
+      document.getElementById('tabRegister').classList.add('on');
+      document.getElementById('tabLogin').classList.remove('on');
+      document.getElementById('registerForm').classList.remove('hidden');
+      document.getElementById('loginForm').classList.add('hidden');
+      showAuthError('');
+    };
+
+    document.getElementById('loginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      showAuthError('');
+      try {
+        await apiLogin(
+          document.getElementById('loginEmail').value.trim(),
+          document.getElementById('loginPassword').value,
+        );
+        await enterApp(await apiMe());
+      } catch (ex) {
+        showAuthError(ex.message);
+      }
+    };
+
+    document.getElementById('registerForm').onsubmit = async (e) => {
+      e.preventDefault();
+      showAuthError('');
+      try {
+        const email = document.getElementById('regEmail').value.trim();
+        await apiRegister(
+          document.getElementById('regUsername').value.trim(),
+          email,
+          document.getElementById('regPassword').value,
+          document.getElementById('regReferral').value.trim(),
+        );
+        await apiLogin(email, document.getElementById('regPassword').value);
+        await enterApp(await apiMe());
+      } catch (ex) {
+        showAuthError(ex.message);
+      }
+    };
+
+    function logout() {
+      setToken(null);
+      currentUser = null;
+      monitoringAllowed = false;
+      monitoringStarted = false;
+      if (eventStream) { eventStream.close(); eventStream = null; }
+      if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+      if (alertsTimer) { clearInterval(alertsTimer); alertsTimer = null; }
+      setView('auth');
+    }
+    document.getElementById('btnLogout').onclick = logout;
+    document.getElementById('subLogoutBtn').onclick = logout;
+
+    document.getElementById('subUploadBtn').onclick = async () => {
+      showSubError('');
+      const file = document.getElementById('subFile').files?.[0];
+      if (!file) { showSubError('Pehle screenshot select karo'); return; }
+      const fd = new FormData();
+      fd.append('file', file);
+      try {
+        const r = await fetch(API_ROOT + '/subscription/upload-screenshot', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: fd,
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || 'Upload failed');
+        showSubError(data.message || 'Uploaded — wait for admin');
+        subError.style.color = '#34d399';
+        await enterApp(await apiMe());
+      } catch (ex) {
+        subError.style.color = '#f87171';
+        showSubError(ex.message);
+      }
+    };
+
+    document.getElementById('navSignals').onclick = () => {
+      if (monitoringAllowed) setView('signals');
+    };
+    document.getElementById('btnSignalsNav').onclick = () => {
+      if (monitoringAllowed) setView('signals');
+    };
+    document.getElementById('navAdmin').onclick = () => { setView('admin'); loadAdmin(); };
+    document.getElementById('btnAdminNav').onclick = () => { setView('admin'); loadAdmin(); };
+    document.getElementById('adminRefreshBtn').onclick = () => loadAdmin();
+
+    async function loadAdmin() {
+      const statsEl = document.getElementById('adminStats');
+      const pendingBody = document.getElementById('adminPendingBody');
+      const usersBody = document.getElementById('adminUsersBody');
+      try {
+        const [statsR, pendR, usersR] = await Promise.all([
+          fetch(API_ROOT + '/admin/stats', { headers: authHeaders() }),
+          fetch(API_ROOT + '/admin/pending-payments', { headers: authHeaders() }),
+          fetch(API_ROOT + '/admin/users', { headers: authHeaders() }),
+        ]);
+        if (!statsR.ok) throw new Error('Admin only');
+        const stats = await statsR.json();
+        const pending = await pendR.json();
+        const users = await usersR.json();
+        statsEl.innerHTML = `
+          <div class="stat-card"><div class="stat-num">${stats.total_users}</div><div class="stat-label">Users</div></div>
+          <div class="stat-card"><div class="stat-num green">${stats.active_subscriptions ?? 0}</div><div class="stat-label">Active subs</div></div>
+          <div class="stat-card"><div class="stat-num amber">${stats.pending_payment}</div><div class="stat-label">Pending</div></div>
+          <div class="stat-card"><div class="stat-num">$${stats.subscription_fee ?? 20}</div><div class="stat-label">Fee</div></div>`;
+        pendingBody.innerHTML = pending.length ? pending.map(p => `
+          <tr>
+            <td><b>${p.username}</b><br><span style="color:#888">${p.email || ''}</span></td>
+            <td>$${p.total_owed || p.subscription_fee || 20}</td>
+            <td><span class="badge-sub ${p.subscription_status || p.status}">${p.subscription_status || p.status}</span></td>
+            <td class="admin-actions">
+              ${p.payment_screenshot ? `<button type="button" class="btn-green" data-ss="${p.user_id}">SS</button>` : ''}
+              <button type="button" class="btn-green" data-approve="${p.user_id}">Approve</button>
+              <button type="button" class="btn-red" data-reject="${p.user_id}">Reject</button>
+            </td>
+          </tr>`).join('') : '<tr><td colspan="4">No pending payments</td></tr>';
+        usersBody.innerHTML = users.map(u => `
+          <tr>
+            <td><b>${u.username}</b><br><span style="color:#888">${u.email || ''}</span></td>
+            <td><span class="badge-sub ${u.subscription_status}">${u.subscription_status}</span></td>
+            <td>${u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleDateString() : '—'}</td>
+            <td>${u.bot_active ? 'ON' : 'OFF'}</td>
+            <td class="admin-actions">
+              <button type="button" class="btn-green" data-toggle="${u.user_id}">Toggle</button>
+              ${u.username !== 'admin' ? `<button type="button" class="btn-red" data-del="${u.user_id}">Del</button>` : ''}
+            </td>
+          </tr>`).join('');
+      } catch (ex) {
+        pendingBody.innerHTML = `<tr><td colspan="4">${ex.message}</td></tr>`;
+      }
+    }
+
+    document.getElementById('adminView').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button');
+      if (!btn) return;
+      try {
+        if (btn.dataset.approve) {
+          await fetch(API_ROOT + `/admin/confirm-payment/${btn.dataset.approve}`, { method: 'POST', headers: authHeaders() });
+          loadAdmin();
+        } else if (btn.dataset.reject) {
+          await fetch(API_ROOT + `/admin/reject-payment/${btn.dataset.reject}`, { method: 'POST', headers: authHeaders() });
+          loadAdmin();
+        } else if (btn.dataset.toggle) {
+          await fetch(API_ROOT + `/admin/toggle-bot/${btn.dataset.toggle}`, { method: 'POST', headers: authHeaders() });
+          loadAdmin();
+        } else if (btn.dataset.del) {
+          if (!confirm('Delete user?')) return;
+          await fetch(API_ROOT + `/admin/delete-user/${btn.dataset.del}`, { method: 'DELETE', headers: authHeaders() });
+          loadAdmin();
+        } else if (btn.dataset.ss) {
+          const r = await fetch(API_ROOT + `/admin/payment-screenshot/${btn.dataset.ss}`, { headers: authHeaders() });
+          if (!r.ok) throw new Error('Screenshot missing');
+          const blob = await r.blob();
+          window.open(URL.createObjectURL(blob), '_blank');
+        }
+      } catch (ex) {
+        alert(ex.message);
+      }
+    });
+
     const alertsEl = document.getElementById('alerts');
     const emptyEl = document.getElementById('empty');
     const coinGrid = document.getElementById('coinGrid');
@@ -685,6 +1119,7 @@
     }
 
     function startMonitoring() {
+      if (!monitoringAllowed) return;
       if (monitoringStarted) return;
       monitoringStarted = true;
       document.getElementById('liveText').textContent = 'Signals load ho rahe hain...';
@@ -875,6 +1310,10 @@
     }
 
     async function activateAlarm() {
+      if (!monitoringAllowed) {
+        activationMessage.textContent = 'Pehle login + active subscription zaroori hai.';
+        return;
+      }
       activateBtn.disabled = true;
       activationMessage.textContent = 'Awaaz aur notifications tayyar ho rahi hain...';
 
@@ -925,8 +1364,8 @@
       if (alarmTimer) clearInterval(alarmTimer);
     });
     updateCapabilityStatus();
-    // Signals page open hote hi dikhao — awaaz ke liye Activate zaroori
-    startMonitoring();
+    // Pehle login — active subscription ke baad hi signals
+    bootAuth();
   </script>
 </body>
 </html>
