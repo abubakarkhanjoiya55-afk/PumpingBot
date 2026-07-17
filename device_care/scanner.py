@@ -1,12 +1,13 @@
 """
-Device Care — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
-Mount: /device-care
+My Signals — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
+Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
-Strategy:
-  - 1H / 4H → S/R Breakout (closed + LIVE forming candle) + Triangle
-  - D1 / 1W → Dragonfly / Hammer / Doji + last candle green close
-Har alert ke sath: score (0–100), entry, SL, TP
+Strategy (signals ONLY on 4H + 1D):
+  - 4H → S/R Breakout LIVE (price pierce) + closed + Triangle
+  - D1 → S/R Breakout LIVE + closed + Triangle + Doji/Hammer patterns
+UI buttons: 5m / 15m / 1h / 4H / 1D — lekin signals sirf 4H aur 1D se aate hain.
+Score >= 90 → ntfy push (app band ho tab bhi phone par alert).
 """
 import asyncio
 import json
@@ -17,15 +18,20 @@ from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from pydantic import BaseModel
+
+APP_NAME = "My Signals"
+APP_PREFIX = "/my-signals"
+LEGACY_PREFIX = "/device-care"
 
 STATIC = Path(__file__).parent / "static"
 DATA_DIR = Path(__file__).parent / "data"
 ALERT_STORE = DATA_DIR / "alerts.json"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
-SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "90"))
+SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "60"))
 # Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
-MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "45"))
+MORNING_SCAN_SEC = int(os.environ.get("DC_MORNING_SCAN_SEC", "40"))
 MORNING_START_HOUR = int(os.environ.get("DC_MORNING_START_HOUR", "5"))
 MORNING_END_HOUR = int(os.environ.get("DC_MORNING_END_HOUR", "9"))
 PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
@@ -35,14 +41,20 @@ SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 # Alert history TTL — triangles jaldi clear, candle patterns zyada der
 BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
 D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
+STRONG_SCORE = int(os.environ.get("DC_STRONG_SCORE", "90"))
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
+NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
-BREAKOUT_TFS = frozenset({"1H", "4H"})
-TRIANGLE_TFS = frozenset({"1H", "4H"})
-CANDLE_TFS = frozenset({"D1", "1W"})
+# Signals ONLY on 4H and 1D (user requirement)
+BREAKOUT_TFS = frozenset({"4H", "D1"})
+TRIANGLE_TFS = frozenset({"4H", "D1"})
+CANDLE_TFS = frozenset({"D1"})
+SIGNAL_CAPABLE_TFS = frozenset({"4H", "D1"})
 
 # Fiat, stablecoins, commodities — futures crypto scan se bahar
 STABLE_FIAT_BASES = frozenset({
@@ -55,15 +67,31 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# 1H/4H S/R+triangle, D1/1W candle patterns
+# Active scan TFs — sirf 4H + D1 produce signals
 TIMEFRAMES = [
-    ("Min60", "1H", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
-    ("Week1", "1W", 40),
 ]
 
-router = APIRouter(prefix="/device-care", tags=["device-care"])
+# UI toggle buttons (5m/15m/1h dikhaye jaate hain lekin signal nahi dete)
+TF_BUTTONS = [
+    {"id": "5m", "label": "5m", "capable": False},
+    {"id": "15m", "label": "15m", "capable": False},
+    {"id": "1h", "label": "1H", "capable": False},
+    {"id": "4H", "label": "4H", "capable": True},
+    {"id": "D1", "label": "1D", "capable": True},
+]
+# Runtime enable map — only capable TFs can be turned on
+enabled_tfs: dict[str, bool] = {
+    "5m": False,
+    "15m": False,
+    "1h": False,
+    "4H": True,
+    "D1": True,
+}
+
+router = APIRouter(prefix=APP_PREFIX, tags=["my-signals"])
+legacy_router = APIRouter(prefix=LEGACY_PREFIX, tags=["my-signals-legacy"])
 sse_clients: list[asyncio.Queue] = []
 alert_history: list[dict] = []
 cooldown: dict[str, float] = {}
@@ -79,7 +107,10 @@ scan_stats = {
     "lastDurationSec": 0,
     "alertsTotal": 0,
     "errors": 0,
+    "appName": APP_NAME,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
+    "tfButtons": TF_BUTTONS,
+    "enabledTfs": dict(enabled_tfs),
     "patterns": [
         "S/R Breakout",
         "Triangle Breakout",
@@ -88,10 +119,11 @@ scan_stats = {
         "Doji + Green",
     ],
     "strategy": {
-        "1H": "S/R + Triangle (live+closed)",
-        "4H": "S/R + Triangle (live+closed)",
-        "D1": "Doji/Hammer + green close",
-        "1W": "Doji/Hammer + green close",
+        "5m": "UI only — signals off",
+        "15m": "UI only — signals off",
+        "1h": "UI only — signals off",
+        "4H": "S/R LIVE pierce + Triangle (signals ON)",
+        "D1": "S/R LIVE + Triangle + Doji/Hammer (signals ON)",
     },
     "exchange": "MEXC Futures",
     "market": "futures",
@@ -100,9 +132,11 @@ scan_stats = {
     "nextScanInSec": 0,
     "scannedCoins": [],
     "morningWindow": False,
-    "d1PatternsEnabled": False,
+    "d1PatternsEnabled": True,
     "breakoutAlertTtlSec": BREAKOUT_ALERT_TTL_SEC,
     "d1AlertTtlSec": D1_PATTERN_ALERT_TTL_SEC,
+    "strongScore": STRONG_SCORE,
+    "ntfyEnabled": bool(NTFY_TOPIC),
 }
 
 
@@ -149,16 +183,49 @@ async def icon512_png():
     return _static("icon-512.png")
 
 
+class TfToggle(BaseModel):
+    timeframe: str
+    enabled: bool
+
+
 @router.get("/api/status")
 async def status():
     prune_alert_history()
-    return {"ok": True, "app": "Device Care", **scan_stats}
+    scan_stats["enabledTfs"] = dict(enabled_tfs)
+    scan_stats["tfButtons"] = TF_BUTTONS
+    return {"ok": True, "app": APP_NAME, **scan_stats}
 
 
 @router.get("/api/alerts")
 async def alerts():
     prune_alert_history()
     return [_normalize_alert(a) for a in alert_history[:80]]
+
+
+@router.get("/api/timeframes")
+async def get_timeframes():
+    return {
+        "buttons": TF_BUTTONS,
+        "enabled": dict(enabled_tfs),
+        "signalCapable": sorted(SIGNAL_CAPABLE_TFS),
+        "note": "Signals sirf 4H aur 1D pe aate hain. 5m/15m/1h buttons UI ke liye hain.",
+    }
+
+
+@router.post("/api/timeframes")
+async def set_timeframe(body: TfToggle):
+    tf = body.timeframe
+    if tf not in enabled_tfs:
+        raise HTTPException(400, f"Unknown timeframe: {tf}")
+    if body.enabled and tf not in SIGNAL_CAPABLE_TFS:
+        raise HTTPException(
+            400,
+            f"{tf} signals band hain — sirf 4H aur 1D pe signals aate hain",
+        )
+    enabled_tfs[tf] = bool(body.enabled) if tf in SIGNAL_CAPABLE_TFS else False
+    scan_stats["enabledTfs"] = dict(enabled_tfs)
+    _broadcast_stats()
+    return {"ok": True, "enabled": dict(enabled_tfs)}
 
 
 async def _sse_stream():
@@ -250,9 +317,9 @@ def _load_persisted_alerts():
             alert_history[:] = raw[:80]
             prune_alert_history()
             scan_stats["alertsTotal"] = len(alert_history)
-            print(f"[Device Care] Restored {len(alert_history)} alerts from disk")
+            print(f"[My Signals] Restored {len(alert_history)} alerts from disk")
     except Exception as e:
-        print(f"[Device Care] alert restore failed: {e}")
+        print(f"[My Signals] alert restore failed: {e}")
 
 
 def _persist_alerts():
@@ -263,7 +330,7 @@ def _persist_alerts():
             encoding="utf-8",
         )
     except Exception as e:
-        print(f"[Device Care] alert persist failed: {e}")
+        print(f"[My Signals] alert persist failed: {e}")
 
 
 def prune_alert_history(now: float | None = None) -> list[dict]:
@@ -291,6 +358,38 @@ def prune_alert_history(now: float | None = None) -> list[dict]:
     return removed_ids
 
 
+async def _send_ntfy_strong(alert: dict):
+    """App band ho tab bhi score>=90 signals phone par (ntfy)."""
+    score = float(alert.get("score") or 0)
+    if score < STRONG_SCORE or not NTFY_TOPIC:
+        return
+    sym = (alert.get("symbol") or "").replace("_USDT", "")
+    side = alert.get("side") or alert.get("direction") or ""
+    tf = alert.get("timeframe") or ""
+    body = (
+        f"{sym} {side} · {tf} · score {int(score)}\n"
+        f"Entry {alert.get('entry')} | SL {alert.get('sl')} | TP {alert.get('tp')}\n"
+        f"{alert.get('pattern') or 'Breakout'} {alert.get('patternDetail') or ''}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{NTFY_SERVER}/{NTFY_TOPIC}",
+                content=body.encode("utf-8"),
+                headers={
+                    "Title": f"{NTFY_TITLE} {sym} {side}",
+                    "Priority": "5",
+                    "Tags": "rotating_light,chart_with_upwards_trend",
+                },
+            )
+            if r.status_code >= 300:
+                print(f"[My Signals] ntfy fail: {r.status_code}")
+            else:
+                print(f"[My Signals] ntfy strong alert sent: {sym} score={score}")
+    except Exception as e:
+        print(f"[My Signals] ntfy error: {e}")
+
+
 def _broadcast(alert: dict):
     alert["id"] = alert.get("id") or (
         f"{alert['symbol']}-{alert.get('timeframe')}-{alert.get('pattern')}-"
@@ -304,6 +403,12 @@ def _broadcast(alert: dict):
     _persist_alerts()
     _push_sse({"type": "alert", "data": _normalize_alert(alert)})
     _broadcast_stats()
+    # Strong signals → background push even if PWA closed
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_send_ntfy_strong(alert))
+    except RuntimeError:
+        pass
 
 
 def _round_price(price: float) -> float:
@@ -489,7 +594,8 @@ def detect_sr_breakout(
 ) -> dict | None:
     """
     S/R breakout on closed candle (-2) or LIVE forming candle (-1).
-    Live signals fire during the candle so alerts keep coming between closes.
+    LIVE: fire as soon as high/low pierces level (breakout hoti hi) —
+    pump ke baad wait nahi.
     """
     h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
     i = -1 if live else -2
@@ -500,22 +606,29 @@ def detect_sr_breakout(
     if live:
         rh = max(h[-lookback - 1:-1])
         rl = min(l[-lookback - 1:-1])
-        body_frac = 0.22
+        body_frac = 0.12  # live pierce — jaldi signal
     else:
         rh = max(h[-lookback - 2:i])
         rl = min(l[-lookback - 2:i])
-        body_frac = 0.28
+        body_frac = 0.22
     if not _body_ok(h, l, c, o, i, min_frac=body_frac):
         return None
     detail_suffix = " (LIVE)" if live else ""
-    if c[i] > rh and c[i - 1] <= rh:
+    # LIVE: high pierce = breakout started (close wait nahi)
+    buy_hit = (c[i] > rh and c[i - 1] <= rh) or (
+        live and h[i] > rh and c[i - 1] <= rh
+    )
+    sell_hit = (c[i] < rl and c[i - 1] >= rl) or (
+        live and l[i] < rl and c[i - 1] >= rl
+    )
+    if buy_hit:
         return {
             "side": "BUY", "direction": "UP", "pattern": "S/R Breakout",
             "patternDetail": f"Resistance breakout{detail_suffix}",
             "level": rh, "close": c[i], "candleTime": t[i],
             "live": live,
         }
-    if c[i] < rl and c[i - 1] >= rl:
+    if sell_hit:
         return {
             "side": "SELL", "direction": "DOWN", "pattern": "S/R Breakout",
             "patternDetail": f"Support breakdown{detail_suffix}",
@@ -792,9 +905,9 @@ scan_d1_patterns = scan_candle_patterns
 
 def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
     """
-    TF-gated strategy:
-      1H/4H → S/R Breakout (closed + LIVE) + Triangle Breakout (closed)
-      D1/1W → Dragonfly/Hammer/Doji + green close confirmation
+    TF-gated strategy — signals ONLY on 4H + D1:
+      4H / D1 → S/R Breakout LIVE-first (pierce) + closed + Triangle
+      D1 → also Dragonfly/Hammer/Doji + green close
     """
     hits: list[dict] = []
     tf = timeframe or ""
@@ -804,20 +917,19 @@ def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = Fa
     run_candles = tf in CANDLE_TFS or include_d1_patterns
 
     if run_breakouts:
-        # Prefer closed confirmation; also emit LIVE forming-candle breakouts
+        # LIVE first — breakout hoti hi signal (pump wait nahi)
         seen_dirs: set[str] = set()
-        for live in (False, True):
+        for live in (True, False):
             sr = detect_sr_breakout(ohlc, live=live)
             if not sr:
                 continue
-            # Same direction closed+live same candle → keep closed only
             if sr["direction"] in seen_dirs:
                 continue
             seen_dirs.add(sr["direction"])
             hits.append(enrich_trade_plan(ohlc, sr))
         if run_triangle:
             tri = detect_triangle_breakout(ohlc)
-            if tri:
+            if tri and tri["direction"] not in seen_dirs:
                 hits.append(enrich_trade_plan(ohlc, tri))
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
@@ -853,7 +965,7 @@ async def _load_symbol_universe(client: httpx.AsyncClient) -> tuple[set[str], di
     _api_symbols_cache = api_syms
     _symbol_meta_cache = meta
     _symbol_cache_at = time.time()
-    print(f"[Device Care] MEXC Futures USDT contracts loaded: {len(api_syms)}")
+    print(f"[My Signals] MEXC Futures USDT contracts loaded: {len(api_syms)}")
     return api_syms, meta
 
 
@@ -913,7 +1025,7 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[tuple[str, float]]:
             rows.append((sym, vol))
     rows.sort(key=lambda x: x[1], reverse=True)
     print(
-        f"[Device Care] Futures USDT pairs: {len(rows)} "
+        f"[My Signals] Futures USDT pairs: {len(rows)} "
         f"(skipped {skipped} non-crypto/low-quality)"
     )
     return rows
@@ -961,17 +1073,25 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Strategy: 1H/4H S/R live+closed · D1/1W doji+green")
+    print("[My Signals] Strategy: 4H/D1 LIVE S/R pierce · D1 doji+green · strong>=90 ntfy")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
             morning = in_morning_window()
             scan_stats["morningWindow"] = morning
             scan_stats["d1PatternsEnabled"] = True
+            scan_stats["enabledTfs"] = dict(enabled_tfs)
             wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
-            # Subah: D1/1W pehle — daily/weekly candle patterns jaldi milen
+            # Only scan TFs that are both capable and enabled
+            active_tfs = [
+                row for row in TIMEFRAMES
+                if row[1] in SIGNAL_CAPABLE_TFS and enabled_tfs.get(row[1], True)
+            ]
+            if not active_tfs:
+                active_tfs = list(TIMEFRAMES)
+            # Subah: D1 pehle
             tf_order = (
-                list(reversed(TIMEFRAMES)) if morning else list(TIMEFRAMES)
+                list(reversed(active_tfs)) if morning else list(active_tfs)
             )
             # Cooldown: breakout keys 1h, candle pattern keys 8h
             for key, seen_at in list(cooldown.items()):
@@ -995,13 +1115,9 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = (
-                    "MORNING D1/1W patterns"
-                    if morning
-                    else "1H/4H S/R live+closed + D1/1W"
-                )
+                mode = "MORNING D1 first" if morning else "4H/D1 LIVE breakout"
                 print(
-                    f"[Device Care] Scanning {len(symbols)} futures × {len(TIMEFRAMES)} TFs "
+                    f"[My Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
                 )
                 new_alerts = 0
@@ -1038,7 +1154,7 @@ async def scan_loop():
                                 coin_hits += 1
                                 new_alerts += 1
                                 print(
-                                    f"[Device Care] {sym} {tf_label} "
+                                    f"[My Signals] {sym} {tf_label} "
                                     f"{hit['pattern']} {hit['direction']} "
                                     f"{live_tag} score={hit.get('score')} "
                                     f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
@@ -1059,11 +1175,11 @@ async def scan_loop():
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"
-                print(f"[Device Care] Scan done — {new_alerts} new alert(s)")
+                print(f"[My Signals] Scan done — {new_alerts} new alert(s)")
                 _broadcast_stats()
             except Exception as e:
                 scan_stats["phase"] = "error"
-                print(f"[Device Care] scan error: {e}")
+                print(f"[My Signals] scan error: {e}")
                 _broadcast_stats()
 
             # Wait loop — also prune expired alerts so UI clears on schedule
@@ -1081,6 +1197,15 @@ async def scan_loop():
                 await asyncio.sleep(1)
 
 
+@legacy_router.get("")
+@legacy_router.get("/")
+@legacy_router.get("/{path:path}")
+async def legacy_device_care_redirect(path: str = ""):
+    """Old /device-care links → /my-signals"""
+    target = f"{APP_PREFIX}/" if not path else f"{APP_PREFIX}/{path}"
+    return RedirectResponse(url=target, status_code=307)
+
+
 def start_device_care_scanner():
     global _scan_task
     if _scan_task is not None:
@@ -1088,4 +1213,4 @@ def start_device_care_scanner():
     _load_persisted_alerts()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Device Care] PWA → /device-care (MEXC Futures, live+closed alerts)")
+    print("[My Signals] PWA → /my-signals (4H/D1 LIVE breakouts, score>=90 ntfy)")

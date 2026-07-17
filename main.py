@@ -1,9 +1,9 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, DateTime, or_
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from jose import JWTError, jwt
@@ -15,6 +15,8 @@ import time
 import asyncio
 import smtplib
 import uuid
+import shutil
+from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
@@ -51,6 +53,10 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./goldbot.db")
 EMAIL_USER  = os.environ.get("EMAIL_USER",  "pumpingbot333@gmail.com")
 EMAIL_PASS  = os.environ.get("EMAIL_PASS",  "")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "pumpingbot333@gmail.com")
+SUBSCRIPTION_FEE_USD = float(os.environ.get("SUBSCRIPTION_FEE_USD", "20"))
+SUBSCRIPTION_DAYS = int(os.environ.get("SUBSCRIPTION_DAYS", "30"))
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "./uploads/payment_screenshots"))
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 else:
@@ -58,12 +64,13 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-from device_care.scanner import router as device_care_router, start_device_care_scanner
+from device_care.scanner import router as device_care_router, legacy_router as my_signals_legacy_router, start_device_care_scanner
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="PumpingBot Platform")
 app.include_router(device_care_router)
+app.include_router(my_signals_legacy_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -72,11 +79,53 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.11.0"   # One-tap mobile alarm activation
+API_VERSION = "3.12.0"   # Email login + $20/30d subscription + 4H/1D signals
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
     return user is not None and user.username == "admin"
+
+
+def refresh_subscription_status(user):
+    """Expire package if 30 days khatam — admin always active."""
+    if user is None:
+        return "expired"
+    if is_master_user(user):
+        user.subscription_status = "active"
+        return "active"
+    status = (user.subscription_status or "expired").lower()
+    if status == "pending_review":
+        return "pending_review"
+    expires = user.subscription_expires_at
+    if status == "active" and expires and expires > datetime.utcnow():
+        return "active"
+    if status == "active" and (not expires or expires <= datetime.utcnow()):
+        user.subscription_status = "expired"
+        user.bot_active = False
+        user.payment_status = "overdue"
+        user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+        return "expired"
+    user.subscription_status = status if status in ("expired", "pending_review") else "expired"
+    return user.subscription_status
+
+
+def has_active_subscription(user):
+    return refresh_subscription_status(user) == "active"
+
+
+def activate_subscription(user, days=SUBSCRIPTION_DAYS):
+    """Admin approve ke baad 30 din package open."""
+    now = datetime.utcnow()
+    base = now
+    if user.subscription_expires_at and user.subscription_expires_at > now:
+        base = user.subscription_expires_at
+    user.subscription_expires_at = base + timedelta(days=days)
+    user.subscription_status = "active"
+    user.payment_status = "clear"
+    user.subscription_fee_owed = 0.0
+    user.last_payment_at = now
+    user.daily_profit_owed = 0.0
+    user.referral_owed = 0.0
 
 # ─── FIX: Global threading.Event for proper thread synchronization ────────────
 # Bot thread waits on this event — set ONLY when MetaApi _ready=True
@@ -138,8 +187,13 @@ class User(Base):
     # Payment tracking
     daily_profit_owed   = Column(Float, default=0.0)       # 25% admin share pending
     referral_owed       = Column(Float, default=0.0)       # 5% referrer commission
-    payment_status      = Column(String, default="clear")  # clear / pending / overdue
+    payment_status      = Column(String, default="clear")  # clear / pending / overdue / pending_review
     last_payment_at     = Column(DateTime, nullable=True)
+    # $20 / 30-day subscription package
+    subscription_status     = Column(String, default="expired")  # active / expired / pending_review
+    subscription_expires_at = Column(DateTime, nullable=True)
+    payment_screenshot      = Column(String, nullable=True)
+    subscription_fee_owed   = Column(Float, default=20.0)
     created_at          = Column(DateTime, default=datetime.utcnow)
 
 class Trade(Base):
@@ -275,9 +329,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
             raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
-    user = db.query(User).filter(User.username == username).first()
+    user = db.query(User).filter(
+        or_(User.username == username, User.email == username)
+    ).first()
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+    refresh_subscription_status(user)
     return user
 
 
@@ -1270,26 +1327,61 @@ def pause_unpaid_bots():
         db.close()
 
 
+def pause_expired_subscriptions():
+    """30 din package khatam — bot pause jab tak payment + admin approve na ho."""
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(User.username != "admin").all()
+        for user in users:
+            prev = user.subscription_status
+            status = refresh_subscription_status(user)
+            if status == "expired" and prev == "active":
+                active_bots[user.id] = False
+                user.bot_active = False
+                print(f"[SUB] {user.username} package expired — bot paused")
+                html = f"""
+                <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+                    <h2 style="color:#ff4444;">🚫 Subscription Expired</h2>
+                    <p>Hello <b>{user.username}</b>,</p>
+                    <p>Aapka 30-din ka package khatam ho gaya. Bot pause hai.</p>
+                    <p>Fee: <b>${SUBSCRIPTION_FEE_USD:.0f}</b> — payment ka screenshot app mein upload karein.
+                       Admin approve karega tab signals/bot dobara start honge.</p>
+                    <p>Admin: <b>{ADMIN_EMAIL}</b></p>
+                </div>"""
+                send_email(user.email, "🚫 PumpingBot — Subscription Expired", html)
+        db.commit()
+    except Exception as e:
+        print(f"[SUB EXPIRE] Error: {e}")
+    finally:
+        db.close()
+
+
 def daily_scheduler():
-    """24/7 background scheduler — PKT time check karta hai"""
-    print("[SCHEDULER] Started — watching for 8 PM and 9 PM PKT")
+    """Background scheduler — subscription expiry + legacy payment windows"""
+    print("[SCHEDULER] Started — subscription expiry + 8/9 PM PKT checks")
     notified_today  = None
     paused_today    = None
+    last_sub_check  = None
 
     while True:
         try:
-            # PKT = UTC + 5
-            now_pkt = datetime.utcnow() + timedelta(hours=5)
+            now_utc = datetime.utcnow()
+            now_pkt = now_utc + timedelta(hours=5)
             today   = now_pkt.date()
 
-            # 8 PM PKT — profit calculate + notification
+            # Har ghante subscription expiry check
+            hour_key = now_utc.strftime("%Y-%m-%d-%H")
+            if last_sub_check != hour_key:
+                pause_expired_subscriptions()
+                last_sub_check = hour_key
+
+            # Legacy daily profit-share reminders (optional path)
             if now_pkt.hour == 20 and now_pkt.minute < 5 and notified_today != today:
                 print("[SCHEDULER] 8 PM PKT — calculating profits and sending notifications")
                 calculate_daily_profits()
                 send_payment_notifications()
                 notified_today = today
 
-            # 9 PM PKT — unpaid bots pause
             if now_pkt.hour == 21 and now_pkt.minute < 5 and paused_today != today:
                 print("[SCHEDULER] 9 PM PKT — pausing unpaid bots")
                 pause_unpaid_bots()
@@ -1298,15 +1390,15 @@ def daily_scheduler():
         except Exception as e:
             print(f"[SCHEDULER] Error: {e}")
 
-        time.sleep(60)  # Har minute check karo
+        time.sleep(60)
 
 
-# ─── PAYMENT CONFIRM ENDPOINT ─────────────────────────────────────────────────
+# ─── PAYMENT / SUBSCRIPTION ENDPOINTS ─────────────────────────────────────────
 @app.post("/admin/confirm-payment/{user_id}")
 def confirm_payment(user_id: int,
                     current_user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
-    """Admin payment confirm kare — bot resume ho jata hai"""
+    """Admin payment/screenshot approve — 30 din package + bot start"""
     if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
@@ -1314,22 +1406,19 @@ def confirm_payment(user_id: int,
     if not user:
         raise HTTPException(404, "User not found")
 
-    paid_amount = user.daily_profit_owed + user.referral_owed
+    paid_amount = user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
+    if (user.daily_profit_owed or 0) + (user.referral_owed or 0) > 0:
+        paid_amount = (user.daily_profit_owed or 0) + (user.referral_owed or 0)
 
-    # Referrer ko commission transfer karo
-    if user.referred_by and user.referral_owed > 0:
+    if user.referred_by and user.referral_owed and user.referral_owed > 0:
         referrer = db.query(User).filter(User.id == user.referred_by).first()
         if referrer:
             print(f"[COMMISSION] {referrer.username} ko ${user.referral_owed:.2f} commission")
 
-    user.daily_profit_owed = 0.0
-    user.referral_owed     = 0.0
-    user.payment_status    = "clear"
-    user.last_payment_at   = datetime.utcnow()
-    user.bot_active        = True
+    activate_subscription(user)
+    user.bot_active = True
     db.commit()
 
-    # Bot restart — master only runs trading engine
     active_bots[user.id] = True
     if is_master_user(user) and user.mt5_login:
         threading.Thread(
@@ -1338,38 +1427,147 @@ def confirm_payment(user_id: int,
             daemon=True
         ).start()
 
-    # User ko confirmation email
+    expires = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
     html = f"""
     <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-        <h2 style="color:#00ff88;">✅ Payment Confirmed — Bot Resumed!</h2>
+        <h2 style="color:#00ff88;">✅ Payment Approved — Package Active!</h2>
         <p>Hello <b>{user.username}</b>,</p>
-        <p>Aapki payment confirm ho gayi — bot dobara active ho gaya hai!</p>
-        <p>Amount paid: <b>${paid_amount:.2f}</b></p>
-        <p>Happy Trading! 🚀</p>
+        <p>Aapki payment confirm ho gayi. 30-din ka package active hai.</p>
+        <p>Amount: <b>${paid_amount:.2f}</b></p>
+        <p>Expires: <b>{expires}</b></p>
+        <p>Signal bot ab start ho sakta hai. Happy Trading! 🚀</p>
     </div>"""
-    send_email(user.email, "✅ PumpingBot — Payment Confirmed, Bot Resumed!", html)
+    send_email(user.email, "✅ PumpingBot — Payment Approved, Bot Ready!", html)
 
-    return {"message": f"Payment confirmed for {user.username}, bot resumed!"}
+    return {
+        "message": f"Payment confirmed for {user.username}, package active until {expires}",
+        "subscription_expires_at": user.subscription_expires_at.isoformat() if user.subscription_expires_at else None,
+    }
 
 
 @app.get("/admin/pending-payments")
 def get_pending_payments(current_user: User = Depends(get_current_user),
                          db: Session = Depends(get_db)):
-    """Admin sab pending payments dekhe"""
+    """Admin pending subscription payments + profit-share dues"""
     if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
-    users = db.query(User).filter(User.daily_profit_owed > 0).all()
-    return [{
-        "user_id":       u.id,
-        "username":      u.username,
-        "email":         u.email,
-        "admin_share":   round(u.daily_profit_owed, 2),
-        "referrer_comm": round(u.referral_owed, 2),
-        "total_owed":    round(u.daily_profit_owed + u.referral_owed, 2),
-        "status":        u.payment_status,
-        "bot_active":    u.bot_active,
-    } for u in users]
+    users = db.query(User).filter(
+        or_(
+            User.subscription_status == "pending_review",
+            User.payment_status.in_(["pending", "overdue", "pending_review"]),
+            User.daily_profit_owed > 0,
+        )
+    ).all()
+    result = []
+    for u in users:
+        fee = u.subscription_fee_owed or SUBSCRIPTION_FEE_USD
+        profit_owed = round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2)
+        result.append({
+            "user_id":       u.id,
+            "username":      u.username,
+            "email":         u.email,
+            "admin_share":   round(u.daily_profit_owed or 0, 2),
+            "referrer_comm": round(u.referral_owed or 0, 2),
+            "total_owed":    profit_owed if profit_owed > 0 else fee,
+            "subscription_fee": fee,
+            "subscription_status": u.subscription_status or "expired",
+            "payment_screenshot": u.payment_screenshot,
+            "status":        u.payment_status or u.subscription_status,
+            "bot_active":    u.bot_active,
+        })
+    return result
+
+
+@app.post("/subscription/upload-screenshot")
+async def upload_payment_screenshot(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """User $20 payment ka screenshot bheje — admin approve karega."""
+    if is_master_user(current_user):
+        raise HTTPException(400, "Admin ko payment upload ki zaroorat nahi")
+
+    content_type = (file.content_type or "").lower()
+    if not content_type.startswith("image/") and not content_type.endswith("pdf"):
+        # also allow common image extensions without content-type
+        name = (file.filename or "").lower()
+        if not any(name.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf")):
+            raise HTTPException(400, "Sirf image/PDF screenshot upload karein")
+
+    ext = Path(file.filename or "shot.png").suffix.lower() or ".png"
+    if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf"):
+        ext = ".png"
+    fname = f"user{current_user.id}_{int(time.time())}{ext}"
+    dest = UPLOAD_DIR / fname
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+
+    user = db.query(User).filter(User.id == current_user.id).first()
+    user.payment_screenshot = str(dest)
+    user.subscription_status = "pending_review"
+    user.payment_status = "pending_review"
+    user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+    user.bot_active = False
+    active_bots[user.id] = False
+    db.commit()
+
+    send_email(
+        ADMIN_EMAIL,
+        f"📸 Payment SS: {user.username} — ${SUBSCRIPTION_FEE_USD:.0f}",
+        f"""
+        <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+          <h3 style="color:#f0b90b;">New subscription payment screenshot</h3>
+          <p>User: <b>{user.username}</b> ({user.email})</p>
+          <p>Fee: <b>${SUBSCRIPTION_FEE_USD:.0f}</b> / 30 days</p>
+          <p>File: {fname}</p>
+          <p>Admin panel se Approve karein — phir user ka signal bot start hoga.</p>
+        </div>""",
+    )
+    return {
+        "message": "Screenshot uploaded — admin approve karega tab package active hoga",
+        "subscription_status": "pending_review",
+        "fee": SUBSCRIPTION_FEE_USD,
+    }
+
+
+@app.get("/admin/payment-screenshot/{user_id}")
+def get_payment_screenshot(user_id: int,
+                           current_user: User = Depends(get_current_user),
+                           db: Session = Depends(get_db)):
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.payment_screenshot:
+        raise HTTPException(404, "Screenshot not found")
+    path = Path(user.payment_screenshot)
+    if not path.is_file():
+        raise HTTPException(404, "Screenshot file missing")
+    return FileResponse(path)
+
+
+@app.post("/admin/reject-payment/{user_id}")
+def reject_payment(user_id: int,
+                   current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    user.subscription_status = "expired"
+    user.payment_status = "overdue"
+    user.bot_active = False
+    active_bots[user.id] = False
+    db.commit()
+    send_email(
+        user.email,
+        "❌ PumpingBot — Payment Rejected",
+        f"<p>Hello {user.username}, payment screenshot reject ho gaya. "
+        f"Dubara ${SUBSCRIPTION_FEE_USD:.0f} ka clear screenshot upload karein.</p>",
+    )
+    return {"message": f"Payment rejected for {user.username}"}
 
 
 @app.get("/admin/users")
@@ -1380,6 +1578,7 @@ def get_all_users(current_user: User = Depends(get_current_user),
     users = db.query(User).all()
     result = []
     for u in users:
+        sub = refresh_subscription_status(u)
         conn = pool_get(u.id)
         info = conn.account_info() if conn and conn._ready else None
         result.append({
@@ -1392,11 +1591,16 @@ def get_all_users(current_user: User = Depends(get_current_user),
             "balance":       info.balance if info else 0,
             "equity":        info.equity if info else 0,
             "payment_status": u.payment_status,
-            "amount_owed":   round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2),
+            "amount_owed":   round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2) or (u.subscription_fee_owed or SUBSCRIPTION_FEE_USD if sub != "active" else 0),
+            "subscription_status": sub,
+            "subscription_expires_at": u.subscription_expires_at.isoformat() if u.subscription_expires_at else None,
+            "payment_screenshot": bool(u.payment_screenshot),
+            "subscription_fee": u.subscription_fee_owed or SUBSCRIPTION_FEE_USD,
             "referral_code": u.referral_code,
             "referred_by":   u.referred_by,
             "joined":        u.created_at.isoformat() if u.created_at else None,
         })
+    db.commit()
     return result
 
 
@@ -1407,25 +1611,39 @@ def get_admin_stats(current_user: User = Depends(get_current_user),
         raise HTTPException(403, "Admin only")
 
     total_users    = db.query(User).count()
-    active_bots    = db.query(User).filter(User.bot_active == True).count()
-    pending_pay    = db.query(User).filter(User.payment_status == "pending").count()
-    overdue_pay    = db.query(User).filter(User.payment_status == "overdue").count()
+    active_bots_n  = db.query(User).filter(User.bot_active == True).count()
+    pending_pay    = db.query(User).filter(
+        or_(User.payment_status == "pending", User.subscription_status == "pending_review")
+    ).count()
+    overdue_pay    = db.query(User).filter(
+        or_(User.payment_status == "overdue", User.subscription_status == "expired")
+    ).count()
+    active_subs    = db.query(User).filter(User.subscription_status == "active").count()
     total_trades   = db.query(Trade).count()
     open_trades    = db.query(Trade).filter(Trade.status == "open").count()
     closed_trades  = db.query(Trade).filter(Trade.status == "closed").count()
 
     total_profit   = db.query(Trade).filter(Trade.status == "closed", Trade.profit > 0).all()
     gross_profit   = sum(t.profit for t in total_profit)
-    admin_earned   = gross_profit * 0.25
+    admin_earned   = active_subs * SUBSCRIPTION_FEE_USD
 
-    pending_users  = db.query(User).filter(User.daily_profit_owed > 0).all()
-    total_pending  = sum((u.daily_profit_owed or 0) + (u.referral_owed or 0) for u in pending_users)
+    pending_users  = db.query(User).filter(
+        or_(User.daily_profit_owed > 0, User.subscription_status == "pending_review")
+    ).all()
+    total_pending  = sum(
+        ((u.daily_profit_owed or 0) + (u.referral_owed or 0))
+        or (u.subscription_fee_owed or SUBSCRIPTION_FEE_USD)
+        for u in pending_users
+    )
 
     master_info = mt5_manager.account_info()
 
     return {
         "total_users":    total_users,
-        "active_bots":    active_bots,
+        "active_bots":    active_bots_n,
+        "active_subscriptions": active_subs,
+        "subscription_fee": SUBSCRIPTION_FEE_USD,
+        "subscription_days": SUBSCRIPTION_DAYS,
         "pending_payment": pending_pay,
         "overdue_payment": overdue_pay,
         "total_trades":   total_trades,
@@ -1454,6 +1672,11 @@ def admin_toggle_bot(user_id: int,
         user.bot_active = False
         db.commit()
         return {"message": f"{user.username} bot stopped"}
+    if not is_master_user(user) and not has_active_subscription(user):
+        raise HTTPException(
+            402,
+            f"{user.username} ka subscription active nahi — pehle payment approve karo",
+        )
     active_bots[user.id] = True
     user.bot_active = True
     db.commit()
@@ -1491,7 +1714,6 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == user.email).first():
         raise HTTPException(400, "Email already exists")
 
-    # Referral code check
     referred_by_id = None
     if user.referral_code:
         referrer = db.query(User).filter(User.referral_code == user.referral_code).first()
@@ -1499,7 +1721,6 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
             referred_by_id = referrer.id
             print(f"[REFERRAL] {user.username} referred by {referrer.username}")
 
-    # Naye user ka unique referral code generate karo
     new_code = str(uuid.uuid4())[:8].upper()
 
     new_user = User(
@@ -1508,28 +1729,43 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         hashed_password = get_password_hash(user.password),
         referral_code = new_code,
         referred_by   = referred_by_id,
+        subscription_status = "expired",
+        subscription_fee_owed = SUBSCRIPTION_FEE_USD,
+        payment_status = "overdue",
+        bot_active = False,
     )
     db.add(new_user)
     db.commit()
 
-    # Welcome email
     html = f"""
     <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;border-radius:10px;">
         <h2 style="color:#f0b90b;">🚀 Welcome to PumpingBot!</h2>
-        <p>Hello <b>{user.username}</b>, account ban gaya!</p>
-        <p>Apna referral code share karo — har referred user ki profit ka <b>5% commission</b> milega:</p>
-        <h3 style="color:#00ff88;letter-spacing:3px;">{new_code}</h3>
-        <p>Steps: MT5 connect karo → Bot start karo → Profits kamao!</p>
+        <p>Hello <b>{user.username}</b>, account ban gaya (email: {user.email}).</p>
+        <p>Subscription: <b>${SUBSCRIPTION_FEE_USD:.0f} / {SUBSCRIPTION_DAYS} days</b></p>
+        <p>Payment admin ko bhejo, screenshot app mein upload karo — admin approve karega tab signals/bot start honge.</p>
+        <p>Admin: <b>{ADMIN_EMAIL}</b></p>
+        <p>Referral code: <h3 style="color:#00ff88;letter-spacing:3px;">{new_code}</h3></p>
     </div>"""
     send_email(user.email, "🚀 Welcome to PumpingBot!", html)
 
-    return {"message": "User created successfully", "referral_code": new_code}
+    return {
+        "message": "User created successfully",
+        "referral_code": new_code,
+        "subscription_fee": SUBSCRIPTION_FEE_USD,
+        "subscription_days": SUBSCRIPTION_DAYS,
+    }
 
 @app.post("/token", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form_data.username).first()
+    """Email YA username se login."""
+    ident = (form_data.username or "").strip()
+    user = db.query(User).filter(
+        or_(User.email == ident, User.username == ident)
+    ).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(401, "Wrong username or password")
+        raise HTTPException(401, "Wrong email/username or password")
+    refresh_subscription_status(user)
+    db.commit()
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 @app.get("/me")
@@ -1539,11 +1775,14 @@ def get_me(current_user: User = Depends(get_current_user),
     reconcile_trades_with_mt5(current_user.id, conn)
     info = conn.account_info() if conn and conn._ready else None
     role = "master" if is_master_user(current_user) else "follower"
+    sub_status = refresh_subscription_status(current_user)
+    db.commit()
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
+    if sub_status != "active" and amount_owed <= 0:
+        amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
     balance = info.balance if info else 0
     equity  = info.equity  if info else 0
-    # MetaApi profit field aksar 0 hota hai — floating P/L = equity - balance
     floating_pl = round(equity - balance, 2) if info else 0
 
     open_trades_db = db.query(Trade).filter(
@@ -1571,6 +1810,12 @@ def get_me(current_user: User = Depends(get_current_user),
         "referral_code":     current_user.referral_code,
         "payment_status":    current_user.payment_status or "clear",
         "amount_owed":       amount_owed,
+        "subscription_status": sub_status,
+        "subscription_expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None,
+        "subscription_fee": SUBSCRIPTION_FEE_USD,
+        "subscription_days": SUBSCRIPTION_DAYS,
+        "has_payment_screenshot": bool(current_user.payment_screenshot),
+        "admin_email": ADMIN_EMAIL,
     }
 
 @app.post("/connect-mt5")
@@ -1696,6 +1941,14 @@ def start_bot(current_user: User = Depends(get_current_user),
     if not current_user.mt5_login:
         raise HTTPException(400, "Connect MT5 first")
 
+    if not has_active_subscription(current_user):
+        db.commit()
+        raise HTTPException(
+            402,
+            f"Subscription inactive — ${SUBSCRIPTION_FEE_USD:.0f} pay karke screenshot upload karein. "
+            f"Admin approve karega tab bot start hoga. Status: {current_user.subscription_status}",
+        )
+
     active_bots[current_user.id] = True
     current_user.bot_active = True
     db.commit()
@@ -1792,7 +2045,7 @@ async def startup_event():
     threading.Thread(target=daily_scheduler, daemon=True).start()
     start_copy_watcher()
     start_device_care_scanner()
-    print("[STARTUP] Daily scheduler + copy watcher + Device Care started")
+    print("[STARTUP] Daily scheduler + copy watcher + My Signals started")
 
     db = SessionLocal()
     try:
@@ -1816,7 +2069,15 @@ async def startup_event():
         admin_user = db.query(User).filter(User.username == "admin").first()
         if admin_user:
             MASTER_USER_ID = admin_user.id
-            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin)")
+            admin_user.subscription_status = "active"
+            admin_user.subscription_expires_at = datetime.utcnow() + timedelta(days=3650)
+            admin_user.payment_status = "clear"
+            admin_user.subscription_fee_owed = 0.0
+            db.commit()
+            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin, subscription forever)")
+
+        # Expire any packages that ended while server was down
+        pause_expired_subscriptions()
 
         # FIX: Get admin user and pass credentials to initialize()
         # (previously called with no args — this was the root cause!)
@@ -1867,14 +2128,19 @@ async def startup_event():
             print("[STARTUP] Auto-start skipped — MetaApi not ready")
             print("[STARTUP] Use /connect-mt5 then /bot/start after deployment")
 
-        # ── Followers ko bhi reconnect karo (restart ke baad) ─────────────
+        # ── Followers ko bhi reconnect karo (sirf active subscription) ─────
         followers = db.query(User).filter(
             User.bot_active == True,
             User.username != "admin",
-            User.metaapi_account_id != None
+            User.metaapi_account_id != None,
+            User.subscription_status == "active",
         ).all()
 
         for follower in followers:
+            if not has_active_subscription(follower):
+                follower.bot_active = False
+                active_bots[follower.id] = False
+                continue
             try:
                 print(f"[STARTUP] Reconnecting follower: {follower.username}")
                 conn = create_user_manager(follower.metaapi_account_id)
@@ -1882,6 +2148,7 @@ async def startup_event():
                 print(f"[STARTUP] Follower {follower.username} reconnected ✅")
             except Exception as fe:
                 print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
+        db.commit()
 
     except Exception as e:
         import traceback

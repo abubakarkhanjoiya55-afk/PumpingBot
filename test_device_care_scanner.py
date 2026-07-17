@@ -199,9 +199,9 @@ class D1CandlePatternTests(unittest.TestCase):
         self.assertLess(dragon["sl"], dragon["entry"])
         self.assertGreater(dragon["tp"], dragon["entry"])
 
-    def test_tf_gating_1h_breakouts_d1_candles_only(self):
+    def test_tf_gating_4h_d1_only(self):
         size = 25
-        # Dragonfly + green — should fire on D1/1W, not on 1H/4H
+        # Dragonfly + green — should fire on D1 only (not 4H, not 1W/1H)
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
@@ -219,11 +219,11 @@ class D1CandlePatternTests(unittest.TestCase):
         self.assertTrue(any(
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="D1")
         ))
-        self.assertTrue(any(
+        self.assertFalse(any(
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="1W")
         ))
 
-        # Ascending triangle — should fire on 1H/4H, not on D1/1W
+        # Ascending triangle — should fire on 4H and D1 (both breakout TFs), not 1H
         size = 21
         highs = [100.0] * size
         lows = [89.0] + [90.0 + 0.45 * i for i in range(18)] + [98.0, 98.0]
@@ -233,18 +233,18 @@ class D1CandlePatternTests(unittest.TestCase):
         tri = _ohlc(highs, lows, opens, closes)
 
         h1 = scan_ohlc(tri, timeframe="1H")
+        h4 = scan_ohlc(tri, timeframe="4H")
         d1 = scan_ohlc(tri, timeframe="D1")
-        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h1))
-        self.assertFalse(any(h["pattern"] == "Triangle Breakout" for h in d1))
-        # Triangle fixture is short for LOOKBACK=20 S/R; D1 must never emit breakouts
-        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
-        tri_hit = next(h for h in h1 if h["pattern"] == "Triangle Breakout")
+        self.assertFalse(any(h["pattern"] == "Triangle Breakout" for h in h1))
+        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h4))
+        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in d1))
+        tri_hit = next(h for h in h4 if h["pattern"] == "Triangle Breakout")
         self.assertGreaterEqual(tri_hit["score"], 50)
         self.assertIsNotNone(tri_hit["entry"])
         self.assertIsNotNone(tri_hit["sl"])
         self.assertIsNotNone(tri_hit["tp"])
 
-    def test_scan_ohlc_sr_breakout_on_1h_with_plan(self):
+    def test_scan_ohlc_sr_breakout_on_4h_and_d1(self):
         size = 23
         highs = [100.0] * size
         lows = [90.0] * size
@@ -257,12 +257,12 @@ class D1CandlePatternTests(unittest.TestCase):
         d1 = scan_ohlc(ohlc, timeframe="D1")
         h4 = scan_ohlc(ohlc, timeframe="4H")
 
-        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h1))
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in h1))
         self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in h4))
-        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in d1))
-        # 15M removed from strategy
+        self.assertTrue(any(h["pattern"] == "S/R Breakout" for h in d1))
         self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in scan_ohlc(ohlc, timeframe="15M")))
-        sr = next(h for h in h1 if h["pattern"] == "S/R Breakout")
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in scan_ohlc(ohlc, timeframe="5m")))
+        sr = next(h for h in h4 if h["pattern"] == "S/R Breakout")
         self.assertEqual("UP", sr["direction"])
         self.assertEqual(100.0, sr["level"])
         self.assertLess(sr["sl"], sr["entry"])
@@ -288,8 +288,25 @@ class D1CandlePatternTests(unittest.TestCase):
         # Closed candle still inside range — no closed alert
         self.assertIsNone(closed)
 
-        hits = scan_ohlc(ohlc, timeframe="1H")
+        hits = scan_ohlc(ohlc, timeframe="4H")
         self.assertTrue(any(h.get("live") for h in hits if h["pattern"] == "S/R Breakout"))
+        # 1H must not emit signals anymore
+        self.assertFalse(any(h["pattern"] == "S/R Breakout" for h in scan_ohlc(ohlc, timeframe="1H")))
+
+    def test_live_pierce_fires_before_close_above(self):
+        """Breakout hoti hi — high pierce even if close still near level."""
+        size = 23
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        # High pierced resistance but close barely above open (body still ok)
+        highs[-1], lows[-1], opens[-1], closes[-1] = 106.0, 94.5, 95.0, 96.5
+        ohlc = _ohlc(highs, lows, opens, closes)
+        live = detect_sr_breakout(ohlc, live=True)
+        self.assertIsNotNone(live)
+        self.assertEqual("UP", live["direction"])
+        self.assertTrue(live["live"])
 
 
 class MorningWindowTests(unittest.TestCase):

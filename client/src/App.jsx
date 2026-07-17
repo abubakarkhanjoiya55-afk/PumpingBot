@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   login, register, setToken, getToken,
   fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
+  uploadPaymentScreenshot, fetchAdminStats, fetchAdminUsers, fetchPendingPayments,
+  confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
 } from './api';
 
 function fmt(n) {
@@ -25,10 +27,10 @@ function LoginPage({ onLogin }) {
     setErr('');
     try {
       if (tab === 'login') {
-        await login(form.username, form.password);
+        await login(form.email, form.password);
       } else {
         await register(form.username, form.email, form.password, form.referral);
-        await login(form.username, form.password);
+        await login(form.email, form.password);
       }
       onLogin();
     } catch (ex) {
@@ -40,6 +42,9 @@ function LoginPage({ onLogin }) {
     <div className="login-page">
       <div className="login-card">
         <h1>⚡ PumpingBot</h1>
+        <p style={{ textAlign: 'center', color: '#888', fontSize: '.85rem', marginBottom: '1rem' }}>
+          $20 / 30 days · Email account
+        </p>
         <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem' }}>
           <button type="button" onClick={() => setTab('login')}
             style={{ flex: 1, padding: '.5rem', background: tab === 'login' ? '#f0b90b' : '#333', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
@@ -51,10 +56,16 @@ function LoginPage({ onLogin }) {
           </button>
         </div>
         <form onSubmit={submit}>
-          <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} required />
           {tab === 'register' && (
-            <input placeholder="Email" type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
+            <input placeholder="Username" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} required />
           )}
+          <input
+            placeholder={tab === 'login' ? 'Email or Username' : 'Email'}
+            type={tab === 'register' ? 'email' : 'text'}
+            value={form.email}
+            onChange={e => setForm({ ...form, email: e.target.value })}
+            required={tab === 'register' || tab === 'login'}
+          />
           <input placeholder="Password" type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
           {tab === 'register' && (
             <input placeholder="Referral code (optional)" value={form.referral} onChange={e => setForm({ ...form, referral: e.target.value })} />
@@ -65,6 +76,199 @@ function LoginPage({ onLogin }) {
         <p style={{ fontSize: '.75rem', color: '#666', marginTop: '1rem', textAlign: 'center' }}>API: {API_URL}</p>
       </div>
     </div>
+  );
+}
+
+function SubscriptionPage({ me, onRefresh }) {
+  const [uploading, setUploading] = useState(false);
+  const [msg, setMsg] = useState('');
+  const status = me?.subscription_status || 'expired';
+  const fee = me?.subscription_fee ?? 20;
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setMsg('');
+    try {
+      const res = await uploadPaymentScreenshot(file);
+      setMsg(res.message || 'Uploaded');
+      await onRefresh();
+    } catch (ex) {
+      setMsg(ex.response?.data?.detail || ex.message);
+    }
+    setUploading(false);
+  };
+
+  return (
+    <>
+      <h1>💳 Subscription</h1>
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-label">Status</div>
+          <div className={`stat-value ${status === 'active' ? 'green' : 'red'}`}>{status}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Fee</div>
+          <div className="stat-value">{fmt(fee)}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Package</div>
+          <div className="stat-value" style={{ fontSize: '1.1rem' }}>{me?.subscription_days || 30} days</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Expires</div>
+          <div className="stat-value" style={{ fontSize: '1rem' }}>
+            {me?.subscription_expires_at ? new Date(me.subscription_expires_at).toLocaleDateString() : '—'}
+          </div>
+        </div>
+      </div>
+
+      {status !== 'active' && (
+        <div className="warn-banner">
+          Package inactive / expired. <strong>${fee}</strong> admin ({me?.admin_email || 'admin'}) ko pay karke
+          neeche payment screenshot upload karo. Admin approve karega tab hi signal bot start hoga.
+        </div>
+      )}
+      {status === 'pending_review' && (
+        <div className="warn-banner">Screenshot uploaded — admin approval ka wait.</div>
+      )}
+      {status === 'active' && (
+        <div className="warn-banner" style={{ borderColor: '#00ff88', color: '#00ff88' }}>
+          Subscription active — signals/bot use kar sakte ho.
+        </div>
+      )}
+
+      <div className="sub-upload-card">
+        <h2>Payment screenshot upload</h2>
+        <p>Pay ${fee} → screenshot yahan bhejo → admin approve → 30 din package open.</p>
+        <input type="file" accept="image/*,.pdf" onChange={onFile} disabled={uploading || me?.is_admin} />
+        {uploading && <p>Uploading…</p>}
+        {msg && <p className="error" style={{ color: '#00ff88' }}>{msg}</p>}
+        {me?.has_payment_screenshot && <p style={{ color: '#888', marginTop: '.5rem' }}>Last screenshot on file ✓</p>}
+      </div>
+    </>
+  );
+}
+
+function AdminPage() {
+  const [stats, setStats] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [pending, setPending] = useState([]);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const [s, u, p] = await Promise.all([
+        fetchAdminStats(), fetchAdminUsers(), fetchPendingPayments(),
+      ]);
+      setStats(s);
+      setUsers(u);
+      setPending(p);
+    } catch (ex) {
+      setErr(ex.response?.data?.detail || ex.message);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <>
+      <h1>⚡ Admin Panel</h1>
+      {err && <p className="error">{err}</p>}
+      {stats && (
+        <div className="stats-grid">
+          <div className="stat-card"><div className="stat-label">Users</div><div className="stat-value">{stats.total_users}</div></div>
+          <div className="stat-card"><div className="stat-label">Active Subs</div><div className="stat-value green">{stats.active_subscriptions ?? '—'}</div></div>
+          <div className="stat-card"><div className="stat-label">Pending Pay</div><div className="stat-value">{stats.pending_payment}</div></div>
+          <div className="stat-card"><div className="stat-label">Fee</div><div className="stat-value">{fmt(stats.subscription_fee ?? 20)}</div></div>
+          <div className="stat-card"><div className="stat-label">Active Bots</div><div className="stat-value">{stats.active_bots}</div></div>
+          <div className="stat-card"><div className="stat-label">Pending $</div><div className="stat-value">{fmt(stats.pending_amount)}</div></div>
+        </div>
+      )}
+
+      <h2 style={{ margin: '1.5rem 0 .75rem' }}>Pending payments / screenshots</h2>
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>User</th><th>Email</th><th>Fee</th><th>Status</th><th>SS</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pending.map(p => (
+              <tr key={p.user_id}>
+                <td><strong>{p.username}</strong></td>
+                <td>{p.email}</td>
+                <td>{fmt(p.total_owed || p.subscription_fee)}</td>
+                <td>{p.subscription_status || p.status}</td>
+                <td>
+                  {p.payment_screenshot
+                    ? <a href={paymentScreenshotUrl(p.user_id)} target="_blank" rel="noreferrer"
+                        onClick={async (e) => {
+                          e.preventDefault();
+                          const r = await fetch(paymentScreenshotUrl(p.user_id), {
+                            headers: { Authorization: `Bearer ${getToken()}` },
+                          });
+                          const blob = await r.blob();
+                          window.open(URL.createObjectURL(blob), '_blank');
+                        }}>View</a>
+                    : '—'}
+                </td>
+                <td style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
+                  <button className="btn-start" style={{ padding: '.35rem .7rem', fontSize: '.8rem' }}
+                    onClick={async () => { await confirmPayment(p.user_id); load(); }}>
+                    Approve
+                  </button>
+                  <button className="btn-stop" style={{ padding: '.35rem .7rem', fontSize: '.8rem' }}
+                    onClick={async () => { await rejectPayment(p.user_id); load(); }}>
+                    Reject
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {pending.length === 0 && <p className="empty">No pending payments</p>}
+      </div>
+
+      <h2 style={{ margin: '1.5rem 0 .75rem' }}>All users</h2>
+      <div className="table-container">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>User</th><th>Email</th><th>Sub</th><th>Expires</th><th>Bot</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map(u => (
+              <tr key={u.user_id}>
+                <td><strong>{u.username}</strong></td>
+                <td>{u.email}</td>
+                <td className={u.subscription_status === 'active' ? 'green' : 'red'}>{u.subscription_status}</td>
+                <td>{u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleDateString() : '—'}</td>
+                <td>{u.bot_active ? 'ON' : 'OFF'}</td>
+                <td style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
+                  <button className="btn-start" style={{ padding: '.3rem .6rem', fontSize: '.75rem' }}
+                    onClick={async () => { await toggleUserBot(u.user_id); load(); }}>
+                    Toggle Bot
+                  </button>
+                  {u.username !== 'admin' && (
+                    <button className="btn-stop" style={{ padding: '.3rem .6rem', fontSize: '.75rem' }}
+                      onClick={async () => {
+                        if (!confirm(`Delete ${u.username}?`)) return;
+                        await deleteUser(u.user_id); load();
+                      }}>
+                      Delete
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 
@@ -118,7 +322,8 @@ export default function App() {
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
   const isFollower = me?.role === 'follower';
-  const canStartBot = me?.mt5_connected && (me?.mt5_ready || isFollower);
+  const subActive = isAdmin || me?.subscription_status === 'active';
+  const canStartBot = me?.mt5_connected && (me?.mt5_ready || isFollower) && subActive;
 
   const posProfit = (trade) => {
     const byTicket = positions.find(x => x.ticket === trade.mt5_ticket);
@@ -131,13 +336,14 @@ export default function App() {
 
   const nav = [
     { id: 'dashboard', icon: '📊', label: 'Dashboard' },
+    { id: 'subscription', icon: '💳', label: 'Subscription' },
     { id: 'mt5', icon: '🔗', label: 'MT5' },
     { id: 'signals', icon: '📡', label: 'Signals' },
     { id: 'open', icon: '🔴', label: 'Open Trades' },
     { id: 'closed', icon: '✅', label: 'Closed Trades' },
     ...(isAdmin ? [
       { id: 'divider', divider: true },
-      { id: 'admin-dash', icon: '⚡', label: 'Admin Stats' },
+      { id: 'admin-dash', icon: '⚡', label: 'Admin Panel' },
     ] : []),
   ];
 
@@ -169,12 +375,20 @@ export default function App() {
               <span className={me?.mt5_ready ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
                 {me?.mt5_ready ? 'MT5 Live' : me?.mt5_connected ? 'MT5 Syncing…' : 'MT5 Not Connected'}
               </span>
+              <span className={subActive ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
+                Sub: {me?.subscription_status || 'expired'}
+              </span>
               {me?.role && (
                 <span style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem', background: '#222', color: '#ccc' }}>
                   {me.role === 'master' ? 'Master — trades copy to followers' : 'Follower — master trades mirror here'}
                 </span>
               )}
             </div>
+            {!subActive && (
+              <div className="warn-banner">
+                Subscription inactive. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 20} payment screenshot upload karo.
+              </div>
+            )}
             <div className="stats-grid">
               <div className="stat-card">
                 <div className="stat-label">Balance</div>
@@ -217,7 +431,7 @@ export default function App() {
                 {latestSignal && (
                   <div className="signal-info">
                     {latestSignal.symbol} | Signal: {latestSignal.signal_type} |
-                    RSI: {latestSignal.rsi?.toFixed(1)} | Price: {latestSignal.price}
+                    Score: {latestSignal.score?.toFixed?.(0)} | Price: {latestSignal.price}
                   </div>
                 )}
               </div>
@@ -227,8 +441,15 @@ export default function App() {
                   <button
                     className="btn-start"
                     disabled={!canStartBot}
-                    title={!canStartBot ? 'Connect MT5 first (master must show MT5 Live)' : ''}
-                    onClick={async () => { await startBot(); refresh(); }}
+                    title={!subActive ? 'Active subscription required' : (!canStartBot ? 'Connect MT5 first' : '')}
+                    onClick={async () => {
+                      try {
+                        await startBot();
+                        refresh();
+                      } catch (ex) {
+                        alert(ex.response?.data?.detail || ex.message);
+                      }
+                    }}
                   >
                     ▶ Start Bot
                   </button>
@@ -238,6 +459,9 @@ export default function App() {
           </>
         )}
 
+        {page === 'subscription' && <SubscriptionPage me={me} onRefresh={refresh} />}
+        {page === 'admin-dash' && isAdmin && <AdminPage />}
+
         {page === 'open' && (
           <>
             <h1>🔴 Open Trades ({openCount})</h1>
@@ -246,7 +470,7 @@ export default function App() {
                 <thead>
                   <tr>
                     <th>Time</th><th>Symbol</th><th>Type</th><th>Lot</th>
-                    <th>Open Price</th><th>P&L</th><th>Status</th>
+                    <th>Open Price</th><th>P/L</th><th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -306,7 +530,11 @@ export default function App() {
 
         {page === 'signals' && (
           <>
-            <h1>📡 Signals</h1>
+            <h1>📡 Signals (4H + 1D)</h1>
+            <p style={{ color: '#888', marginBottom: '1rem', fontSize: '.9rem' }}>
+              App signals <strong>My Signals</strong> (/my-signals) pe LIVE 4H/1D breakouts se aate hain.
+              Score 90+ app band ho tab bhi ntfy push milta hai.
+            </p>
             <div className="table-container">
               <table className="data-table">
                 <thead>

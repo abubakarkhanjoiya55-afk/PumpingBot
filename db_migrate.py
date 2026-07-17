@@ -11,6 +11,10 @@ USER_COLUMNS = {
     "referral_owed": "FLOAT DEFAULT 0.0",
     "payment_status": "VARCHAR DEFAULT 'clear'",
     "last_payment_at": "DATETIME",
+    "subscription_status": "VARCHAR DEFAULT 'expired'",
+    "subscription_expires_at": "DATETIME",
+    "payment_screenshot": "VARCHAR",
+    "subscription_fee_owed": "FLOAT DEFAULT 20.0",
 }
 
 TRADE_COLUMNS = {
