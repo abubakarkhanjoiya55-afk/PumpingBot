@@ -79,7 +79,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.12.0"   # Email login + $20/30d subscription + 4H/1D signals
+API_VERSION = "3.13.0"   # My Signals login + admin panel
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):

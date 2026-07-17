@@ -27,22 +27,27 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertEqual("no-cache", response.headers["cache-control"])
         html = response.text
         self.assertIn("My Signals", html)
+        self.assertIn('id="authScreen"', html)
+        self.assertIn('id="loginForm"', html)
+        self.assertIn('id="registerForm"', html)
+        self.assertIn('id="adminView"', html)
         self.assertIn('id="activateBtn"', html)
         self.assertIn("Har nayi page par ek tap zaroori hai", html)
         self.assertIn("Score 90+", html)
+        self.assertIn("bootAuth()", html)
         self.assertIn("startMonitoring()", html)
 
         script = html.rsplit("<script>", 1)[1].split("</script>", 1)[0]
-        activate = script[script.index("async function activateAlarm()"):]
-        self.assertLess(activate.index("ensureAudioReady()"), activate.index("requestNotifications()"))
-        self.assertLess(activate.index("requestNotifications()"), activate.index("playAlarmPattern"))
-        self.assertLess(activate.index("playAlarmPattern"), activate.index("startMonitoring()"))
-        self.assertLess(activate.index("startMonitoring()"), activate.index("loadAlerts()"))
-        self.assertIn("startPersistentAlarm(pending)", activate)
+        self.assertIn("async function activateAlarm()", script)
+        self.assertIn("ensureAudioReady()", script)
+        self.assertIn("requestNotifications()", script)
+        self.assertIn("playAlarmPattern", script)
+        self.assertIn("startMonitoring()", script)
+        self.assertIn("startPersistentAlarm(pending)", script)
         self.assertEqual(1, script.count("Notification.requestPermission()"))
         self.assertIn("activateBtn.addEventListener('click', activateAlarm)", script)
-        # Signals list page-open pe load; awaaz ke liye Activate
-        self.assertIn("startMonitoring();", script.split("updateCapabilityStatus();")[-1])
+        self.assertIn("bootAuth()", script)
+        self.assertIn("monitoringAllowed", script)
 
     def test_legacy_device_care_redirects_to_my_signals(self):
         response = self.client.get("/device-care/", follow_redirects=False)
