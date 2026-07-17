@@ -1,5 +1,5 @@
 const BASE = "/device-care";
-const CACHE = "device-care-v3.19.0";
+const CACHE = "device-care-v3.20.0";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,

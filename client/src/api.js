@@ -28,9 +28,9 @@ function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export async function login(username, password) {
+export async function login(emailOrUsername, password) {
   const form = new URLSearchParams();
-  form.append('username', username);
+  form.append('username', emailOrUsername);
   form.append('password', password);
   const { data } = await api.post('/token', form, {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -80,6 +80,54 @@ export async function startBot() {
 export async function stopBot() {
   const { data } = await api.post('/bot/stop', null, { headers: authHeaders() });
   return data;
+}
+
+export async function uploadPaymentScreenshot(file) {
+  const form = new FormData();
+  form.append('file', file);
+  const { data } = await api.post('/subscription/upload-screenshot', form, {
+    headers: { ...authHeaders(), 'Content-Type': 'multipart/form-data' },
+  });
+  return data;
+}
+
+export async function fetchAdminStats() {
+  const { data } = await api.get('/admin/stats', { headers: authHeaders() });
+  return data;
+}
+
+export async function fetchAdminUsers() {
+  const { data } = await api.get('/admin/users', { headers: authHeaders() });
+  return data;
+}
+
+export async function fetchPendingPayments() {
+  const { data } = await api.get('/admin/pending-payments', { headers: authHeaders() });
+  return data;
+}
+
+export async function confirmPayment(userId) {
+  const { data } = await api.post(`/admin/confirm-payment/${userId}`, null, { headers: authHeaders() });
+  return data;
+}
+
+export async function rejectPayment(userId) {
+  const { data } = await api.post(`/admin/reject-payment/${userId}`, null, { headers: authHeaders() });
+  return data;
+}
+
+export async function toggleUserBot(userId) {
+  const { data } = await api.post(`/admin/toggle-bot/${userId}`, null, { headers: authHeaders() });
+  return data;
+}
+
+export async function deleteUser(userId) {
+  const { data } = await api.delete(`/admin/delete-user/${userId}`, { headers: authHeaders() });
+  return data;
+}
+
+export function paymentScreenshotUrl(userId) {
+  return `${API_URL}/admin/payment-screenshot/${userId}`;
 }
 
 export { API_URL };
