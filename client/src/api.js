@@ -40,9 +40,9 @@ export async function login(emailOrUsername, password) {
 }
 
 export async function register(username, email, password, referral_code) {
-  const { data } = await api.post('/register', {
-    username, email, password, referral_code: referral_code || null,
-  });
+  const payload = { username, email, password };
+  if (referral_code) payload.referral_code = referral_code;
+  const { data } = await api.post('/register', payload);
   return data;
 }
 
