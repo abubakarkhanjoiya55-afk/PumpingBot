@@ -317,9 +317,9 @@ def _load_persisted_alerts():
             alert_history[:] = raw[:80]
             prune_alert_history()
             scan_stats["alertsTotal"] = len(alert_history)
-            print(f"[Device Care] Restored {len(alert_history)} alerts from disk")
+            print(f"[My Signals] Restored {len(alert_history)} alerts from disk")
     except Exception as e:
-        print(f"[Device Care] alert restore failed: {e}")
+        print(f"[My Signals] alert restore failed: {e}")
 
 
 def _persist_alerts():
@@ -330,7 +330,7 @@ def _persist_alerts():
             encoding="utf-8",
         )
     except Exception as e:
-        print(f"[Device Care] alert persist failed: {e}")
+        print(f"[My Signals] alert persist failed: {e}")
 
 
 def prune_alert_history(now: float | None = None) -> list[dict]:
@@ -383,11 +383,11 @@ async def _send_ntfy_strong(alert: dict):
                 },
             )
             if r.status_code >= 300:
-                print(f"[Device Care] ntfy fail: {r.status_code}")
+                print(f"[My Signals] ntfy fail: {r.status_code}")
             else:
-                print(f"[Device Care] ntfy strong alert sent: {sym} score={score}")
+                print(f"[My Signals] ntfy strong alert sent: {sym} score={score}")
     except Exception as e:
-        print(f"[Device Care] ntfy error: {e}")
+        print(f"[My Signals] ntfy error: {e}")
 
 
 def _broadcast(alert: dict):
@@ -965,7 +965,7 @@ async def _load_symbol_universe(client: httpx.AsyncClient) -> tuple[set[str], di
     _api_symbols_cache = api_syms
     _symbol_meta_cache = meta
     _symbol_cache_at = time.time()
-    print(f"[Device Care] MEXC Futures USDT contracts loaded: {len(api_syms)}")
+    print(f"[My Signals] MEXC Futures USDT contracts loaded: {len(api_syms)}")
     return api_syms, meta
 
 
@@ -1025,7 +1025,7 @@ async def fetch_symbols(client: httpx.AsyncClient) -> list[tuple[str, float]]:
             rows.append((sym, vol))
     rows.sort(key=lambda x: x[1], reverse=True)
     print(
-        f"[Device Care] Futures USDT pairs: {len(rows)} "
+        f"[My Signals] Futures USDT pairs: {len(rows)} "
         f"(skipped {skipped} non-crypto/low-quality)"
     )
     return rows
@@ -1073,7 +1073,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[Device Care] Strategy: 4H/D1 LIVE S/R pierce · D1 doji+green · strong>=90 ntfy")
+    print("[My Signals] Strategy: 4H/D1 LIVE S/R pierce · D1 doji+green · strong>=90 ntfy")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -1117,7 +1117,7 @@ async def scan_loop():
                 scan_stats["totalCoins"] = len(symbols)
                 mode = "MORNING D1 first" if morning else "4H/D1 LIVE breakout"
                 print(
-                    f"[Device Care] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
+                    f"[My Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
                 )
                 new_alerts = 0
@@ -1154,7 +1154,7 @@ async def scan_loop():
                                 coin_hits += 1
                                 new_alerts += 1
                                 print(
-                                    f"[Device Care] {sym} {tf_label} "
+                                    f"[My Signals] {sym} {tf_label} "
                                     f"{hit['pattern']} {hit['direction']} "
                                     f"{live_tag} score={hit.get('score')} "
                                     f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
@@ -1175,11 +1175,11 @@ async def scan_loop():
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"
-                print(f"[Device Care] Scan done — {new_alerts} new alert(s)")
+                print(f"[My Signals] Scan done — {new_alerts} new alert(s)")
                 _broadcast_stats()
             except Exception as e:
                 scan_stats["phase"] = "error"
-                print(f"[Device Care] scan error: {e}")
+                print(f"[My Signals] scan error: {e}")
                 _broadcast_stats()
 
             # Wait loop — also prune expired alerts so UI clears on schedule
