@@ -1,5 +1,5 @@
 const BASE = "/my-signals";
-const CACHE = "my-signals-v3.23.0";
+const CACHE = "my-signals-v3.24.0";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,

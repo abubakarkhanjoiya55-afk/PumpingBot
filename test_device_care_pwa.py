@@ -33,7 +33,9 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertIn('id="registerForm"', html)
         self.assertIn('id="adminView"', html)
         self.assertIn("User Login", html)
-        self.assertIn("Admin Login", html)
+        self.assertIn("isAdminGateOpen", html)
+        # Admin Login tab hidden from normal users
+        self.assertIn('id="tabAdminLogin" class="hidden"', html)
         self.assertIn('id="activateBtn"', html)
         self.assertIn("Har nayi page par ek tap zaroori hai", html)
         self.assertIn("Score 90+", html)
