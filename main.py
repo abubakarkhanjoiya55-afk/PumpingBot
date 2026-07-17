@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from pydantic import BaseModel
+from typing import Optional
 import bcrypt as _bcrypt
 import threading
 import time
@@ -79,7 +80,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.13.0"   # My Signals login + admin panel
+API_VERSION = "3.13.1"   # Fix register null referral + split admin/user login
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
@@ -235,7 +236,7 @@ class UserCreate(BaseModel):
     username: str
     email: str
     password: str
-    referral_code: str = None   # Refer karne wale ka code (optional)
+    referral_code: Optional[str] = None  # optional — empty/null OK
 
 class MT5Credentials(BaseModel):
     mt5_login: int

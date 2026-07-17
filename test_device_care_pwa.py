@@ -28,9 +28,12 @@ class MySignalsPwaTests(unittest.TestCase):
         html = response.text
         self.assertIn("My Signals", html)
         self.assertIn('id="authScreen"', html)
-        self.assertIn('id="loginForm"', html)
+        self.assertIn('id="userLoginForm"', html)
+        self.assertIn('id="adminLoginForm"', html)
         self.assertIn('id="registerForm"', html)
         self.assertIn('id="adminView"', html)
+        self.assertIn("User Login", html)
+        self.assertIn("Admin Login", html)
         self.assertIn('id="activateBtn"', html)
         self.assertIn("Har nayi page par ek tap zaroori hai", html)
         self.assertIn("Score 90+", html)

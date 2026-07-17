@@ -300,8 +300,9 @@
     }
     .auth-tabs { display: flex; gap: 8px; margin: 12px 0; }
     .auth-tabs button {
-      flex: 1; padding: 10px; border: none; border-radius: 10px;
+      flex: 1; padding: 9px 6px; border: none; border-radius: 10px;
       background: #1a1a2e; color: #aaa; font-weight: 700; cursor: pointer;
+      font-size: 0.78rem;
     }
     .auth-tabs button.on { background: #f0b90b; color: #111; }
     .auth-form input, .sub-screen input[type=file] {
@@ -353,16 +354,22 @@
     <div class="header" style="padding-top:0">
       <div class="logo">📡</div>
       <h1>My Signals</h1>
-      <p class="sub">$20 / 30 days · Email account</p>
+      <p class="sub" id="authSubtitle">$20 / 30 days · User account</p>
     </div>
     <div class="auth-tabs">
-      <button type="button" class="on" id="tabLogin">Login</button>
+      <button type="button" class="on" id="tabUserLogin">User Login</button>
+      <button type="button" id="tabAdminLogin">Admin Login</button>
       <button type="button" id="tabRegister">Register</button>
     </div>
-    <form class="auth-form" id="loginForm">
-      <input type="text" id="loginEmail" placeholder="Email or Username" required autocomplete="username" />
-      <input type="password" id="loginPassword" placeholder="Password" required autocomplete="current-password" />
-      <button type="submit" class="btn-gold">Login</button>
+    <form class="auth-form" id="userLoginForm">
+      <input type="text" id="userLoginEmail" placeholder="Email or Username" required autocomplete="username" />
+      <input type="password" id="userLoginPassword" placeholder="Password" required autocomplete="current-password" />
+      <button type="submit" class="btn-gold">User Login</button>
+    </form>
+    <form class="auth-form hidden" id="adminLoginForm">
+      <input type="text" id="adminLoginEmail" placeholder="Admin email or username" required autocomplete="username" />
+      <input type="password" id="adminLoginPassword" placeholder="Admin password" required autocomplete="current-password" />
+      <button type="submit" class="btn-gold">Admin Login</button>
     </form>
     <form class="auth-form hidden" id="registerForm">
       <input type="text" id="regUsername" placeholder="Username" required />
@@ -372,7 +379,7 @@
       <button type="submit" class="btn-gold">Create Account</button>
     </form>
     <p class="auth-error hidden" id="authError"></p>
-    <p class="auth-hint">Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
+    <p class="auth-hint" id="authHint">Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
   </section>
 
   <!-- SUBSCRIPTION GATE -->
@@ -582,6 +589,15 @@
       document.getElementById('navAdmin').classList.toggle('on', mode === 'admin');
     }
 
+    function formatDetail(detail) {
+      if (!detail) return '';
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        return detail.map(d => d.msg || JSON.stringify(d)).join(' · ');
+      }
+      return String(detail);
+    }
+
     async function apiLogin(email, password) {
       const form = new URLSearchParams();
       form.append('username', email);
@@ -592,22 +608,21 @@
         body: form,
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || 'Login failed');
+      if (!r.ok) throw new Error(formatDetail(data.detail) || 'Login failed');
       setToken(data.access_token);
       return data;
     }
 
     async function apiRegister(username, email, password, referral) {
+      const payload = { username, email, password };
+      if (referral && referral.trim()) payload.referral_code = referral.trim();
       const r = await fetch(API_ROOT + '/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username, email, password,
-          referral_code: referral || null,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Register failed');
+      if (!r.ok) throw new Error(formatDetail(data.detail) || 'Register failed');
       return data;
     }
 
@@ -615,21 +630,42 @@
       const r = await fetch(API_ROOT + '/me', { headers: authHeaders() });
       if (r.status === 401) { setToken(null); throw new Error('Session expired'); }
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.detail || 'Failed to load profile');
+      if (!r.ok) throw new Error(formatDetail(data.detail) || 'Failed to load profile');
       return data;
     }
 
-    function isSubActive(me) {
-      return !!(me && (me.is_admin || me.username === 'admin' || me.subscription_status === 'active'));
+    function isAdminUser(me) {
+      return !!(me && (me.is_admin || me.username === 'admin'));
     }
 
-    async function enterApp(me) {
+    function isSubActive(me) {
+      return !!(me && (isAdminUser(me) || me.subscription_status === 'active'));
+    }
+
+    async function enterApp(me, { requireAdmin = false, requireUser = false } = {}) {
       currentUser = me;
-      const isAdmin = !!(me.is_admin || me.username === 'admin');
+      const isAdmin = isAdminUser(me);
+
+      if (requireAdmin && !isAdmin) {
+        setToken(null);
+        throw new Error('Yeh Admin Login hai — sirf admin account se login karo');
+      }
+      if (requireUser && isAdmin) {
+        setToken(null);
+        throw new Error('Admin ho — "Admin Login" tab use karo');
+      }
+
       document.getElementById('userWho').textContent =
-        `${me.email || me.username} · ${me.subscription_status || '—'}`;
+        `${me.email || me.username} · ${isAdmin ? 'ADMIN' : (me.subscription_status || '—')}`;
       document.getElementById('navAdmin').classList.toggle('hidden', !isAdmin);
       document.getElementById('btnAdminNav').classList.toggle('hidden', !isAdmin);
+
+      if (isAdmin) {
+        monitoringAllowed = true;
+        setView('admin');
+        if (typeof loadAdmin === 'function') loadAdmin();
+        return;
+      }
 
       if (!isSubActive(me)) {
         monitoringAllowed = false;
@@ -648,7 +684,6 @@
 
       monitoringAllowed = true;
       setView('signals');
-      // Start live monitoring only when subscription active
       if (typeof startMonitoring === 'function') startMonitoring();
     }
 
@@ -667,30 +702,58 @@
       }
     }
 
-    document.getElementById('tabLogin').onclick = () => {
-      document.getElementById('tabLogin').classList.add('on');
-      document.getElementById('tabRegister').classList.remove('on');
-      document.getElementById('loginForm').classList.remove('hidden');
-      document.getElementById('registerForm').classList.add('hidden');
+    function setAuthTab(which) {
+      const tabs = {
+        user: document.getElementById('tabUserLogin'),
+        admin: document.getElementById('tabAdminLogin'),
+        register: document.getElementById('tabRegister'),
+      };
+      const forms = {
+        user: document.getElementById('userLoginForm'),
+        admin: document.getElementById('adminLoginForm'),
+        register: document.getElementById('registerForm'),
+      };
+      Object.keys(tabs).forEach(k => {
+        tabs[k].classList.toggle('on', k === which);
+        forms[k].classList.toggle('hidden', k !== which);
+      });
+      document.getElementById('authSubtitle').textContent =
+        which === 'admin' ? 'Admin panel access'
+          : (which === 'register' ? '$20 / 30 days · Create user account' : '$20 / 30 days · User account');
+      document.getElementById('authHint').textContent =
+        which === 'admin'
+          ? 'Sirf admin credentials yahan. Users ke liye User Login / Register use karo.'
+          : 'Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.';
       showAuthError('');
-    };
-    document.getElementById('tabRegister').onclick = () => {
-      document.getElementById('tabRegister').classList.add('on');
-      document.getElementById('tabLogin').classList.remove('on');
-      document.getElementById('registerForm').classList.remove('hidden');
-      document.getElementById('loginForm').classList.add('hidden');
-      showAuthError('');
-    };
+    }
 
-    document.getElementById('loginForm').onsubmit = async (e) => {
+    document.getElementById('tabUserLogin').onclick = () => setAuthTab('user');
+    document.getElementById('tabAdminLogin').onclick = () => setAuthTab('admin');
+    document.getElementById('tabRegister').onclick = () => setAuthTab('register');
+
+    document.getElementById('userLoginForm').onsubmit = async (e) => {
       e.preventDefault();
       showAuthError('');
       try {
         await apiLogin(
-          document.getElementById('loginEmail').value.trim(),
-          document.getElementById('loginPassword').value,
+          document.getElementById('userLoginEmail').value.trim(),
+          document.getElementById('userLoginPassword').value,
         );
-        await enterApp(await apiMe());
+        await enterApp(await apiMe(), { requireUser: true });
+      } catch (ex) {
+        showAuthError(ex.message);
+      }
+    };
+
+    document.getElementById('adminLoginForm').onsubmit = async (e) => {
+      e.preventDefault();
+      showAuthError('');
+      try {
+        await apiLogin(
+          document.getElementById('adminLoginEmail').value.trim(),
+          document.getElementById('adminLoginPassword').value,
+        );
+        await enterApp(await apiMe(), { requireAdmin: true });
       } catch (ex) {
         showAuthError(ex.message);
       }
@@ -708,7 +771,7 @@
           document.getElementById('regReferral').value.trim(),
         );
         await apiLogin(email, document.getElementById('regPassword').value);
-        await enterApp(await apiMe());
+        await enterApp(await apiMe(), { requireUser: true });
       } catch (ex) {
         showAuthError(ex.message);
       }
