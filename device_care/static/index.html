@@ -358,8 +358,8 @@
     </div>
     <div class="auth-tabs">
       <button type="button" class="on" id="tabUserLogin">User Login</button>
-      <button type="button" id="tabAdminLogin">Admin Login</button>
       <button type="button" id="tabRegister">Register</button>
+      <button type="button" id="tabAdminLogin" class="hidden">Admin Login</button>
     </div>
     <form class="auth-form" id="userLoginForm">
       <input type="text" id="userLoginEmail" placeholder="Email or Username" required autocomplete="username" />
@@ -433,11 +433,11 @@
 
   <section class="tf-section" aria-label="Timeframe toggles">
     <div class="section-title" style="margin-bottom:10px;">Signal timeframes</div>
-    <p class="tf-note">5m / 15m / 1H buttons dikhte hain — signals sirf <b>4H</b> aur <b>1D</b> pe aate hain (breakout hoti hi).</p>
+    <p class="tf-note">Har timeframe <b>on/off</b> kar sakte ho — 5m / 15m / 1H / 4H / 1D. Jo ON hogi usi pe signals aayenge.</p>
     <div class="tf-toggle-row" id="tfToggleRow">
-      <button type="button" class="tf-toggle" data-tf="5m" disabled title="Signals off">5m</button>
-      <button type="button" class="tf-toggle" data-tf="15m" disabled title="Signals off">15m</button>
-      <button type="button" class="tf-toggle" data-tf="1h" disabled title="Signals off">1H</button>
+      <button type="button" class="tf-toggle" data-tf="5m">5m</button>
+      <button type="button" class="tf-toggle" data-tf="15m">15m</button>
+      <button type="button" class="tf-toggle" data-tf="1h">1H</button>
       <button type="button" class="tf-toggle on" data-tf="4H">4H</button>
       <button type="button" class="tf-toggle on" data-tf="D1">1D</button>
     </div>
@@ -702,6 +702,11 @@
       }
     }
 
+    function isAdminGateOpen() {
+      const q = new URLSearchParams(location.search);
+      return q.get('admin') === '1' || location.hash === '#admin';
+    }
+
     function setAuthTab(which) {
       const tabs = {
         user: document.getElementById('tabUserLogin'),
@@ -713,6 +718,10 @@
         admin: document.getElementById('adminLoginForm'),
         register: document.getElementById('registerForm'),
       };
+      // Admin tab/form sirf ?admin=1 pe
+      const adminOk = isAdminGateOpen();
+      tabs.admin.classList.toggle('hidden', !adminOk);
+      if (which === 'admin' && !adminOk) which = 'user';
       Object.keys(tabs).forEach(k => {
         tabs[k].classList.toggle('on', k === which);
         forms[k].classList.toggle('hidden', k !== which);
@@ -722,7 +731,7 @@
           : (which === 'register' ? '$20 / 30 days · Create user account' : '$20 / 30 days · User account');
       document.getElementById('authHint').textContent =
         which === 'admin'
-          ? 'Sirf admin credentials yahan. Users ke liye User Login / Register use karo.'
+          ? 'Admin99 se login karo.'
           : 'Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.';
       showAuthError('');
     }
@@ -730,6 +739,11 @@
     document.getElementById('tabUserLogin').onclick = () => setAuthTab('user');
     document.getElementById('tabAdminLogin').onclick = () => setAuthTab('admin');
     document.getElementById('tabRegister').onclick = () => setAuthTab('register');
+
+    // Secret admin entry: ?admin=1 or #admin — auto open Admin Login
+    if (isAdminGateOpen()) {
+      setAuthTab('admin');
+    }
 
     document.getElementById('userLoginForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -1020,12 +1034,6 @@
       if (s.enabledTfs) {
         document.querySelectorAll('.tf-toggle[data-tf]').forEach(btn => {
           const tf = btn.dataset.tf;
-          const capable = ['4H', 'D1'].includes(tf);
-          if (!capable) {
-            btn.disabled = true;
-            btn.classList.remove('on');
-            return;
-          }
           btn.disabled = false;
           btn.classList.toggle('on', !!s.enabledTfs[tf]);
         });
@@ -1033,7 +1041,8 @@
     }
 
     async function toggleTf(tf) {
-      if (!['4H', 'D1'].includes(tf)) return;
+      const allowed = ['5m', '15m', '1h', '4H', 'D1'];
+      if (!allowed.includes(tf)) return;
       const btn = document.querySelector(`.tf-toggle[data-tf="${tf}"]`);
       const next = !(btn && btn.classList.contains('on'));
       try {
@@ -1044,13 +1053,13 @@
         });
         const data = await r.json();
         if (!r.ok) {
-          alert(data.detail || 'Toggle failed');
+          alert(formatDetail(data.detail) || 'Toggle failed');
           return;
         }
         if (data.enabled) {
           document.querySelectorAll('.tf-toggle[data-tf]').forEach(b => {
             const id = b.dataset.tf;
-            if (['4H', 'D1'].includes(id)) {
+            if (allowed.includes(id)) {
               b.classList.toggle('on', !!data.enabled[id]);
             }
           });

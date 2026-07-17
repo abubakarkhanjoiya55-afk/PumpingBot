@@ -3,10 +3,10 @@ My Signals — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
 Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
-Strategy (signals ONLY on 4H + 1D):
-  - 4H → S/R Breakout LIVE (price pierce) + closed + Triangle
-  - D1 → S/R Breakout LIVE + closed + Triangle + Doji/Hammer patterns
-UI buttons: 5m / 15m / 1h / 4H / 1D — lekin signals sirf 4H aur 1D se aate hain.
+Strategy:
+  - 5m / 15m / 1h / 4H / D1 → S/R Breakout LIVE (user toggle se on/off)
+  - 1h / 4H / D1 → Triangle Breakout
+  - D1 → Doji/Hammer patterns
 Score >= 90 → ntfy push (app band ho tab bhi phone par alert).
 """
 import asyncio
@@ -50,11 +50,11 @@ FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
-# Signals ONLY on 4H and 1D (user requirement)
-BREAKOUT_TFS = frozenset({"4H", "D1"})
-TRIANGLE_TFS = frozenset({"4H", "D1"})
+# User kisi bhi TF ko on/off kar sakta hai
+BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1"})
+TRIANGLE_TFS = frozenset({"1h", "4H", "D1"})
 CANDLE_TFS = frozenset({"D1"})
-SIGNAL_CAPABLE_TFS = frozenset({"4H", "D1"})
+SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1"})
 
 # Fiat, stablecoins, commodities — futures crypto scan se bahar
 STABLE_FIAT_BASES = frozenset({
@@ -67,21 +67,22 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# Active scan TFs — sirf 4H + D1 produce signals
+# Saari TFs scan ho sakti hain — default 4H+D1 ON, baaki user on kare
 TIMEFRAMES = [
+    ("Min5", "5m", 80),
+    ("Min15", "15m", 80),
+    ("Min60", "1h", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
 ]
 
-# UI toggle buttons (5m/15m/1h dikhaye jaate hain lekin signal nahi dete)
 TF_BUTTONS = [
-    {"id": "5m", "label": "5m", "capable": False},
-    {"id": "15m", "label": "15m", "capable": False},
-    {"id": "1h", "label": "1H", "capable": False},
+    {"id": "5m", "label": "5m", "capable": True},
+    {"id": "15m", "label": "15m", "capable": True},
+    {"id": "1h", "label": "1H", "capable": True},
     {"id": "4H", "label": "4H", "capable": True},
     {"id": "D1", "label": "1D", "capable": True},
 ]
-# Runtime enable map — only capable TFs can be turned on
 enabled_tfs: dict[str, bool] = {
     "5m": False,
     "15m": False,
@@ -119,11 +120,11 @@ scan_stats = {
         "Doji + Green",
     ],
     "strategy": {
-        "5m": "UI only — signals off",
-        "15m": "UI only — signals off",
-        "1h": "UI only — signals off",
-        "4H": "S/R LIVE pierce + Triangle (signals ON)",
-        "D1": "S/R LIVE + Triangle + Doji/Hammer (signals ON)",
+        "5m": "S/R LIVE (user toggle)",
+        "15m": "S/R LIVE (user toggle)",
+        "1h": "S/R LIVE + Triangle (user toggle)",
+        "4H": "S/R LIVE + Triangle (user toggle)",
+        "D1": "S/R LIVE + Triangle + Doji/Hammer (user toggle)",
     },
     "exchange": "MEXC Futures",
     "market": "futures",
@@ -208,7 +209,7 @@ async def get_timeframes():
         "buttons": TF_BUTTONS,
         "enabled": dict(enabled_tfs),
         "signalCapable": sorted(SIGNAL_CAPABLE_TFS),
-        "note": "Signals sirf 4H aur 1D pe aate hain. 5m/15m/1h buttons UI ke liye hain.",
+        "note": "Har timeframe on/off ho sakti hai — 5m / 15m / 1h / 4H / 1D.",
     }
 
 
@@ -217,12 +218,13 @@ async def set_timeframe(body: TfToggle):
     tf = body.timeframe
     if tf not in enabled_tfs:
         raise HTTPException(400, f"Unknown timeframe: {tf}")
-    if body.enabled and tf not in SIGNAL_CAPABLE_TFS:
-        raise HTTPException(
-            400,
-            f"{tf} signals band hain — sirf 4H aur 1D pe signals aate hain",
-        )
-    enabled_tfs[tf] = bool(body.enabled) if tf in SIGNAL_CAPABLE_TFS else False
+    if tf not in SIGNAL_CAPABLE_TFS:
+        raise HTTPException(400, f"{tf} supported nahi")
+    if not body.enabled:
+        others_on = [k for k, v in enabled_tfs.items() if k != tf and v]
+        if not others_on:
+            raise HTTPException(400, "Kam az kam 1 timeframe on rakhni zaroori hai")
+    enabled_tfs[tf] = bool(body.enabled)
     scan_stats["enabledTfs"] = dict(enabled_tfs)
     _broadcast_stats()
     return {"ok": True, "enabled": dict(enabled_tfs)}
@@ -1038,6 +1040,8 @@ async def fetch_klines(
     end = int(time.time())
     # Interval seconds for start window (fetch a bit more than limit)
     interval_sec = {
+        "Min5": 5 * 60,
+        "Min15": 15 * 60,
         "Min60": 60 * 60,
         "Hour4": 4 * 3600,
         "Day1": 86400,

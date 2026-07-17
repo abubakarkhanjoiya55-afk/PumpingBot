@@ -80,11 +80,17 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.13.1"   # Fix register null referral + split admin/user login
+API_VERSION = "3.14.0"   # All TF toggles + hidden Admin99 login
+
+ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
+ADMIN99_USERNAME = "Admin99"
+ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")
+ADMIN99_EMAIL = os.environ.get("ADMIN99_EMAIL", "admin99@mysignals.app")
+
 MASTER_USER_ID = None   # Set at startup from admin username
 
 def is_master_user(user):
-    return user is not None and user.username == "admin"
+    return user is not None and user.username in ADMIN_USERNAMES
 
 
 def refresh_subscription_status(user):
@@ -2066,7 +2072,32 @@ async def startup_event():
         else:
             print("[STARTUP] Admin user already exists!")
 
+        # Admin99 — My Signals admin panel login (users ko tab nazar nahi aati)
+        admin99 = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
+        if not admin99:
+            admin99 = User(
+                username=ADMIN99_USERNAME,
+                email=ADMIN99_EMAIL,
+                hashed_password=get_password_hash(ADMIN99_PASSWORD),
+                subscription_status="active",
+                payment_status="clear",
+                subscription_fee_owed=0.0,
+                bot_active=False,
+            )
+            db.add(admin99)
+            print(f"[STARTUP] {ADMIN99_USERNAME} created")
+        else:
+            admin99.hashed_password = get_password_hash(ADMIN99_PASSWORD)
+            admin99.email = admin99.email or ADMIN99_EMAIL
+            print(f"[STARTUP] {ADMIN99_USERNAME} password synced")
+        admin99.subscription_status = "active"
+        admin99.subscription_expires_at = datetime.utcnow() + timedelta(days=3650)
+        admin99.payment_status = "clear"
+        admin99.subscription_fee_owed = 0.0
+        db.commit()
+
         global MASTER_USER_ID
+        # Prefer legacy admin for MT5 master; Admin99 still is_master_user for panel
         admin_user = db.query(User).filter(User.username == "admin").first()
         if admin_user:
             MASTER_USER_ID = admin_user.id
@@ -2076,6 +2107,9 @@ async def startup_event():
             admin_user.subscription_fee_owed = 0.0
             db.commit()
             print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin, subscription forever)")
+        else:
+            MASTER_USER_ID = admin99.id
+            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (Admin99)")
 
         # Expire any packages that ended while server was down
         pause_expired_subscriptions()
