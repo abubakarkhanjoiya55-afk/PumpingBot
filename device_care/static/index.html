@@ -343,10 +343,17 @@
       display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: 700;
     }
     .badge-sub.active { background: rgba(16,185,129,.2); color: #34d399; }
+    .badge-sub.trial { background: rgba(96,165,250,.2); color: #60a5fa; }
     .badge-sub.expired, .badge-sub.overdue { background: rgba(248,113,113,.2); color: #f87171; }
     .badge-sub.pending_review, .badge-sub.pending { background: rgba(251,191,36,.2); color: #fbbf24; }
     .badge-sub.approved { background: rgba(16,185,129,.2); color: #34d399; }
     .badge-sub.rejected { background: rgba(248,113,113,.2); color: #f87171; }
+    .trial-banner {
+      background: rgba(96,165,250,0.12); border: 1px solid rgba(96,165,250,0.35);
+      border-radius: 12px; padding: 10px 12px; margin-bottom: 12px;
+      font-size: 0.8rem; color: #93c5fd; line-height: 1.45; text-align: center;
+    }
+    .trial-banner b { color: #60a5fa; }
     .admin-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 
     /* Disclaimer ticker — always visible */
@@ -404,7 +411,7 @@
     <div class="header" style="padding-top:0">
       <div class="logo">📡</div>
       <h1>My Signals</h1>
-      <p class="sub" id="authSubtitle">$10 / 30 days · User account</p>
+      <p class="sub" id="authSubtitle">24h FREE trial · then $10 / 30 days</p>
     </div>
     <div class="auth-tabs">
       <button type="button" class="on" id="tabUserLogin">User Login</button>
@@ -429,7 +436,7 @@
       <button type="submit" class="btn-gold">Create Account</button>
     </form>
     <p class="auth-error hidden" id="authError"></p>
-    <p class="auth-hint" id="authHint">Register ke baad $10 USDT (BEP20) pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
+    <p class="auth-hint" id="authHint">Register ke baad 24h FREE signals. Trial ke baad $10 USDT (BEP20) pay + screenshot — admin approve ke baad dobara chalu.</p>
   </section>
 
   <!-- SUBSCRIPTION GATE -->
@@ -473,6 +480,9 @@
     <div class="logo">⚙️</div>
     <h1>My Signals</h1>
     <p class="sub">MEXC Futures · strong breakouts (4H+1D+1W) · Alarm</p>
+  </div>
+  <div class="trial-banner hidden" id="trialBanner">
+    🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -744,7 +754,26 @@
     }
 
     function isSubActive(me) {
-      return !!(me && (isAdminUser(me) || me.subscription_status === 'active'));
+      return !!(me && (isAdminUser(me) || me.subscription_status === 'active' || me.subscription_status === 'trial'));
+    }
+
+    function formatTrialRemain(sec) {
+      sec = Math.max(0, Number(sec) || 0);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      if (h >= 1) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    function updateTrialBanner(me) {
+      const el = document.getElementById('trialBanner');
+      if (!el) return;
+      if (me && me.subscription_status === 'trial') {
+        el.classList.remove('hidden');
+        document.getElementById('trialRemain').textContent = formatTrialRemain(me.trial_remaining_seconds);
+      } else {
+        el.classList.add('hidden');
+      }
     }
 
     async function enterApp(me, { requireAdmin = false, requireUser = false } = {}) {
@@ -760,8 +789,11 @@
         throw new Error('Admin ho — "Admin Login" tab use karo');
       }
 
+      const statusLabel = isAdmin ? 'ADMIN' : (me.subscription_status === 'trial'
+        ? `TRIAL ${formatTrialRemain(me.trial_remaining_seconds)}`
+        : (me.subscription_status || '—'));
       document.getElementById('userWho').textContent =
-        `${me.email || me.username} · ${isAdmin ? 'ADMIN' : (me.subscription_status || '—')}`;
+        `${me.email || me.username} · ${statusLabel}`;
       document.getElementById('navAdmin').classList.toggle('hidden', !isAdmin);
       document.getElementById('btnAdminNav').classList.toggle('hidden', !isAdmin);
 
@@ -782,15 +814,17 @@
         const badge = document.getElementById('subStatusBadge');
         badge.textContent = me.subscription_status || 'expired';
         badge.className = 'badge-sub ' + (me.subscription_status || 'expired');
+        const trialHrs = me.trial_hours ?? 24;
         document.getElementById('subMessage').textContent =
           me.subscription_status === 'pending_review'
-            ? 'Screenshot uploaded — admin approval ka wait.'
-            : `$${fee} USDT (BEP20) pay karke screenshot upload karo. Admin approve karega tab signals chalu.`;
+            ? 'Screenshot uploaded — admin approval ka wait. Approve ke baad signals chalu.'
+            : `${trialHrs}h free trial khatam. $${fee} USDT (BEP20) pay karke screenshot upload karo — admin approve karega tab signals chalu.`;
         setView('sub');
         return;
       }
 
       monitoringAllowed = true;
+      updateTrialBanner(me);
       setView('signals');
       if (typeof startMonitoring === 'function') startMonitoring();
     }
@@ -836,11 +870,11 @@
       });
       document.getElementById('authSubtitle').textContent =
         which === 'admin' ? 'Admin panel access'
-          : (which === 'register' ? '$10 / 30 days · Create user account' : '$10 / 30 days · User account');
+          : (which === 'register' ? '24h FREE trial · then $10 / 30 days' : '24h FREE trial · then $10 / 30 days');
       document.getElementById('authHint').textContent =
         which === 'admin'
           ? 'Admin99 se login karo.'
-          : 'Register ke baad $10 USDT (BEP20) pay karke screenshot upload karo — admin approve karega tab signals chalu.';
+          : 'Register ke baad 24h FREE signals. Trial ke baad $10 USDT (BEP20) pay + screenshot — admin approve ke baad dobara chalu.';
       showAuthError('');
     }
 
@@ -1072,7 +1106,7 @@
             </td>
             <td><span class="badge-sub ${u.subscription_status}">${u.subscription_status}</span></td>
             <td>$${(u.referral_balance ?? 0).toFixed(2)}</td>
-            <td>${u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleDateString() : '—'}</td>
+            <td>${u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleString() : '—'}</td>
             <td>${u.bot_active ? 'ON' : 'OFF'}</td>
             <td class="admin-actions">
               <button type="button" class="btn-green" data-toggle="${u.user_id}">Toggle</button>

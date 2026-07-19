@@ -43,7 +43,7 @@ function LoginPage({ onLogin }) {
       <div className="login-card">
         <h1>⚡ PumpingBot</h1>
         <p style={{ textAlign: 'center', color: '#888', fontSize: '.85rem', marginBottom: '1rem' }}>
-          $10 / 30 days · Email account
+          $10 / 30 days · 24h free trial
         </p>
         <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem' }}>
           <button type="button" onClick={() => setTab('login')}
@@ -106,7 +106,7 @@ function SubscriptionPage({ me, onRefresh }) {
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-label">Status</div>
-          <div className={`stat-value ${status === 'active' ? 'green' : 'red'}`}>{status}</div>
+          <div className={`stat-value ${status === 'active' || status === 'trial' ? 'green' : 'red'}`}>{status}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Fee</div>
@@ -124,7 +124,16 @@ function SubscriptionPage({ me, onRefresh }) {
         </div>
       </div>
 
-      {status !== 'active' && (
+      {status === 'trial' && (
+        <div className="warn-banner" style={{ borderColor: '#60a5fa' }}>
+          🎁 <strong>24h free trial</strong> active
+          {me?.trial_remaining_seconds != null
+            ? ` — ~${Math.max(0, Math.floor(me.trial_remaining_seconds / 3600))}h remaining.`
+            : '.'}
+          {' '}Trial ke baad ${fee} pay + screenshot + admin approve zaroori.
+        </div>
+      )}
+      {status !== 'active' && status !== 'trial' && (
         <div className="warn-banner">
           Package inactive / expired. <strong>${fee}</strong> admin ({me?.admin_email || 'admin'}) ko pay karke
           neeche payment screenshot upload karo. Admin approve karega tab hi signal bot start hoga.
@@ -322,7 +331,7 @@ export default function App() {
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
   const isFollower = me?.role === 'follower';
-  const subActive = isAdmin || me?.subscription_status === 'active';
+  const subActive = isAdmin || me?.subscription_status === 'active' || me?.subscription_status === 'trial';
   const canStartBot = me?.mt5_connected && (me?.mt5_ready || isFollower) && subActive;
 
   const posProfit = (trade) => {
@@ -386,7 +395,12 @@ export default function App() {
             </div>
             {!subActive && (
               <div className="warn-banner">
-                Subscription inactive. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 10} payment screenshot upload karo.
+                Access band — free trial khatam ya unpaid. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 10} screenshot upload karo.
+              </div>
+            )}
+            {me?.subscription_status === 'trial' && (
+              <div className="warn-banner" style={{ borderColor: '#60a5fa' }}>
+                🎁 Free trial active — ~{Math.max(0, Math.floor((me.trial_remaining_seconds || 0) / 3600))}h left.
               </div>
             )}
             <div className="stats-grid">
