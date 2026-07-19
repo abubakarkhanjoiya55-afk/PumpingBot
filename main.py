@@ -1519,18 +1519,13 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
         or_(
             User.subscription_status == "pending_review",
             User.payment_status == "pending_review",
-            User.payment_status == "pending",
             User.daily_profit_owed > 0,
         )
     ).all()
     result = []
     for u in users:
-        # Rejected/expired overdue users yahan dubara na aayein
-        if (u.payment_status or "") == "rejected":
-            continue
-        if (u.subscription_status or "") != "pending_review" and (u.payment_status or "") not in (
-            "pending", "pending_review"
-        ) and not ((u.daily_profit_owed or 0) > 0):
+        # Rejected requests pending list se bahar
+        if (u.payment_status or "").lower() == "rejected":
             continue
         fee = u.subscription_fee_owed or SUBSCRIPTION_FEE_USD
         profit_owed = round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2)
