@@ -54,8 +54,14 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./goldbot.db")
 EMAIL_USER  = os.environ.get("EMAIL_USER",  "pumpingbot333@gmail.com")
 EMAIL_PASS  = os.environ.get("EMAIL_PASS",  "")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "pumpingbot333@gmail.com")
-SUBSCRIPTION_FEE_USD = float(os.environ.get("SUBSCRIPTION_FEE_USD", "20"))
+SUBSCRIPTION_FEE_USD = float(os.environ.get("SUBSCRIPTION_FEE_USD", "10"))
 SUBSCRIPTION_DAYS = int(os.environ.get("SUBSCRIPTION_DAYS", "30"))
+REFERRAL_COMMISSION_USD = float(os.environ.get("REFERRAL_COMMISSION_USD", "3"))
+# Full $10 pehle admin wallet mein; referrer ko $3 credit → withdraw → admin approve
+ADMIN_USDT_BEP20 = os.environ.get(
+    "ADMIN_USDT_BEP20",
+    "0x906fdfced22b23f79e04415d6534386baf4f2e8e",
+)
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "./uploads/payment_screenshots"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 if DATABASE_URL.startswith("sqlite"):
@@ -80,7 +86,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.14.0"   # All TF toggles + hidden Admin99 login
+API_VERSION = "3.15.0"   # Strong HTF breakouts · $10 sub · referral withdraw $3
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -133,6 +139,7 @@ def activate_subscription(user, days=SUBSCRIPTION_DAYS):
     user.last_payment_at = now
     user.daily_profit_owed = 0.0
     user.referral_owed = 0.0
+    # NOTE: do NOT clear referrer's referral_balance — that is withdrawable credit
 
 # ─── FIX: Global threading.Event for proper thread synchronization ────────────
 # Bot thread waits on this event — set ONLY when MetaApi _ready=True
@@ -193,15 +200,29 @@ class User(Base):
     referred_by         = Column(Integer, nullable=True)   # user_id jo refer kiya
     # Payment tracking
     daily_profit_owed   = Column(Float, default=0.0)       # 25% admin share pending
-    referral_owed       = Column(Float, default=0.0)       # 5% referrer commission
+    referral_owed       = Column(Float, default=0.0)       # legacy profit-share commission
     payment_status      = Column(String, default="clear")  # clear / pending / overdue / pending_review
     last_payment_at     = Column(DateTime, nullable=True)
-    # $20 / 30-day subscription package
+    # $10 / 30-day subscription package
     subscription_status     = Column(String, default="expired")  # active / expired / pending_review
     subscription_expires_at = Column(DateTime, nullable=True)
     payment_screenshot      = Column(String, nullable=True)
-    subscription_fee_owed   = Column(Float, default=20.0)
+    subscription_fee_owed   = Column(Float, default=10.0)
+    # Referral credit: $3 per referred sub — accrue then withdraw (admin pays BEP20)
+    referral_balance        = Column(Float, default=0.0)
+    referral_wallet         = Column(String, nullable=True)  # user USDT BEP20
     created_at          = Column(DateTime, default=datetime.utcnow)
+
+class ReferralWithdraw(Base):
+    __tablename__ = "referral_withdraws"
+    id              = Column(Integer, primary_key=True, index=True)
+    user_id         = Column(Integer, index=True)
+    amount          = Column(Float)
+    wallet_address  = Column(String)
+    status          = Column(String, default="pending")  # pending / approved / rejected
+    created_at      = Column(DateTime, default=datetime.utcnow)
+    processed_at    = Column(DateTime, nullable=True)
+    admin_note      = Column(String, nullable=True)
 
 class Trade(Base):
     __tablename__ = "trades"
@@ -243,6 +264,13 @@ class UserCreate(BaseModel):
     email: str
     password: str
     referral_code: Optional[str] = None  # optional — empty/null OK
+
+class ReferralWalletIn(BaseModel):
+    wallet_address: str
+
+class ReferralWithdrawIn(BaseModel):
+    amount: float
+    wallet_address: Optional[str] = None
 
 class MT5Credentials(BaseModel):
     mt5_login: int
@@ -1417,10 +1445,20 @@ def confirm_payment(user_id: int,
     if (user.daily_profit_owed or 0) + (user.referral_owed or 0) > 0:
         paid_amount = (user.daily_profit_owed or 0) + (user.referral_owed or 0)
 
-    if user.referred_by and user.referral_owed and user.referral_owed > 0:
+    # Full fee admin wallet pe aati hai; referrer ko $3 in-app credit (withdraw later)
+    referral_credited = 0.0
+    if user.referred_by:
         referrer = db.query(User).filter(User.id == user.referred_by).first()
-        if referrer:
-            print(f"[COMMISSION] {referrer.username} ko ${user.referral_owed:.2f} commission")
+        if referrer and not is_master_user(referrer):
+            referral_credited = REFERRAL_COMMISSION_USD
+            referrer.referral_balance = round(
+                (referrer.referral_balance or 0.0) + REFERRAL_COMMISSION_USD, 2
+            )
+            print(
+                f"[COMMISSION] {referrer.username} +${REFERRAL_COMMISSION_USD:.0f} "
+                f"credit (balance=${referrer.referral_balance:.2f}) — "
+                f"admin keeps ${SUBSCRIPTION_FEE_USD - REFERRAL_COMMISSION_USD:.0f}"
+            )
 
     activate_subscription(user)
     user.bot_active = True
@@ -1449,6 +1487,8 @@ def confirm_payment(user_id: int,
     return {
         "message": f"Payment confirmed for {user.username}, package active until {expires}",
         "subscription_expires_at": user.subscription_expires_at.isoformat() if user.subscription_expires_at else None,
+        "referral_credited": referral_credited,
+        "admin_share": round(SUBSCRIPTION_FEE_USD - (referral_credited or 0), 2),
     }
 
 
@@ -1492,7 +1532,7 @@ async def upload_payment_screenshot(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """User $20 payment ka screenshot bheje — admin approve karega."""
+    """User $10 payment ka screenshot bheje — admin approve karega."""
     if is_master_user(current_user):
         raise HTTPException(400, "Admin ko payment upload ki zaroorat nahi")
 
@@ -1605,6 +1645,8 @@ def get_all_users(current_user: User = Depends(get_current_user),
             "subscription_fee": u.subscription_fee_owed or SUBSCRIPTION_FEE_USD,
             "referral_code": u.referral_code,
             "referred_by":   u.referred_by,
+            "referral_balance": round(u.referral_balance or 0, 2),
+            "referral_wallet": u.referral_wallet,
             "joined":        u.created_at.isoformat() if u.created_at else None,
         })
     db.commit()
@@ -1651,6 +1693,8 @@ def get_admin_stats(current_user: User = Depends(get_current_user),
         "active_subscriptions": active_subs,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
         "subscription_days": SUBSCRIPTION_DAYS,
+        "referral_commission": REFERRAL_COMMISSION_USD,
+        "admin_usdt_bep20": ADMIN_USDT_BEP20,
         "pending_payment": pending_pay,
         "overdue_payment": overdue_pay,
         "total_trades":   total_trades,
@@ -1659,6 +1703,9 @@ def get_admin_stats(current_user: User = Depends(get_current_user),
         "gross_profit":   round(gross_profit, 2),
         "admin_earned":   round(admin_earned, 2),
         "pending_amount": round(total_pending, 2),
+        "pending_referral_withdraws": db.query(ReferralWithdraw).filter(
+            ReferralWithdraw.status == "pending"
+        ).count(),
         "master_balance": master_info.balance if master_info else 0,
         "master_equity":  master_info.equity if master_info else 0,
     }
@@ -1760,6 +1807,8 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         "referral_code": new_code,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
         "subscription_days": SUBSCRIPTION_DAYS,
+        "referral_commission": REFERRAL_COMMISSION_USD,
+        "admin_usdt_bep20": ADMIN_USDT_BEP20,
     }
 
 @app.post("/token", response_model=Token)
@@ -1823,7 +1872,200 @@ def get_me(current_user: User = Depends(get_current_user),
         "subscription_days": SUBSCRIPTION_DAYS,
         "has_payment_screenshot": bool(current_user.payment_screenshot),
         "admin_email": ADMIN_EMAIL,
+        "admin_usdt_bep20": ADMIN_USDT_BEP20,
+        "referral_commission": REFERRAL_COMMISSION_USD,
+        "referral_balance": round(current_user.referral_balance or 0, 2),
+        "referral_wallet": current_user.referral_wallet,
     }
+
+
+def _normalize_bep20(addr: str) -> str:
+    a = (addr or "").strip()
+    if not a.startswith("0x") or len(a) != 42:
+        raise HTTPException(400, "Valid USDT BEP20 address chahiye (0x… 42 chars)")
+    return a
+
+
+@app.post("/referral/wallet")
+def set_referral_wallet(
+    body: ReferralWalletIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """User apna USDT BEP20 wallet save kare — withdraw ke liye."""
+    user = db.query(User).filter(User.id == current_user.id).first()
+    user.referral_wallet = _normalize_bep20(body.wallet_address)
+    db.commit()
+    return {"message": "Wallet saved", "referral_wallet": user.referral_wallet}
+
+
+@app.post("/referral/withdraw")
+def request_referral_withdraw(
+    body: ReferralWithdrawIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Referrer withdraw request — pehle pura $10 admin ko mila hota hai,
+    yahan sirf accrued $3 credits ka payout request.
+    """
+    if is_master_user(current_user):
+        raise HTTPException(400, "Admin referral withdraw nahi karta")
+    user = db.query(User).filter(User.id == current_user.id).first()
+    bal = round(user.referral_balance or 0, 2)
+    amount = round(float(body.amount or 0), 2)
+    if amount <= 0:
+        raise HTTPException(400, "Amount 0 se zyada hona chahiye")
+    if amount > bal:
+        raise HTTPException(400, f"Balance sirf ${bal:.2f} hai")
+    wallet = _normalize_bep20(body.wallet_address or user.referral_wallet or "")
+    pending = db.query(ReferralWithdraw).filter(
+        ReferralWithdraw.user_id == user.id,
+        ReferralWithdraw.status == "pending",
+    ).first()
+    if pending:
+        raise HTTPException(400, "Pehle wali withdraw request pending hai — admin approve ka wait")
+
+    user.referral_balance = round(bal - amount, 2)
+    user.referral_wallet = wallet
+    req = ReferralWithdraw(
+        user_id=user.id,
+        amount=amount,
+        wallet_address=wallet,
+        status="pending",
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    send_email(
+        ADMIN_EMAIL,
+        f"💸 Referral withdraw: {user.username} — ${amount:.2f}",
+        f"""
+        <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+          <h3 style="color:#f0b90b;">Referral withdraw request</h3>
+          <p>User: <b>{user.username}</b> ({user.email})</p>
+          <p>Amount: <b>${amount:.2f}</b> USDT BEP20</p>
+          <p>Wallet: <code>{wallet}</code></p>
+          <p>Admin panel se Approve karke is wallet mein transfer karo.</p>
+        </div>""",
+    )
+    return {
+        "message": "Withdraw request bhej di — admin approve karke transfer karega",
+        "request_id": req.id,
+        "amount": amount,
+        "wallet_address": wallet,
+        "referral_balance": user.referral_balance,
+    }
+
+
+@app.get("/referral/withdraws")
+def my_referral_withdraws(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(ReferralWithdraw)
+        .filter(ReferralWithdraw.user_id == current_user.id)
+        .order_by(ReferralWithdraw.id.desc())
+        .limit(30)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "amount": r.amount,
+            "wallet_address": r.wallet_address,
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "processed_at": r.processed_at.isoformat() if r.processed_at else None,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/admin/referral-withdraws")
+def admin_referral_withdraws(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    rows = (
+        db.query(ReferralWithdraw)
+        .order_by(ReferralWithdraw.id.desc())
+        .limit(100)
+        .all()
+    )
+    users = {u.id: u for u in db.query(User).all()}
+    return [
+        {
+            "id": r.id,
+            "user_id": r.user_id,
+            "username": users[r.user_id].username if r.user_id in users else "?",
+            "email": users[r.user_id].email if r.user_id in users else "?",
+            "amount": r.amount,
+            "wallet_address": r.wallet_address,
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "processed_at": r.processed_at.isoformat() if r.processed_at else None,
+            "admin_note": r.admin_note,
+            "user_balance": round(users[r.user_id].referral_balance or 0, 2) if r.user_id in users else 0,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/admin/referral-withdraws/{req_id}/approve")
+def admin_approve_referral_withdraw(
+    req_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Admin ne manually USDT BEP20 transfer kar diya — mark approved."""
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    req = db.query(ReferralWithdraw).filter(ReferralWithdraw.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    if req.status != "pending":
+        raise HTTPException(400, f"Already {req.status}")
+    req.status = "approved"
+    req.processed_at = datetime.utcnow()
+    req.admin_note = f"Paid by {current_user.username}"
+    user = db.query(User).filter(User.id == req.user_id).first()
+    db.commit()
+    if user:
+        send_email(
+            user.email,
+            f"✅ Referral ${req.amount:.2f} paid",
+            f"<p>Hello {user.username}, aapka ${req.amount:.2f} USDT BEP20 "
+            f"wallet <code>{req.wallet_address}</code> mein transfer ho gaya.</p>",
+        )
+    return {"message": f"Withdraw #{req_id} approved", "amount": req.amount, "wallet": req.wallet_address}
+
+
+@app.post("/admin/referral-withdraws/{req_id}/reject")
+def admin_reject_referral_withdraw(
+    req_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    req = db.query(ReferralWithdraw).filter(ReferralWithdraw.id == req_id).first()
+    if not req:
+        raise HTTPException(404, "Request not found")
+    if req.status != "pending":
+        raise HTTPException(400, f"Already {req.status}")
+    user = db.query(User).filter(User.id == req.user_id).first()
+    if user:
+        user.referral_balance = round((user.referral_balance or 0) + float(req.amount), 2)
+    req.status = "rejected"
+    req.processed_at = datetime.utcnow()
+    req.admin_note = f"Rejected by {current_user.username}"
+    db.commit()
+    return {"message": f"Withdraw #{req_id} rejected — balance restored"}
+
 
 @app.post("/connect-mt5")
 async def connect_mt5(creds: MT5Credentials,

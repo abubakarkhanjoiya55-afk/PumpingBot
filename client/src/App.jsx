@@ -43,7 +43,7 @@ function LoginPage({ onLogin }) {
       <div className="login-card">
         <h1>⚡ PumpingBot</h1>
         <p style={{ textAlign: 'center', color: '#888', fontSize: '.85rem', marginBottom: '1rem' }}>
-          $20 / 30 days · Email account
+          $10 / 30 days · Email account
         </p>
         <div style={{ display: 'flex', gap: '.5rem', marginBottom: '1rem' }}>
           <button type="button" onClick={() => setTab('login')}
@@ -83,7 +83,7 @@ function SubscriptionPage({ me, onRefresh }) {
   const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState('');
   const status = me?.subscription_status || 'expired';
-  const fee = me?.subscription_fee ?? 20;
+  const fee = me?.subscription_fee ?? 10;
 
   const onFile = async (e) => {
     const file = e.target.files?.[0];
@@ -181,7 +181,7 @@ function AdminPage() {
           <div className="stat-card"><div className="stat-label">Users</div><div className="stat-value">{stats.total_users}</div></div>
           <div className="stat-card"><div className="stat-label">Active Subs</div><div className="stat-value green">{stats.active_subscriptions ?? '—'}</div></div>
           <div className="stat-card"><div className="stat-label">Pending Pay</div><div className="stat-value">{stats.pending_payment}</div></div>
-          <div className="stat-card"><div className="stat-label">Fee</div><div className="stat-value">{fmt(stats.subscription_fee ?? 20)}</div></div>
+          <div className="stat-card"><div className="stat-label">Fee</div><div className="stat-value">{fmt(stats.subscription_fee ?? 10)}</div></div>
           <div className="stat-card"><div className="stat-label">Active Bots</div><div className="stat-value">{stats.active_bots}</div></div>
           <div className="stat-card"><div className="stat-label">Pending $</div><div className="stat-value">{fmt(stats.pending_amount)}</div></div>
         </div>
@@ -386,7 +386,7 @@ export default function App() {
             </div>
             {!subActive && (
               <div className="warn-banner">
-                Subscription inactive. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 20} payment screenshot upload karo.
+                Subscription inactive. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 10} payment screenshot upload karo.
               </div>
             )}
             <div className="stats-grid">

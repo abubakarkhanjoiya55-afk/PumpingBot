@@ -4,7 +4,9 @@ Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
 Strategy:
-  - 5m / 15m / 1h / 4H / D1 → S/R Breakout LIVE (user toggle se on/off)
+  - S/R Breakout only when level also exists on 4H + 1D + 1W (HTF confluence)
+  - SL from prior breakout/swing area (last move), not just candle extreme
+  - 5m / 15m / 1h / 4H / D1 / 1W toggles (default: 4H+1D+1W)
   - 1h / 4H / D1 → Triangle Breakout
   - D1 → Doji/Hammer patterns
 Score >= 90 → ntfy push (app band ho tab bhi phone par alert).
@@ -51,10 +53,18 @@ CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
 # User kisi bhi TF ko on/off kar sakta hai
-BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1"})
+BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
 TRIANGLE_TFS = frozenset({"1h", "4H", "D1"})
 CANDLE_TFS = frozenset({"D1"})
-SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1"})
+SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
+# S/R must align on these higher timeframes (fake breakout filter)
+CONFLUENCE_TFS = ("4H", "D1", "1W")
+CONFLUENCE_FETCH = [
+    ("Hour4", "4H", 60),
+    ("Day1", "D1", 50),
+    ("Week1", "1W", 40),
+]
+SR_CONFLUENCE_TOL = float(os.environ.get("DC_SR_CONFLUENCE_TOL", "0.015"))  # 1.5%
 
 # Fiat, stablecoins, commodities — futures crypto scan se bahar
 STABLE_FIAT_BASES = frozenset({
@@ -74,6 +84,7 @@ TIMEFRAMES = [
     ("Min60", "1h", 70),
     ("Hour4", "4H", 60),
     ("Day1", "D1", 50),
+    ("Week1", "1W", 40),
 ]
 
 TF_BUTTONS = [
@@ -82,6 +93,7 @@ TF_BUTTONS = [
     {"id": "1h", "label": "1H", "capable": True},
     {"id": "4H", "label": "4H", "capable": True},
     {"id": "D1", "label": "1D", "capable": True},
+    {"id": "1W", "label": "1W", "capable": True},
 ]
 enabled_tfs: dict[str, bool] = {
     "5m": False,
@@ -89,6 +101,7 @@ enabled_tfs: dict[str, bool] = {
     "1h": False,
     "4H": True,
     "D1": True,
+    "1W": True,
 }
 
 router = APIRouter(prefix=APP_PREFIX, tags=["my-signals"])
@@ -209,7 +222,7 @@ async def get_timeframes():
         "buttons": TF_BUTTONS,
         "enabled": dict(enabled_tfs),
         "signalCapable": sorted(SIGNAL_CAPABLE_TFS),
-        "note": "Har timeframe on/off ho sakti hai — 5m / 15m / 1h / 4H / 1D.",
+        "note": "S/R signals sirf jab level 4H+1D+1W pe align ho. TF on/off: 5m–1W.",
     }
 
 
@@ -498,20 +511,38 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 5
 
     elif pattern == "S/R Breakout":
-        # Clean level break — slightly below triangle confidence baseline
-        score = 68
+        # Stronger baseline — fake breaks filtered via HTF confluence in scan_loop
+        score = 72
+        if hit.get("htfConfluence"):
+            score = 80
+        prior_sl = _prior_breakout_sl(ohlc, direction, level, i, buffer)
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
-            sl = candle_low - buffer
+            # Prefer prior-area SL (slightly above last swing zone); fallback candle
+            sl = prior_sl if prior_sl is not None else (candle_low - buffer)
+            if prior_sl is not None and prior_sl >= entry:
+                sl = min(candle_low, level) - buffer
         else:
             dist = (level - close) / (avg_rng or 0.0001)
-            sl = candle_high + buffer
-        score += min(18, int(dist * 10))
-        score += min(12, int(body_str * 8))
-        if direction == "UP" and close > level * 1.002:
-            score += 5
-        if direction == "DOWN" and close < level * 0.998:
-            score += 5
+            sl = prior_sl if prior_sl is not None else (candle_high + buffer)
+            if prior_sl is not None and prior_sl <= entry:
+                sl = max(candle_high, level) + buffer
+        score += min(14, int(dist * 8))
+        score += min(10, int(body_str * 7))
+        if direction == "UP" and close > level * 1.003:
+            score += 6
+        if direction == "DOWN" and close < level * 0.997:
+            score += 6
+        # Reject-style wick penalty (fake break scent)
+        rng = max(candle_high - candle_low, 1e-12)
+        if direction == "UP":
+            upper_wick = candle_high - max(close, float(o[i]))
+            if upper_wick / rng > 0.45:
+                score -= 10
+        else:
+            lower_wick = min(close, float(o[i])) - candle_low
+            if lower_wick / rng > 0.45:
+                score -= 10
 
     elif pattern in CANDLE_PATTERNS:
         # Pattern candle is -3; confirmation (last closed) is -2
@@ -572,6 +603,77 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     return hit
 
 
+def _prior_breakout_sl(
+    ohlc: dict, direction: str, level: float, i: int, buffer: float
+) -> float | None:
+    """
+    Resistance break (LONG): pehle dekho last time price kahan tak gaya (swing low
+    area), phir us area se zara sa UPAR SL — fake break pe jaldi nikalne ke liye.
+    Support break (SHORT): last swing high area se zara sa NEECHE SL.
+    """
+    h, l, c = ohlc["highs"], ohlc["lows"], ohlc["closes"]
+    end = len(c) + i if i < 0 else i  # positive index of signal candle
+    if end < 6:
+        return None
+    start = max(0, end - LOOKBACK * 4)
+    hist_l = l[start:end]
+    hist_h = h[start:end]
+    if len(hist_l) < 5:
+        return None
+
+    if direction == "UP":
+        swing_lows: list[float] = []
+        for j in range(1, len(hist_l) - 1):
+            if hist_l[j] <= hist_l[j - 1] and hist_l[j] <= hist_l[j + 1] and hist_l[j] < level:
+                swing_lows.append(hist_l[j])
+        zone = swing_lows[-1] if swing_lows else min(hist_l[-8:])
+        # Last-time area se zara sa upar
+        return float(zone) + max(buffer * 0.4, abs(level) * 0.0008)
+    swing_highs: list[float] = []
+    for j in range(1, len(hist_h) - 1):
+        if hist_h[j] >= hist_h[j - 1] and hist_h[j] >= hist_h[j + 1] and hist_h[j] > level:
+            swing_highs.append(hist_h[j])
+    zone = swing_highs[-1] if swing_highs else max(hist_h[-8:])
+    # Last-time area se zara sa neeche
+    return float(zone) - max(buffer * 0.4, abs(level) * 0.0008)
+
+
+def extract_sr_levels(ohlc: dict, lookback: int = LOOKBACK) -> tuple[float | None, float | None]:
+    """Closed-candle S/R from candles before the latest closed bar."""
+    h, l = ohlc["highs"], ohlc["lows"]
+    if len(h) < lookback + 3:
+        return None, None
+    rh = max(h[-lookback - 2:-2])
+    rl = min(l[-lookback - 2:-2])
+    return float(rh), float(rl)
+
+
+def has_sr_confluence(
+    level: float,
+    direction: str,
+    htf_levels: dict[str, tuple[float | None, float | None]],
+    price: float,
+    *,
+    required: tuple[str, ...] = CONFLUENCE_TFS,
+) -> bool:
+    """
+    Breakout level must exist as resistance (UP) or support (DOWN)
+    on at least 4H + 1D + 1W.
+    """
+    if not level or not price or price <= 0:
+        return False
+    tol = max(abs(price) * SR_CONFLUENCE_TOL, abs(level) * 0.008)
+    for tf in required:
+        pair = htf_levels.get(tf)
+        if not pair or pair[0] is None or pair[1] is None:
+            return False
+        rh, rl = pair
+        ref = rh if direction == "UP" else rl
+        if abs(float(ref) - float(level)) > tol:
+            return False
+    return True
+
+
 def _body_ok(highs, lows, closes, opens, idx: int, min_frac: float = 0.3) -> bool:
     body = abs(closes[idx] - opens[idx])
     ranges = [highs[j] - lows[j] for j in range(max(0, len(highs) - 12), len(highs) - 1)]
@@ -596,8 +698,8 @@ def detect_sr_breakout(
 ) -> dict | None:
     """
     S/R breakout on closed candle (-2) or LIVE forming candle (-1).
-    LIVE: fire as soon as high/low pierces level (breakout hoti hi) —
-    pump ke baad wait nahi.
+    Stricter body + distance filters to cut fake pierces.
+    HTF 4H/1D/1W confluence is applied in scan_loop.
     """
     h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
     i = -1 if live else -2
@@ -608,21 +710,32 @@ def detect_sr_breakout(
     if live:
         rh = max(h[-lookback - 1:-1])
         rl = min(l[-lookback - 1:-1])
-        body_frac = 0.12  # live pierce — jaldi signal
+        body_frac = 0.28  # LIVE bhi strong body — weak wick pierce skip
     else:
         rh = max(h[-lookback - 2:i])
         rl = min(l[-lookback - 2:i])
-        body_frac = 0.22
+        body_frac = 0.32
     if not _body_ok(h, l, c, o, i, min_frac=body_frac):
         return None
+    avg_rng = _avg_range(ohlc) or abs(c[i]) * 0.01
+    min_break = max(avg_rng * 0.12, abs(c[i]) * 0.0015)
     detail_suffix = " (LIVE)" if live else ""
-    # LIVE: high pierce = breakout started (close wait nahi)
-    buy_hit = (c[i] > rh and c[i - 1] <= rh) or (
-        live and h[i] > rh and c[i - 1] <= rh
+    # Prefer real close break; LIVE still allows strong high/low pierce
+    buy_hit = (c[i] > rh + min_break * 0.35 and c[i - 1] <= rh) or (
+        live and h[i] > rh + min_break and c[i - 1] <= rh and c[i] >= rh
     )
-    sell_hit = (c[i] < rl and c[i - 1] >= rl) or (
-        live and l[i] < rl and c[i - 1] >= rl
+    sell_hit = (c[i] < rl - min_break * 0.35 and c[i - 1] >= rl) or (
+        live and l[i] < rl - min_break and c[i - 1] >= rl and c[i] <= rl
     )
+    # Fake-break wick filter on closed candles
+    if not live and buy_hit:
+        rng = max(h[i] - l[i], 1e-12)
+        if (h[i] - max(c[i], o[i])) / rng > 0.5 and c[i] < rh + min_break:
+            return None
+    if not live and sell_hit:
+        rng = max(h[i] - l[i], 1e-12)
+        if (min(c[i], o[i]) - l[i]) / rng > 0.5 and c[i] > rl - min_break:
+            return None
     if buy_hit:
         return {
             "side": "BUY", "direction": "UP", "pattern": "S/R Breakout",
@@ -905,11 +1018,18 @@ def scan_candle_patterns(ohlc: dict) -> list[dict]:
 scan_d1_patterns = scan_candle_patterns
 
 
-def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = False) -> list[dict]:
+def scan_ohlc(
+    ohlc: dict,
+    *,
+    timeframe: str = "",
+    include_d1_patterns: bool = False,
+    htf_confluence: bool = False,
+) -> list[dict]:
     """
-    TF-gated strategy — signals ONLY on 4H + D1:
-      4H / D1 → S/R Breakout LIVE-first (pierce) + closed + Triangle
+    TF-gated strategy:
+      Breakout TFs → S/R LIVE-first + Triangle (1h+)
       D1 → also Dragonfly/Hammer/Doji + green close
+    htf_confluence=True marks S/R hits that already passed 4H+1D+1W gate.
     """
     hits: list[dict] = []
     tf = timeframe or ""
@@ -928,6 +1048,11 @@ def scan_ohlc(ohlc: dict, *, timeframe: str = "", include_d1_patterns: bool = Fa
             if sr["direction"] in seen_dirs:
                 continue
             seen_dirs.add(sr["direction"])
+            if htf_confluence:
+                sr["htfConfluence"] = True
+                sr["patternDetail"] = (
+                    f"{sr.get('patternDetail', 'S/R')} · HTF 4H+1D+1W"
+                )
             hits.append(enrich_trade_plan(ohlc, sr))
         if run_triangle:
             tri = detect_triangle_breakout(ohlc)
@@ -1077,7 +1202,7 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[My Signals] Strategy: 4H/D1 LIVE S/R pierce · D1 doji+green · strong>=90 ntfy")
+    print("[My Signals] Strategy: HTF 4H+1D+1W S/R confluence · prior-area SL · strong>=90 ntfy")
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -1085,6 +1210,7 @@ async def scan_loop():
             scan_stats["morningWindow"] = morning
             scan_stats["d1PatternsEnabled"] = True
             scan_stats["enabledTfs"] = dict(enabled_tfs)
+            scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)
             wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
             # Only scan TFs that are both capable and enabled
             active_tfs = [
@@ -1093,7 +1219,7 @@ async def scan_loop():
             ]
             if not active_tfs:
                 active_tfs = list(TIMEFRAMES)
-            # Subah: D1 pehle
+            # Subah: D1/1W pehle
             tf_order = (
                 list(reversed(active_tfs)) if morning else list(active_tfs)
             )
@@ -1119,7 +1245,7 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = "MORNING D1 first" if morning else "4H/D1 LIVE breakout"
+                mode = "MORNING HTF first" if morning else "4H+1D+1W confluence"
                 print(
                     f"[My Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
                     f"({mode}, wait={wait_sec}s)..."
@@ -1130,17 +1256,51 @@ async def scan_loop():
                     scan_stats["scanned"] = i
                     coin_hits = 0
                     coin_err = False
+                    ohlc_cache: dict[str, dict] = {}
+                    # Always load 4H + 1D + 1W for S/R confluence gate
+                    htf_levels: dict[str, tuple[float | None, float | None]] = {}
+                    for interval, tf_label, limit in CONFLUENCE_FETCH:
+                        ohlc_htf = await fetch_klines(client, sym, interval, limit)
+                        if ohlc_htf:
+                            ohlc_cache[tf_label] = ohlc_htf
+                            htf_levels[tf_label] = extract_sr_levels(ohlc_htf)
+                        else:
+                            htf_levels[tf_label] = (None, None)
+                        await asyncio.sleep(0.02)
+
                     for interval, tf_label, limit in tf_order:
                         scan_stats["currentTimeframe"] = tf_label
                         if i % 3 == 0:
                             _broadcast_stats()
-                        ohlc = await fetch_klines(client, sym, interval, limit)
+                        ohlc = ohlc_cache.get(tf_label)
+                        if ohlc is None:
+                            ohlc = await fetch_klines(client, sym, interval, limit)
+                            if ohlc:
+                                ohlc_cache[tf_label] = ohlc
                         if not ohlc:
                             coin_err = True
                             scan_stats["errors"] += 1
                             await asyncio.sleep(0.04)
                             continue
-                        for hit in scan_ohlc(ohlc, timeframe=tf_label):
+                        raw_hits = scan_ohlc(ohlc, timeframe=tf_label)
+                        filtered: list[dict] = []
+                        for hit in raw_hits:
+                            if hit.get("pattern") == "S/R Breakout":
+                                if not has_sr_confluence(
+                                    float(hit.get("level") or 0),
+                                    hit.get("direction", "UP"),
+                                    htf_levels,
+                                    float(hit.get("close") or hit.get("entry") or 0),
+                                ):
+                                    continue
+                                # Re-enrich with confluence flag for better score/SL context
+                                hit["htfConfluence"] = True
+                                detail = hit.get("patternDetail") or "S/R Breakout"
+                                if "HTF 4H+1D+1W" not in detail:
+                                    hit["patternDetail"] = f"{detail} · HTF 4H+1D+1W"
+                                hit = enrich_trade_plan(ohlc, hit)
+                            filtered.append(hit)
+                        for hit in filtered:
                             live_tag = "LIVE" if hit.get("live") else "CLOSED"
                             key = (
                                 f"{sym}:{tf_label}:{hit['pattern']}:"
@@ -1162,6 +1322,7 @@ async def scan_loop():
                                     f"{hit['pattern']} {hit['direction']} "
                                     f"{live_tag} score={hit.get('score')} "
                                     f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
+                                    f"{' · HTF' if hit.get('htfConfluence') else ''}"
                                 )
                                 _broadcast(alert)
                         await asyncio.sleep(0.04)
