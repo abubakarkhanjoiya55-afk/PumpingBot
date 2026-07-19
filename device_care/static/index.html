@@ -1087,20 +1087,38 @@
     document.getElementById('adminView').addEventListener('click', async (e) => {
       const btn = e.target.closest('button');
       if (!btn) return;
+      const oldText = btn.textContent;
+      btn.disabled = true;
       try {
+        async function adminPost(url) {
+          const r = await fetch(API_ROOT + url, { method: 'POST', headers: authHeaders() });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(formatDetail(data.detail) || `Request failed (${r.status})`);
+          return data;
+        }
         if (btn.dataset.approve) {
-          await fetch(API_ROOT + `/admin/confirm-payment/${btn.dataset.approve}`, { method: 'POST', headers: authHeaders() });
-          loadAdmin();
+          btn.textContent = '…';
+          const data = await adminPost(`/admin/confirm-payment/${btn.dataset.approve}`);
+          alert(data.message || 'Approved');
+          await loadAdmin();
         } else if (btn.dataset.reject) {
-          await fetch(API_ROOT + `/admin/reject-payment/${btn.dataset.reject}`, { method: 'POST', headers: authHeaders() });
-          loadAdmin();
+          btn.textContent = '…';
+          const data = await adminPost(`/admin/reject-payment/${btn.dataset.reject}`);
+          alert(data.message || 'Rejected');
+          await loadAdmin();
         } else if (btn.dataset.toggle) {
-          await fetch(API_ROOT + `/admin/toggle-bot/${btn.dataset.toggle}`, { method: 'POST', headers: authHeaders() });
-          loadAdmin();
+          await adminPost(`/admin/toggle-bot/${btn.dataset.toggle}`);
+          await loadAdmin();
         } else if (btn.dataset.del) {
           if (!confirm('Delete user?')) return;
-          await fetch(API_ROOT + `/admin/delete-user/${btn.dataset.del}`, { method: 'DELETE', headers: authHeaders() });
-          loadAdmin();
+          const r = await fetch(API_ROOT + `/admin/delete-user/${btn.dataset.del}`, {
+            method: 'DELETE', headers: authHeaders(),
+          });
+          if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            throw new Error(formatDetail(data.detail) || 'Delete failed');
+          }
+          await loadAdmin();
         } else if (btn.dataset.ss) {
           const r = await fetch(API_ROOT + `/admin/payment-screenshot/${btn.dataset.ss}`, { headers: authHeaders() });
           if (!r.ok) throw new Error('Screenshot missing');
@@ -1108,18 +1126,22 @@
           window.open(URL.createObjectURL(blob), '_blank');
         } else if (btn.dataset.refOk) {
           if (!confirm('Confirm: aapne is wallet mein USDT transfer kar diya?')) return;
-          await fetch(API_ROOT + `/admin/referral-withdraws/${btn.dataset.refOk}/approve`, {
-            method: 'POST', headers: authHeaders(),
-          });
-          loadAdmin();
+          const data = await adminPost(`/admin/referral-withdraws/${btn.dataset.refOk}/approve`);
+          alert(data.message || 'Paid OK');
+          await loadAdmin();
         } else if (btn.dataset.refNo) {
-          await fetch(API_ROOT + `/admin/referral-withdraws/${btn.dataset.refNo}/reject`, {
-            method: 'POST', headers: authHeaders(),
-          });
-          loadAdmin();
+          const data = await adminPost(`/admin/referral-withdraws/${btn.dataset.refNo}/reject`);
+          alert(data.message || 'Rejected');
+          await loadAdmin();
         }
       } catch (ex) {
-        alert(ex.message);
+        const msg = (ex && ex.message) ? ex.message : String(ex);
+        alert(msg === 'Failed to fetch'
+          ? 'Network/timeout — dubara try karo. Agar pehle approve ho chuka ho to Refresh dabao.'
+          : msg);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = oldText;
       }
     });
 

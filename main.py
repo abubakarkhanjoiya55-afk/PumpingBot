@@ -86,7 +86,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.15.0"   # Strong HTF breakouts · $10 sub · referral withdraw $3
+API_VERSION = "3.15.1"   # Fix admin approve/reject Failed to fetch (email non-blocking)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -1183,14 +1183,20 @@ def run_user_bot_watchdog(user_id, login, password, server):
 # ─── API Endpoints ─────────────────────────────────────────────────────────────
 
 # ─── EMAIL FUNCTION ───────────────────────────────────────────────────────────
-def send_email(to_email, subject, html_body):
+def send_email(to_email, subject, html_body, *, timeout_sec: float = 12.0):
+    """Sync send with hard SMTP timeout — never hang the request forever."""
+    if not to_email:
+        return False
+    if not EMAIL_PASS:
+        print(f"[EMAIL] Skip (no EMAIL_PASS): {subject} → {to_email}")
+        return False
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = EMAIL_USER
         msg["To"]      = to_email
         msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=timeout_sec) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, to_email, msg.as_string())
         print(f"[EMAIL] Sent to {to_email}: {subject}")
@@ -1198,6 +1204,16 @@ def send_email(to_email, subject, html_body):
     except Exception as e:
         print(f"[EMAIL] Failed: {e}")
         return False
+
+
+def send_email_bg(to_email, subject, html_body):
+    """Fire-and-forget email — API response wait nahi karta (mobile Failed to fetch fix)."""
+    threading.Thread(
+        target=send_email,
+        args=(to_email, subject, html_body),
+        daemon=True,
+        name="email-bg",
+    ).start()
 
 
 # ─── DAILY PROFIT CALCULATOR ──────────────────────────────────────────────────
@@ -1482,7 +1498,7 @@ def confirm_payment(user_id: int,
         <p>Expires: <b>{expires}</b></p>
         <p>Signal bot ab start ho sakta hai. Happy Trading! 🚀</p>
     </div>"""
-    send_email(user.email, "✅ PumpingBot — Payment Approved, Bot Ready!", html)
+    send_email_bg(user.email, "✅ PumpingBot — Payment Approved, Bot Ready!", html)
 
     return {
         "message": f"Payment confirmed for {user.username}, package active until {expires}",
@@ -1560,7 +1576,7 @@ async def upload_payment_screenshot(
     active_bots[user.id] = False
     db.commit()
 
-    send_email(
+    send_email_bg(
         ADMIN_EMAIL,
         f"📸 Payment SS: {user.username} — ${SUBSCRIPTION_FEE_USD:.0f}",
         f"""
@@ -1608,7 +1624,7 @@ def reject_payment(user_id: int,
     user.bot_active = False
     active_bots[user.id] = False
     db.commit()
-    send_email(
+    send_email_bg(
         user.email,
         "❌ PumpingBot — Payment Rejected",
         f"<p>Hello {user.username}, payment screenshot reject ho gaya. "
@@ -1800,7 +1816,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         <p>Admin: <b>{ADMIN_EMAIL}</b></p>
         <p>Referral code: <h3 style="color:#00ff88;letter-spacing:3px;">{new_code}</h3></p>
     </div>"""
-    send_email(user.email, "🚀 Welcome to PumpingBot!", html)
+    send_email_bg(user.email, "🚀 Welcome to PumpingBot!", html)
 
     return {
         "message": "User created successfully",
@@ -1937,7 +1953,7 @@ def request_referral_withdraw(
     db.add(req)
     db.commit()
     db.refresh(req)
-    send_email(
+    send_email_bg(
         ADMIN_EMAIL,
         f"💸 Referral withdraw: {user.username} — ${amount:.2f}",
         f"""
@@ -2035,7 +2051,7 @@ def admin_approve_referral_withdraw(
     user = db.query(User).filter(User.id == req.user_id).first()
     db.commit()
     if user:
-        send_email(
+        send_email_bg(
             user.email,
             f"✅ Referral ${req.amount:.2f} paid",
             f"<p>Hello {user.username}, aapka ${req.amount:.2f} USDT BEP20 "
