@@ -86,7 +86,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.15.1"   # Fix admin approve/reject Failed to fetch (email non-blocking)
+API_VERSION = "3.15.2"   # Fix reject stuck in pending + slower disclaimer ticker
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -1511,19 +1511,22 @@ def confirm_payment(user_id: int,
 @app.get("/admin/pending-payments")
 def get_pending_payments(current_user: User = Depends(get_current_user),
                          db: Session = Depends(get_db)):
-    """Admin pending subscription payments + profit-share dues"""
+    """Admin: sirf real pending items — screenshot review + profit dues (overdue spam nahi)."""
     if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
     users = db.query(User).filter(
         or_(
             User.subscription_status == "pending_review",
-            User.payment_status.in_(["pending", "overdue", "pending_review"]),
+            User.payment_status == "pending_review",
             User.daily_profit_owed > 0,
         )
     ).all()
     result = []
     for u in users:
+        # Rejected requests pending list se bahar
+        if (u.payment_status or "").lower() == "rejected":
+            continue
         fee = u.subscription_fee_owed or SUBSCRIPTION_FEE_USD
         profit_owed = round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2)
         result.append({
@@ -1619,8 +1622,11 @@ def reject_payment(user_id: int,
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
+    # Clear review queue — overdue rakha to pending list mein stuck rehta tha
     user.subscription_status = "expired"
-    user.payment_status = "overdue"
+    user.payment_status = "rejected"
+    user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+    user.payment_screenshot = None  # dubara clean upload ke liye
     user.bot_active = False
     active_bots[user.id] = False
     db.commit()
