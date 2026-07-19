@@ -344,17 +344,67 @@
     }
     .badge-sub.active { background: rgba(16,185,129,.2); color: #34d399; }
     .badge-sub.expired, .badge-sub.overdue { background: rgba(248,113,113,.2); color: #f87171; }
-    .badge-sub.pending_review { background: rgba(251,191,36,.2); color: #fbbf24; }
+    .badge-sub.pending_review, .badge-sub.pending { background: rgba(251,191,36,.2); color: #fbbf24; }
+    .badge-sub.approved { background: rgba(16,185,129,.2); color: #34d399; }
+    .badge-sub.rejected { background: rgba(248,113,113,.2); color: #f87171; }
     .admin-actions { display: flex; gap: 4px; flex-wrap: wrap; }
+
+    /* Disclaimer ticker — always visible */
+    .disclaimer-ticker {
+      position: sticky; top: 0; z-index: 50;
+      margin: -14px -14px 12px; padding: 8px 0;
+      background: linear-gradient(90deg, #1a1208, #2a1f0a 40%, #1a1208);
+      border-bottom: 1px solid rgba(251,191,36,0.35);
+      overflow: hidden;
+    }
+    .disclaimer-track {
+      display: inline-block; white-space: nowrap;
+      padding-left: 100%;
+      animation: ticker-scroll 48s linear infinite;
+      font-size: 0.72rem; font-weight: 600; color: #fbbf24;
+      letter-spacing: 0.02em;
+    }
+    .disclaimer-track span.sep { color: #888; margin: 0 18px; }
+    @keyframes ticker-scroll {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-100%); }
+    }
+    .wallet-box {
+      background: #0f1117; border: 1px dashed #444; border-radius: 10px;
+      padding: 10px; margin: 10px 0; font-size: 0.72rem; word-break: break-all;
+      color: #a0a4c0; line-height: 1.45;
+    }
+    .wallet-box b { color: #fbbf24; }
+    .wallet-box code { color: #34d399; font-size: 0.7rem; }
+    .ref-box {
+      background: #12121e; border: 1px solid var(--border); border-radius: 12px;
+      padding: 12px; margin: 12px 0; font-size: 0.8rem; color: #a0a4c0;
+    }
+    .ref-box input {
+      width: 100%; padding: 10px; margin: 6px 0; border-radius: 8px;
+      border: 1px solid #333; background: #0f1117; color: #fff; font-size: 0.85rem;
+    }
   </style>
 </head>
 <body>
+  <div class="disclaimer-ticker" role="note" aria-label="Disclaimer">
+    <div class="disclaimer-track">
+      EN: This app is made for people who already understand the market — to save time so you don’t need to hunt for signals. Still, carefully check every signal yourself before taking a trade.
+      <span class="sep">·</span>
+      Roman Urdu: Yeh app asal mein market ko samajhne walon ki asani ke liye banayi gayi hai taake unka waqt bache aur unko signals dhoondne ki zaroorat na pade. Lekin app mein jo bhi signal aaye usko ek baar khud tasalli se check karo, phir trade lo.
+      <span class="sep">·</span>
+      EN: This app is made for people who already understand the market — to save time so you don’t need to hunt for signals. Still, carefully check every signal yourself before taking a trade.
+      <span class="sep">·</span>
+      Roman Urdu: Yeh app asal mein market ko samajhne walon ki asani ke liye banayi gayi hai taake unka waqt bache aur unko signals dhoondne ki zaroorat na pade. Lekin app mein jo bhi signal aaye usko ek baar khud tasalli se check karo, phir trade lo.
+    </div>
+  </div>
+
   <!-- LOGIN / REGISTER -->
   <section class="auth-screen" id="authScreen">
     <div class="header" style="padding-top:0">
       <div class="logo">📡</div>
       <h1>My Signals</h1>
-      <p class="sub" id="authSubtitle">$20 / 30 days · User account</p>
+      <p class="sub" id="authSubtitle">$10 / 30 days · User account</p>
     </div>
     <div class="auth-tabs">
       <button type="button" class="on" id="tabUserLogin">User Login</button>
@@ -379,18 +429,23 @@
       <button type="submit" class="btn-gold">Create Account</button>
     </form>
     <p class="auth-error hidden" id="authError"></p>
-    <p class="auth-hint" id="authHint">Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
+    <p class="auth-hint" id="authHint">Register ke baad $10 USDT (BEP20) pay karke screenshot upload karo — admin approve karega tab signals chalu.</p>
   </section>
 
   <!-- SUBSCRIPTION GATE -->
   <section class="sub-screen hidden" id="subScreen">
     <h2>💳 Subscription</h2>
     <p class="auth-hint" style="margin-bottom:12px">
-      Package: <b>$<span id="subFee">20</span> / 30 days</b><br>
+      Package: <b>$<span id="subFee">10</span> / 30 days</b><br>
       Status: <span class="badge-sub" id="subStatusBadge">expired</span><br>
-      Admin: <span id="subAdminEmail">—</span>
+      Admin email: <span id="subAdminEmail">—</span>
     </p>
-    <p class="auth-hint" id="subMessage">Payment screenshot upload karo. Admin approve ke baad signals start.</p>
+    <div class="wallet-box">
+      <b>Pay USDT (BEP20) here:</b><br>
+      <code id="subAdminWallet">0x906fdfced22b23f79e04415d6534386baf4f2e8e</code><br>
+      <button type="button" class="btn-gold" id="copyWalletBtn" style="margin-top:8px;padding:8px;font-size:0.8rem">Copy wallet address</button>
+    </div>
+    <p class="auth-hint" id="subMessage">$10 USDT BEP20 bhejo, screenshot upload karo. Admin approve ke baad signals start.</p>
     <input type="file" id="subFile" accept="image/*,.pdf" />
     <button type="button" class="btn-gold" id="subUploadBtn">Upload Payment Screenshot</button>
     <p class="auth-error hidden" id="subError"></p>
@@ -409,6 +464,7 @@
   </div>
   <div class="nav-pills" id="mainNav">
     <button type="button" class="on" data-view="signals" id="navSignals">📡 Signals</button>
+    <button type="button" data-view="referral" id="navReferral">🎁 Referral</button>
     <button type="button" data-view="admin" id="navAdmin" class="hidden">⚡ Admin</button>
   </div>
 
@@ -416,7 +472,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>My Signals</h1>
-    <p class="sub">MEXC Futures · sirf 4H + 1D LIVE breakout · Alarm</p>
+    <p class="sub">MEXC Futures · strong breakouts (4H+1D+1W) · Alarm</p>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -433,13 +489,14 @@
 
   <section class="tf-section" aria-label="Timeframe toggles">
     <div class="section-title" style="margin-bottom:10px;">Signal timeframes</div>
-    <p class="tf-note">Har timeframe <b>on/off</b> kar sakte ho — 5m / 15m / 1H / 4H / 1D. Jo ON hogi usi pe signals aayenge.</p>
+    <p class="tf-note">S/R signal tabhi aata hai jab level <b>4H + 1D + 1W</b> pe align ho. Har TF on/off kar sakte ho.</p>
     <div class="tf-toggle-row" id="tfToggleRow">
       <button type="button" class="tf-toggle" data-tf="5m">5m</button>
       <button type="button" class="tf-toggle" data-tf="15m">15m</button>
       <button type="button" class="tf-toggle" data-tf="1h">1H</button>
       <button type="button" class="tf-toggle on" data-tf="4H">4H</button>
       <button type="button" class="tf-toggle on" data-tf="D1">1D</button>
+      <button type="button" class="tf-toggle on" data-tf="1W">1W</button>
     </div>
   </section>
 
@@ -465,10 +522,9 @@
       <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
       <div class="scan-detail" id="scanDetail">Loading...</div>
       <div class="tf-pills">
-        <span class="tf-pill">4H</span>
-        <span class="tf-pill">1D</span>
-        <span class="tf-pill">LIVE</span>
-        <span class="tf-pill">S/R</span>
+        <span class="tf-pill">4H+1D+1W</span>
+        <span class="tf-pill">HTF S/R</span>
+        <span class="tf-pill">Prior SL</span>
         <span class="tf-pill">90+ push</span>
       </div>
     </div>
@@ -498,7 +554,7 @@
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi alert nahi — scan chal raha hai<br>
-      <span style="font-size:0.75rem;color:#3a3a50">4H/1D LIVE S/R breakout · score 90+ phone push</span>
+      <span style="font-size:0.75rem;color:#3a3a50">HTF 4H+1D+1W S/R · prior-area SL · score 90+ phone push</span>
     </div>
   </div>
 
@@ -507,9 +563,43 @@
   </div>
   </div><!-- /signalsView -->
 
+  <!-- REFERRAL / WITHDRAW -->
+  <section class="admin-screen hidden" id="referralView">
+    <h2>🎁 Referral</h2>
+    <div class="ref-box">
+      <div>Aapka code: <b id="refCode">—</b></div>
+      <div style="margin-top:6px">Balance: <b style="color:#34d399">$<span id="refBal">0</span></b>
+        <span style="color:#888"> (har referral sub pe +$<span id="refComm">3</span>)</span>
+      </div>
+      <p style="margin-top:8px;font-size:0.75rem;line-height:1.4">
+        User $10 admin wallet mein bhejta hai. Approve ke baad aapko $3 credit milta hai.
+        Withdraw request lagao — admin approve karke aapke BEP20 wallet mein transfer karega.
+      </p>
+      <label style="font-size:0.75rem;color:#888">Aapka USDT BEP20 wallet</label>
+      <input type="text" id="refWalletInput" placeholder="0x…" />
+      <button type="button" class="btn-gold" id="refSaveWalletBtn" style="margin-top:4px">Save wallet</button>
+      <label style="font-size:0.75rem;color:#888;display:block;margin-top:10px">Withdraw amount (USDT)</label>
+      <input type="number" id="refWithdrawAmt" min="1" step="0.01" placeholder="3" />
+      <button type="button" class="btn-gold" id="refWithdrawBtn">Request withdraw</button>
+      <p class="auth-error hidden" id="refError"></p>
+    </div>
+    <h3 style="font-size:.95rem;margin:14px 0 8px">My withdraw requests</h3>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead><tr><th>Amount</th><th>Status</th><th>When</th></tr></thead>
+        <tbody id="refWithdrawBody"><tr><td colspan="3">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ADMIN PANEL -->
   <section class="admin-screen hidden" id="adminView">
     <h2>⚡ Admin Panel</h2>
+    <div class="wallet-box" style="margin-top:8px">
+      <b>Admin USDT BEP20 (receive $10):</b><br>
+      <code id="adminWalletShow">0x906fdfced22b23f79e04415d6534386baf4f2e8e</code>
+      <div style="margin-top:4px;color:#888;font-size:0.7rem">Fee $10 → aap $7 · referrer $3 (withdraw after approve)</div>
+    </div>
     <div class="stats-grid" id="adminStats" style="margin:12px 0"></div>
     <h3 style="font-size:.95rem;margin:14px 0 8px">Pending payments</h3>
     <div style="overflow-x:auto">
@@ -518,11 +608,18 @@
         <tbody id="adminPendingBody"><tr><td colspan="4">Loading…</td></tr></tbody>
       </table>
     </div>
+    <h3 style="font-size:.95rem;margin:18px 0 8px">Referral withdraws</h3>
+    <div style="overflow-x:auto">
+      <table class="admin-table">
+        <thead><tr><th>User</th><th>Amount</th><th>Wallet</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody id="adminRefBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+      </table>
+    </div>
     <h3 style="font-size:.95rem;margin:18px 0 8px">All users</h3>
     <div style="overflow-x:auto">
       <table class="admin-table">
-        <thead><tr><th>User</th><th>Sub</th><th>Expires</th><th>Bot</th><th>Action</th></tr></thead>
-        <tbody id="adminUsersBody"><tr><td colspan="5">Loading…</td></tr></tbody>
+        <thead><tr><th>User</th><th>Sub</th><th>Ref $</th><th>Expires</th><th>Bot</th><th>Action</th></tr></thead>
+        <tbody id="adminUsersBody"><tr><td colspan="6">Loading…</td></tr></tbody>
       </table>
     </div>
     <button type="button" class="btn-gold" id="adminRefreshBtn" style="margin-top:12px">Refresh</button>
@@ -566,6 +663,7 @@
     const appShell = document.getElementById('appShell');
     const signalsView = document.getElementById('signalsView');
     const adminView = document.getElementById('adminView');
+    const referralView = document.getElementById('referralView');
     const authError = document.getElementById('authError');
     const subError = document.getElementById('subError');
 
@@ -577,15 +675,22 @@
       subError.textContent = msg || '';
       subError.classList.toggle('hidden', !msg);
     }
+    function showRefError(msg) {
+      const el = document.getElementById('refError');
+      el.textContent = msg || '';
+      el.classList.toggle('hidden', !msg);
+    }
 
     function setView(mode) {
-      // mode: auth | sub | signals | admin
+      // mode: auth | sub | signals | admin | referral
       authScreen.classList.toggle('hidden', mode !== 'auth');
       subScreen.classList.toggle('hidden', mode !== 'sub');
-      appShell.classList.toggle('hidden', mode !== 'signals' && mode !== 'admin');
+      appShell.classList.toggle('hidden', mode !== 'signals' && mode !== 'admin' && mode !== 'referral');
       signalsView.classList.toggle('hidden', mode !== 'signals');
       adminView.classList.toggle('hidden', mode !== 'admin');
+      referralView.classList.toggle('hidden', mode !== 'referral');
       document.getElementById('navSignals').classList.toggle('on', mode === 'signals');
+      document.getElementById('navReferral').classList.toggle('on', mode === 'referral');
       document.getElementById('navAdmin').classList.toggle('on', mode === 'admin');
     }
 
@@ -635,7 +740,7 @@
     }
 
     function isAdminUser(me) {
-      return !!(me && (me.is_admin || me.username === 'admin'));
+      return !!(me && (me.is_admin || me.username === 'admin' || me.username === 'Admin99'));
     }
 
     function isSubActive(me) {
@@ -669,15 +774,18 @@
 
       if (!isSubActive(me)) {
         monitoringAllowed = false;
-        document.getElementById('subFee').textContent = me.subscription_fee ?? 20;
+        const fee = me.subscription_fee ?? 10;
+        document.getElementById('subFee').textContent = fee;
         document.getElementById('subAdminEmail').textContent = me.admin_email || 'admin';
+        const wallet = me.admin_usdt_bep20 || '0x906fdfced22b23f79e04415d6534386baf4f2e8e';
+        document.getElementById('subAdminWallet').textContent = wallet;
         const badge = document.getElementById('subStatusBadge');
         badge.textContent = me.subscription_status || 'expired';
         badge.className = 'badge-sub ' + (me.subscription_status || 'expired');
         document.getElementById('subMessage').textContent =
           me.subscription_status === 'pending_review'
             ? 'Screenshot uploaded — admin approval ka wait.'
-            : `$20 pay karke screenshot upload karo. Admin approve karega tab signals chalu.`;
+            : `$${fee} USDT (BEP20) pay karke screenshot upload karo. Admin approve karega tab signals chalu.`;
         setView('sub');
         return;
       }
@@ -728,11 +836,11 @@
       });
       document.getElementById('authSubtitle').textContent =
         which === 'admin' ? 'Admin panel access'
-          : (which === 'register' ? '$20 / 30 days · Create user account' : '$20 / 30 days · User account');
+          : (which === 'register' ? '$10 / 30 days · Create user account' : '$10 / 30 days · User account');
       document.getElementById('authHint').textContent =
         which === 'admin'
           ? 'Admin99 se login karo.'
-          : 'Register ke baad $20 pay karke screenshot upload karo — admin approve karega tab signals chalu.';
+          : 'Register ke baad $10 USDT (BEP20) pay karke screenshot upload karo — admin approve karega tab signals chalu.';
       showAuthError('');
     }
 
@@ -827,39 +935,116 @@
       }
     };
 
+    document.getElementById('copyWalletBtn').onclick = async () => {
+      const w = document.getElementById('subAdminWallet').textContent.trim();
+      try {
+        await navigator.clipboard.writeText(w);
+        showSubError('Wallet copied!');
+      } catch (_) {
+        showSubError(w);
+      }
+    };
+
     document.getElementById('navSignals').onclick = () => {
       if (monitoringAllowed) setView('signals');
     };
     document.getElementById('btnSignalsNav').onclick = () => {
       if (monitoringAllowed) setView('signals');
     };
+    document.getElementById('navReferral').onclick = () => {
+      if (monitoringAllowed) { setView('referral'); loadReferral(); }
+    };
     document.getElementById('navAdmin').onclick = () => { setView('admin'); loadAdmin(); };
     document.getElementById('btnAdminNav').onclick = () => { setView('admin'); loadAdmin(); };
     document.getElementById('adminRefreshBtn').onclick = () => loadAdmin();
+
+    async function loadReferral() {
+      try {
+        const me = await apiMe();
+        currentUser = me;
+        document.getElementById('refCode').textContent = me.referral_code || '—';
+        document.getElementById('refBal').textContent = (me.referral_balance ?? 0).toFixed(2);
+        document.getElementById('refComm').textContent = me.referral_commission ?? 3;
+        document.getElementById('refWalletInput').value = me.referral_wallet || '';
+        const r = await fetch(API_ROOT + '/referral/withdraws', { headers: authHeaders() });
+        const rows = r.ok ? await r.json() : [];
+        const body = document.getElementById('refWithdrawBody');
+        body.innerHTML = rows.length ? rows.map(x => `
+          <tr>
+            <td>$${Number(x.amount).toFixed(2)}</td>
+            <td><span class="badge-sub ${x.status}">${x.status}</span></td>
+            <td>${x.created_at ? new Date(x.created_at).toLocaleString() : '—'}</td>
+          </tr>`).join('') : '<tr><td colspan="3">Abhi koi request nahi</td></tr>';
+        showRefError('');
+      } catch (ex) {
+        showRefError(ex.message);
+      }
+    }
+
+    document.getElementById('refSaveWalletBtn').onclick = async () => {
+      try {
+        const wallet_address = document.getElementById('refWalletInput').value.trim();
+        const r = await fetch(API_ROOT + '/referral/wallet', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ wallet_address }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(formatDetail(data.detail) || 'Save failed');
+        showRefError('Wallet saved');
+      } catch (ex) {
+        showRefError(ex.message);
+      }
+    };
+
+    document.getElementById('refWithdrawBtn').onclick = async () => {
+      try {
+        const amount = parseFloat(document.getElementById('refWithdrawAmt').value);
+        const wallet_address = document.getElementById('refWalletInput').value.trim();
+        const r = await fetch(API_ROOT + '/referral/withdraw', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount, wallet_address: wallet_address || null }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(formatDetail(data.detail) || 'Withdraw failed');
+        showRefError(data.message || 'Request sent');
+        loadReferral();
+      } catch (ex) {
+        showRefError(ex.message);
+      }
+    };
 
     async function loadAdmin() {
       const statsEl = document.getElementById('adminStats');
       const pendingBody = document.getElementById('adminPendingBody');
       const usersBody = document.getElementById('adminUsersBody');
+      const refBody = document.getElementById('adminRefBody');
       try {
-        const [statsR, pendR, usersR] = await Promise.all([
+        const [statsR, pendR, usersR, refR] = await Promise.all([
           fetch(API_ROOT + '/admin/stats', { headers: authHeaders() }),
           fetch(API_ROOT + '/admin/pending-payments', { headers: authHeaders() }),
           fetch(API_ROOT + '/admin/users', { headers: authHeaders() }),
+          fetch(API_ROOT + '/admin/referral-withdraws', { headers: authHeaders() }),
         ]);
         if (!statsR.ok) throw new Error('Admin only');
         const stats = await statsR.json();
         const pending = await pendR.json();
         const users = await usersR.json();
+        const refs = refR.ok ? await refR.json() : [];
+        if (stats.admin_usdt_bep20) {
+          document.getElementById('adminWalletShow').textContent = stats.admin_usdt_bep20;
+        }
         statsEl.innerHTML = `
           <div class="stat-card"><div class="stat-num">${stats.total_users}</div><div class="stat-label">Users</div></div>
           <div class="stat-card"><div class="stat-num green">${stats.active_subscriptions ?? 0}</div><div class="stat-label">Active subs</div></div>
           <div class="stat-card"><div class="stat-num amber">${stats.pending_payment}</div><div class="stat-label">Pending</div></div>
-          <div class="stat-card"><div class="stat-num">$${stats.subscription_fee ?? 20}</div><div class="stat-label">Fee</div></div>`;
+          <div class="stat-card"><div class="stat-num">$${stats.subscription_fee ?? 10}</div><div class="stat-label">Fee</div></div>
+          <div class="stat-card"><div class="stat-num amber">${stats.pending_referral_withdraws ?? 0}</div><div class="stat-label">Ref withdraws</div></div>`;
         pendingBody.innerHTML = pending.length ? pending.map(p => `
           <tr>
             <td><b>${p.username}</b><br><span style="color:#888">${p.email || ''}</span></td>
-            <td>$${p.total_owed || p.subscription_fee || 20}</td>
+            <td>$${p.total_owed || p.subscription_fee || 10}</td>
             <td><span class="badge-sub ${p.subscription_status || p.status}">${p.subscription_status || p.status}</span></td>
             <td class="admin-actions">
               ${p.payment_screenshot ? `<button type="button" class="btn-green" data-ss="${p.user_id}">SS</button>` : ''}
@@ -867,15 +1052,31 @@
               <button type="button" class="btn-red" data-reject="${p.user_id}">Reject</button>
             </td>
           </tr>`).join('') : '<tr><td colspan="4">No pending payments</td></tr>';
+        refBody.innerHTML = refs.length ? refs.map(r => `
+          <tr>
+            <td><b>${r.username}</b><br><span style="color:#888">${r.email || ''}</span></td>
+            <td>$${Number(r.amount).toFixed(2)}</td>
+            <td style="max-width:120px;word-break:break-all;font-size:0.65rem">${r.wallet_address || '—'}</td>
+            <td><span class="badge-sub ${r.status}">${r.status}</span></td>
+            <td class="admin-actions">
+              ${r.status === 'pending' ? `
+                <button type="button" class="btn-green" data-ref-ok="${r.id}">Pay OK</button>
+                <button type="button" class="btn-red" data-ref-no="${r.id}">Reject</button>
+              ` : '—'}
+            </td>
+          </tr>`).join('') : '<tr><td colspan="5">No referral withdraws</td></tr>';
         usersBody.innerHTML = users.map(u => `
           <tr>
-            <td><b>${u.username}</b><br><span style="color:#888">${u.email || ''}</span></td>
+            <td><b>${u.username}</b><br><span style="color:#888">${u.email || ''}</span>
+              ${u.referral_code ? `<br><span style="color:#666;font-size:0.65rem">code ${u.referral_code}</span>` : ''}
+            </td>
             <td><span class="badge-sub ${u.subscription_status}">${u.subscription_status}</span></td>
+            <td>$${(u.referral_balance ?? 0).toFixed(2)}</td>
             <td>${u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleDateString() : '—'}</td>
             <td>${u.bot_active ? 'ON' : 'OFF'}</td>
             <td class="admin-actions">
               <button type="button" class="btn-green" data-toggle="${u.user_id}">Toggle</button>
-              ${u.username !== 'admin' ? `<button type="button" class="btn-red" data-del="${u.user_id}">Del</button>` : ''}
+              ${u.username !== 'admin' && u.username !== 'Admin99' ? `<button type="button" class="btn-red" data-del="${u.user_id}">Del</button>` : ''}
             </td>
           </tr>`).join('');
       } catch (ex) {
@@ -905,6 +1106,17 @@
           if (!r.ok) throw new Error('Screenshot missing');
           const blob = await r.blob();
           window.open(URL.createObjectURL(blob), '_blank');
+        } else if (btn.dataset.refOk) {
+          if (!confirm('Confirm: aapne is wallet mein USDT transfer kar diya?')) return;
+          await fetch(API_ROOT + `/admin/referral-withdraws/${btn.dataset.refOk}/approve`, {
+            method: 'POST', headers: authHeaders(),
+          });
+          loadAdmin();
+        } else if (btn.dataset.refNo) {
+          await fetch(API_ROOT + `/admin/referral-withdraws/${btn.dataset.refNo}/reject`, {
+            method: 'POST', headers: authHeaders(),
+          });
+          loadAdmin();
         }
       } catch (ex) {
         alert(ex.message);

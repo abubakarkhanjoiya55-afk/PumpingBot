@@ -7,6 +7,9 @@ from device_care.scanner import (
     detect_hammer,
     detect_sr_breakout,
     detect_triangle_breakout,
+    enrich_trade_plan,
+    extract_sr_levels,
+    has_sr_confluence,
     in_morning_window,
     scan_ohlc,
 )
@@ -282,20 +285,61 @@ class D1CandlePatternTests(unittest.TestCase):
             hits = scan_ohlc(ohlc, timeframe=tf)
             self.assertTrue(any(h.get("live") for h in hits if h["pattern"] == "S/R Breakout"))
 
-    def test_live_pierce_fires_before_close_above(self):
-        """Breakout hoti hi — high pierce even if close still near level."""
+    def test_live_pierce_requires_close_at_or_above_level(self):
+        """Weak wick-only pierce (close still below resistance) = fake — no signal."""
         size = 23
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [94.0] * size
         closes = [95.0] * size
-        # High pierced resistance but close barely above open (body still ok)
+        # High pierced but close still below resistance — reject fake
         highs[-1], lows[-1], opens[-1], closes[-1] = 106.0, 94.5, 95.0, 96.5
         ohlc = _ohlc(highs, lows, opens, closes)
-        live = detect_sr_breakout(ohlc, live=True)
+        self.assertIsNone(detect_sr_breakout(ohlc, live=True))
+
+        # Strong LIVE: pierce + close back at/above resistance
+        highs[-1], lows[-1], opens[-1], closes[-1] = 108.0, 96.0, 97.0, 101.5
+        ohlc2 = _ohlc(highs, lows, opens, closes)
+        live = detect_sr_breakout(ohlc2, live=True)
         self.assertIsNotNone(live)
         self.assertEqual("UP", live["direction"])
         self.assertTrue(live["live"])
+
+
+class HtfConfluenceAndSlTests(unittest.TestCase):
+    def test_extract_and_confluence_alignment(self):
+        size = 25
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        ohlc = _ohlc(highs, lows, opens, closes)
+        rh, rl = extract_sr_levels(ohlc)
+        self.assertEqual(100.0, rh)
+        self.assertEqual(90.0, rl)
+        levels = {"4H": (100.0, 90.0), "D1": (101.0, 89.5), "1W": (99.5, 90.5)}
+        self.assertTrue(has_sr_confluence(100.0, "UP", levels, 105.0))
+        self.assertTrue(has_sr_confluence(90.0, "DOWN", levels, 85.0))
+        bad = {"4H": (100.0, 90.0), "D1": (120.0, 80.0), "1W": (99.5, 90.5)}
+        self.assertFalse(has_sr_confluence(100.0, "UP", bad, 105.0))
+
+    def test_prior_area_sl_above_last_swing_for_long(self):
+        size = 30
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        # Earlier swing low area around 88
+        lows[10] = 88.0
+        highs[10] = 92.0
+        # Breakout candle
+        highs[-2], lows[-2], opens[-2], closes[-2] = 106.0, 94.0, 95.0, 105.0
+        hit = detect_sr_breakout(_ohlc(highs, lows, opens, closes))
+        self.assertIsNotNone(hit)
+        plan = enrich_trade_plan(_ohlc(highs, lows, opens, closes), hit)
+        # SL should be above the prior swing low (88) but below entry
+        self.assertGreater(plan["sl"], 88.0)
+        self.assertLess(plan["sl"], plan["entry"])
 
 
 class MorningWindowTests(unittest.TestCase):
