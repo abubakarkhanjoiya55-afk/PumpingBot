@@ -56,6 +56,7 @@ EMAIL_PASS  = os.environ.get("EMAIL_PASS",  "")
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "pumpingbot333@gmail.com")
 SUBSCRIPTION_FEE_USD = float(os.environ.get("SUBSCRIPTION_FEE_USD", "10"))
 SUBSCRIPTION_DAYS = int(os.environ.get("SUBSCRIPTION_DAYS", "30"))
+FREE_TRIAL_HOURS = int(os.environ.get("FREE_TRIAL_HOURS", "24"))
 REFERRAL_COMMISSION_USD = float(os.environ.get("REFERRAL_COMMISSION_USD", "3"))
 # Full $10 pehle admin wallet mein; referrer ko $3 credit → withdraw → admin approve
 ADMIN_USDT_BEP20 = os.environ.get(
@@ -86,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.15.2"   # Fix reject stuck in pending + slower disclaimer ticker
+API_VERSION = "3.16.0"   # 24h free trial for new users
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -100,7 +101,14 @@ def is_master_user(user):
 
 
 def refresh_subscription_status(user):
-    """Expire package if 30 days khatam — admin always active."""
+    """
+    Status machine:
+      trial  — naya user 24h free (expires_at tak)
+      active — paid package
+      pending_review — SS uploaded, admin wait
+      expired — pay + approve zaroori
+    Admin always active.
+    """
     if user is None:
         return "expired"
     if is_master_user(user):
@@ -110,9 +118,18 @@ def refresh_subscription_status(user):
     if status == "pending_review":
         return "pending_review"
     expires = user.subscription_expires_at
-    if status == "active" and expires and expires > datetime.utcnow():
+    now = datetime.utcnow()
+    if status == "trial":
+        if expires and expires > now:
+            return "trial"
+        user.subscription_status = "expired"
+        user.bot_active = False
+        user.payment_status = "overdue"
+        user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+        return "expired"
+    if status == "active" and expires and expires > now:
         return "active"
-    if status == "active" and (not expires or expires <= datetime.utcnow()):
+    if status == "active" and (not expires or expires <= now):
         user.subscription_status = "expired"
         user.bot_active = False
         user.payment_status = "overdue"
@@ -123,16 +140,26 @@ def refresh_subscription_status(user):
 
 
 def has_active_subscription(user):
-    return refresh_subscription_status(user) == "active"
+    """Paid active YA free trial — signals/bot allow."""
+    return refresh_subscription_status(user) in ("active", "trial")
+
+
+def start_free_trial(user, hours=None):
+    """Naye user ko FREE_TRIAL_HOURS free signals."""
+    hrs = FREE_TRIAL_HOURS if hours is None else hours
+    now = datetime.utcnow()
+    user.subscription_status = "trial"
+    user.subscription_expires_at = now + timedelta(hours=hrs)
+    user.payment_status = "clear"
+    user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+    user.bot_active = False  # MT5 bot alag; signals PWA trial se chalti hai
 
 
 def activate_subscription(user, days=SUBSCRIPTION_DAYS):
-    """Admin approve ke baad 30 din package open."""
+    """Admin approve ke baad 30 din package open (trial khatam / paid)."""
     now = datetime.utcnow()
-    base = now
-    if user.subscription_expires_at and user.subscription_expires_at > now:
-        base = user.subscription_expires_at
-    user.subscription_expires_at = base + timedelta(days=days)
+    # Paid package always starts fresh from now (don't stack on leftover trial)
+    user.subscription_expires_at = now + timedelta(days=days)
     user.subscription_status = "active"
     user.payment_status = "clear"
     user.subscription_fee_owed = 0.0
@@ -203,8 +230,8 @@ class User(Base):
     referral_owed       = Column(Float, default=0.0)       # legacy profit-share commission
     payment_status      = Column(String, default="clear")  # clear / pending / overdue / pending_review
     last_payment_at     = Column(DateTime, nullable=True)
-    # $10 / 30-day subscription package
-    subscription_status     = Column(String, default="expired")  # active / expired / pending_review
+    # $10 / 30-day subscription (+ trial for new users)
+    subscription_status     = Column(String, default="expired")  # trial / active / expired / pending_review
     subscription_expires_at = Column(DateTime, nullable=True)
     payment_screenshot      = Column(String, nullable=True)
     subscription_fee_owed   = Column(Float, default=10.0)
@@ -1386,20 +1413,21 @@ def pause_expired_subscriptions():
         for user in users:
             prev = user.subscription_status
             status = refresh_subscription_status(user)
-            if status == "expired" and prev == "active":
+            if status == "expired" and prev in ("active", "trial"):
                 active_bots[user.id] = False
                 user.bot_active = False
-                print(f"[SUB] {user.username} package expired — bot paused")
+                kind = "24h free trial" if prev == "trial" else "30-din package"
+                print(f"[SUB] {user.username} {kind} expired — bot/signals paused")
                 html = f"""
                 <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-                    <h2 style="color:#ff4444;">🚫 Subscription Expired</h2>
+                    <h2 style="color:#ff4444;">🚫 {'Free Trial' if prev == 'trial' else 'Subscription'} Expired</h2>
                     <p>Hello <b>{user.username}</b>,</p>
-                    <p>Aapka 30-din ka package khatam ho gaya. Bot pause hai.</p>
+                    <p>Aapka {kind} khatam ho gaya. Signals/bot pause hain.</p>
                     <p>Fee: <b>${SUBSCRIPTION_FEE_USD:.0f}</b> — payment ka screenshot app mein upload karein.
                        Admin approve karega tab signals/bot dobara start honge.</p>
                     <p>Admin: <b>{ADMIN_EMAIL}</b></p>
                 </div>"""
-                send_email(user.email, "🚫 PumpingBot — Subscription Expired", html)
+                send_email(user.email, "🚫 PumpingBot — Access Expired", html)
         db.commit()
     except Exception as e:
         print(f"[SUB EXPIRE] Error: {e}")
@@ -1689,7 +1717,8 @@ def get_admin_stats(current_user: User = Depends(get_current_user),
     overdue_pay    = db.query(User).filter(
         or_(User.payment_status == "overdue", User.subscription_status == "expired")
     ).count()
-    active_subs    = db.query(User).filter(User.subscription_status == "active").count()
+    active_subs    = db.query(User).filter(User.subscription_status.in_(["active", "trial"])).count()
+    trial_users    = db.query(User).filter(User.subscription_status == "trial").count()
     total_trades   = db.query(Trade).count()
     open_trades    = db.query(Trade).filter(Trade.status == "open").count()
     closed_trades  = db.query(Trade).filter(Trade.status == "closed").count()
@@ -1713,8 +1742,10 @@ def get_admin_stats(current_user: User = Depends(get_current_user),
         "total_users":    total_users,
         "active_bots":    active_bots_n,
         "active_subscriptions": active_subs,
+        "trial_users": trial_users,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
         "subscription_days": SUBSCRIPTION_DAYS,
+        "trial_hours": FREE_TRIAL_HOURS,
         "referral_commission": REFERRAL_COMMISSION_USD,
         "admin_usdt_bep20": ADMIN_USDT_BEP20,
         "pending_payment": pending_pay,
@@ -1805,32 +1836,37 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
         hashed_password = get_password_hash(user.password),
         referral_code = new_code,
         referred_by   = referred_by_id,
-        subscription_status = "expired",
         subscription_fee_owed = SUBSCRIPTION_FEE_USD,
-        payment_status = "overdue",
         bot_active = False,
     )
+    start_free_trial(new_user)
     db.add(new_user)
     db.commit()
 
+    trial_end = new_user.subscription_expires_at.strftime("%Y-%m-%d %H:%M UTC") if new_user.subscription_expires_at else "—"
     html = f"""
     <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;border-radius:10px;">
         <h2 style="color:#f0b90b;">🚀 Welcome to PumpingBot!</h2>
         <p>Hello <b>{user.username}</b>, account ban gaya (email: {user.email}).</p>
-        <p>Subscription: <b>${SUBSCRIPTION_FEE_USD:.0f} / {SUBSCRIPTION_DAYS} days</b></p>
-        <p>Payment admin ko bhejo, screenshot app mein upload karo — admin approve karega tab signals/bot start honge.</p>
+        <p><b>{FREE_TRIAL_HOURS}h FREE trial</b> abhi se shuru — signals use kar sakte ho.</p>
+        <p>Trial ends: <b>{trial_end}</b></p>
+        <p>Uske baad <b>${SUBSCRIPTION_FEE_USD:.0f} / {SUBSCRIPTION_DAYS} days</b> pay karke screenshot upload karo —
+           admin approve karega tab signals dobara chalu honge.</p>
         <p>Admin: <b>{ADMIN_EMAIL}</b></p>
         <p>Referral code: <h3 style="color:#00ff88;letter-spacing:3px;">{new_code}</h3></p>
     </div>"""
-    send_email_bg(user.email, "🚀 Welcome to PumpingBot!", html)
+    send_email_bg(user.email, "🚀 Welcome — 24h free trial started!", html)
 
     return {
-        "message": "User created successfully",
+        "message": f"User created — {FREE_TRIAL_HOURS}h free trial started",
         "referral_code": new_code,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
         "subscription_days": SUBSCRIPTION_DAYS,
         "referral_commission": REFERRAL_COMMISSION_USD,
         "admin_usdt_bep20": ADMIN_USDT_BEP20,
+        "subscription_status": "trial",
+        "trial_hours": FREE_TRIAL_HOURS,
+        "subscription_expires_at": new_user.subscription_expires_at.isoformat() if new_user.subscription_expires_at else None,
     }
 
 @app.post("/token", response_model=Token)
@@ -1856,7 +1892,7 @@ def get_me(current_user: User = Depends(get_current_user),
     sub_status = refresh_subscription_status(current_user)
     db.commit()
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
-    if sub_status != "active" and amount_owed <= 0:
+    if sub_status not in ("active", "trial") and amount_owed <= 0:
         amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
     balance = info.balance if info else 0
@@ -1868,6 +1904,11 @@ def get_me(current_user: User = Depends(get_current_user),
     ).count()
     live_positions = get_live_positions(current_user.id, conn) if conn else []
     open_trades_count = max(open_trades_db, len(live_positions))
+
+    expires_at = current_user.subscription_expires_at
+    trial_remaining_sec = 0
+    if sub_status == "trial" and expires_at:
+        trial_remaining_sec = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
 
     return {
         "username":          current_user.username,
@@ -1889,9 +1930,12 @@ def get_me(current_user: User = Depends(get_current_user),
         "payment_status":    current_user.payment_status or "clear",
         "amount_owed":       amount_owed,
         "subscription_status": sub_status,
-        "subscription_expires_at": current_user.subscription_expires_at.isoformat() if current_user.subscription_expires_at else None,
+        "subscription_expires_at": expires_at.isoformat() if expires_at else None,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
         "subscription_days": SUBSCRIPTION_DAYS,
+        "trial_hours": FREE_TRIAL_HOURS,
+        "is_trial": sub_status == "trial",
+        "trial_remaining_seconds": trial_remaining_sec,
         "has_payment_screenshot": bool(current_user.payment_screenshot),
         "admin_email": ADMIN_EMAIL,
         "admin_usdt_bep20": ADMIN_USDT_BEP20,
