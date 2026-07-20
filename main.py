@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.18.0"   # Early near-level signals + hourly alert clear
+API_VERSION = "3.18.1"   # Fix referral link — auto-code + robust copy
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -153,6 +153,40 @@ def start_free_trial(user, hours=None):
     user.payment_status = "clear"
     user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
     user.bot_active = False  # MT5 bot alag; signals PWA trial se chalti hai
+
+
+def generate_referral_code(db: Session) -> str:
+    """Unique 8-char invite code."""
+    for _ in range(16):
+        code = str(uuid.uuid4())[:8].upper()
+        exists = db.query(User).filter(User.referral_code == code).first()
+        if not exists:
+            return code
+    return uuid.uuid4().hex[:8].upper()
+
+
+def ensure_referral_code(user, db: Session) -> str:
+    """Purane / null-code users ko bhi referral code mil jaye."""
+    if getattr(user, "referral_code", None):
+        return user.referral_code
+    code = generate_referral_code(db)
+    user.referral_code = code
+    db.commit()
+    db.refresh(user)
+    return code
+
+
+def build_invite_url(request, code: str) -> str:
+    """Public invite link for My Signals register prefill."""
+    if not code:
+        return ""
+    if request is not None:
+        base = str(request.base_url).rstrip("/")
+    else:
+        base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base:
+        return f"/my-signals/?ref={code}"
+    return f"{base}/my-signals/?ref={code}"
 
 
 def activate_subscription(user, days=SUBSCRIPTION_DAYS):
@@ -1828,7 +1862,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
             referred_by_id = referrer.id
             print(f"[REFERRAL] {user.username} referred by {referrer.username}")
 
-    new_code = str(uuid.uuid4())[:8].upper()
+    new_code = generate_referral_code(db)
 
     new_user = User(
         username      = user.username,
@@ -1883,13 +1917,15 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 @app.get("/me")
-def get_me(current_user: User = Depends(get_current_user),
+def get_me(request: Request,
+           current_user: User = Depends(get_current_user),
            db: Session = Depends(get_db)):
     conn = user_connection(current_user)
     reconcile_trades_with_mt5(current_user.id, conn)
     info = conn.account_info() if conn and conn._ready else None
     role = "master" if is_master_user(current_user) else "follower"
     sub_status = refresh_subscription_status(current_user)
+    ref_code = ensure_referral_code(current_user, db)
     db.commit()
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
     if sub_status not in ("active", "trial") and amount_owed <= 0:
@@ -1910,6 +1946,8 @@ def get_me(current_user: User = Depends(get_current_user),
     if sub_status == "trial" and expires_at:
         trial_remaining_sec = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
 
+    invite_url = build_invite_url(request, ref_code)
+
     return {
         "username":          current_user.username,
         "email":             current_user.email,
@@ -1926,7 +1964,8 @@ def get_me(current_user: User = Depends(get_current_user),
         "floating_pl":       floating_pl,
         "equity":            equity,
         "open_trades_count": open_trades_count,
-        "referral_code":     current_user.referral_code,
+        "referral_code":     ref_code,
+        "invite_url":        invite_url,
         "payment_status":    current_user.payment_status or "clear",
         "amount_owed":       amount_owed,
         "subscription_status": sub_status,
@@ -2402,7 +2441,19 @@ async def startup_event():
         admin99.subscription_expires_at = datetime.utcnow() + timedelta(days=3650)
         admin99.payment_status = "clear"
         admin99.subscription_fee_owed = 0.0
+        if not admin99.referral_code:
+            admin99.referral_code = generate_referral_code(db)
         db.commit()
+
+        # Backfill missing referral codes (purane users / wiped DB edge cases)
+        missing_refs = db.query(User).filter(
+            or_(User.referral_code.is_(None), User.referral_code == "")
+        ).all()
+        for u in missing_refs:
+            u.referral_code = generate_referral_code(db)
+        if missing_refs:
+            db.commit()
+            print(f"[STARTUP] Backfilled referral_code for {len(missing_refs)} user(s)")
 
         global MASTER_USER_ID
         # Prefer legacy admin for MT5 master; Admin99 still is_master_user for panel
@@ -2413,6 +2464,8 @@ async def startup_event():
             admin_user.subscription_expires_at = datetime.utcnow() + timedelta(days=3650)
             admin_user.payment_status = "clear"
             admin_user.subscription_fee_owed = 0.0
+            if not admin_user.referral_code:
+                admin_user.referral_code = generate_referral_code(db)
             db.commit()
             print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin, subscription forever)")
         else:
