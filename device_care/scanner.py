@@ -31,6 +31,8 @@ LEGACY_PREFIX = "/device-care"
 STATIC = Path(__file__).parent / "static"
 DATA_DIR = Path(__file__).parent / "data"
 ALERT_STORE = DATA_DIR / "alerts.json"
+COOLDOWN_STORE = DATA_DIR / "cooldown.json"
+PENDING_RETEST_STORE = DATA_DIR / "pending_retests.json"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
 SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "60"))
 # Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
@@ -42,11 +44,21 @@ MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "300000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 # Alert history TTL — triangles jaldi clear, candle patterns zyada der
-BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
+BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h history
 D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
 STRONG_SCORE = int(os.environ.get("DC_STRONG_SCORE", "90"))
 RETEST_TTL_SEC = int(os.environ.get("DC_RETEST_TTL_SEC", str(24 * 3600)))
 RETEST_TOUCH_TOL = float(os.environ.get("DC_RETEST_TOUCH_TOL", "0.008"))
+# Same signal dubara na aaye — pattern-wise cooldown (candleTime/LIVE ignore)
+PATTERN_COOLDOWN_SEC = {
+    "S/R Breakout": int(os.environ.get("DC_SR_COOLDOWN_SEC", str(6 * 3600))),
+    "Retest Wait": int(os.environ.get("DC_RETEST_WAIT_COOLDOWN_SEC", str(6 * 3600))),
+    "Retest Complete": int(os.environ.get("DC_RETEST_DONE_COOLDOWN_SEC", str(12 * 3600))),
+    "Triangle Breakout": int(os.environ.get("DC_TRI_COOLDOWN_SEC", str(4 * 3600))),
+    "Dragonfly Doji": D1_PATTERN_ALERT_TTL_SEC,
+    "Hammer": D1_PATTERN_ALERT_TTL_SEC,
+    "Doji + Green": D1_PATTERN_ALERT_TTL_SEC,
+}
 # Pending retests after S/R breakout: key -> meta
 pending_retests: dict[str, dict] = {}
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
@@ -332,6 +344,136 @@ def _alert_ttl_sec(alert: dict) -> int:
     return BREAKOUT_ALERT_TTL_SEC
 
 
+def _level_key(level) -> str:
+    try:
+        v = float(level)
+    except (TypeError, ValueError):
+        return "0"
+    if abs(v) >= 100:
+        return f"{v:.2f}"
+    if abs(v) >= 1:
+        return f"{v:.4f}"
+    if abs(v) >= 0.01:
+        return f"{v:.5f}"
+    return f"{v:.6g}"
+
+
+def signal_fingerprint(sym: str, tf: str, hit: dict) -> str:
+    """
+    Unique signal id for cooldown — LIVE/CLOSED aur exact candleTime ignore.
+    Same coin + TF + pattern + direction + level = ek hi signal.
+    """
+    pattern = hit.get("pattern") or ""
+    direction = hit.get("direction") or ""
+    level = hit.get("level") if hit.get("level") is not None else (
+        hit.get("entry") if hit.get("entry") is not None else hit.get("close")
+    )
+    if pattern in CANDLE_PATTERNS:
+        ct = int(hit.get("candleTime") or 0)
+        day = ct // 86_400_000 if ct else 0
+        return f"{sym}|{tf}|{pattern}|{direction}|day{day}"
+    return f"{sym}|{tf}|{pattern}|{direction}|{_level_key(level)}"
+
+
+def cooldown_ttl_for(pattern: str) -> int:
+    return int(PATTERN_COOLDOWN_SEC.get(pattern or "", BREAKOUT_ALERT_TTL_SEC))
+
+
+def prune_cooldown(now: float | None = None):
+    now = now or time.time()
+    for key, seen_at in list(cooldown.items()):
+        # key: sym|tf|pattern|direction|level
+        parts = key.split("|")
+        pattern = parts[2] if len(parts) >= 3 else ""
+        ttl = cooldown_ttl_for(pattern)
+        if seen_at < now - ttl:
+            del cooldown[key]
+
+
+def _persist_cooldown():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        COOLDOWN_STORE.write_text(
+            json.dumps(cooldown, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[My Signals] cooldown persist failed: {e}")
+
+
+def _load_persisted_cooldown():
+    global cooldown
+    try:
+        if COOLDOWN_STORE.is_file():
+            raw = json.loads(COOLDOWN_STORE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                cooldown.clear()
+                cooldown.update({str(k): float(v) for k, v in raw.items()})
+        # Seed from alert history so restart pe purani signals dubara na aayein
+        for a in alert_history:
+            sym = a.get("symbol") or ""
+            tf = a.get("timeframe") or ""
+            if not sym:
+                continue
+            fp = signal_fingerprint(sym, tf, a)
+            at_ms = a.get("alertedAt") or a.get("at") or 0
+            at = (at_ms / 1000.0) if at_ms > 1e12 else float(at_ms or 0)
+            if at <= 0:
+                at = time.time()
+            prev = cooldown.get(fp, 0)
+            if at > prev:
+                cooldown[fp] = at
+        prune_cooldown()
+        _persist_cooldown()
+        print(f"[My Signals] Cooldown loaded: {len(cooldown)} fingerprints")
+    except Exception as e:
+        print(f"[My Signals] cooldown restore failed: {e}")
+
+
+def _persist_pending_retests():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        PENDING_RETEST_STORE.write_text(
+            json.dumps(pending_retests, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[My Signals] pending retest persist failed: {e}")
+
+
+def _load_persisted_pending_retests():
+    global pending_retests
+    try:
+        if not PENDING_RETEST_STORE.is_file():
+            return
+        raw = json.loads(PENDING_RETEST_STORE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            pending_retests.clear()
+            pending_retests.update(raw)
+            print(f"[My Signals] Pending retests restored: {len(pending_retests)}")
+    except Exception as e:
+        print(f"[My Signals] pending retest restore failed: {e}")
+
+
+def mark_signal_cooldown(sym: str, tf: str, hit: dict) -> str:
+    fp = signal_fingerprint(sym, tf, hit)
+    cooldown[fp] = time.time()
+    _persist_cooldown()
+    return fp
+
+
+def is_signal_cooled(sym: str, tf: str, hit: dict) -> bool:
+    fp = signal_fingerprint(sym, tf, hit)
+    seen = cooldown.get(fp)
+    if not seen:
+        return False
+    ttl = cooldown_ttl_for(hit.get("pattern") or "")
+    if seen < time.time() - ttl:
+        del cooldown[fp]
+        return False
+    return True
+
+
 def _load_persisted_alerts():
     """Restart ke baad purani alerts wapas lao."""
     global alert_history
@@ -417,11 +559,11 @@ async def _send_ntfy_strong(alert: dict):
 
 
 def _broadcast(alert: dict):
-    alert["id"] = alert.get("id") or (
-        f"{alert['symbol']}-{alert.get('timeframe')}-{alert.get('pattern')}-"
-        f"{alert.get('direction')}-{alert.get('candleTime')}"
-        f"{'-LIVE' if alert.get('live') else ''}"
-    )
+    # Stable id — LIVE tag se naya id na bane (duplicate UI/alarm avoid)
+    if not alert.get("id"):
+        sym = alert.get("symbol") or ""
+        tf = alert.get("timeframe") or ""
+        alert["id"] = signal_fingerprint(sym, tf, alert).replace("|", "-")
     prune_alert_history()
     alert_history.insert(0, alert)
     del alert_history[80:]
@@ -740,6 +882,7 @@ def register_pending_retest(sym: str, tf_label: str, breakout: dict):
         "complete_sent": False,
         "failed": False,
     }
+    _persist_pending_retests()
 
 
 def _prior_breakout_sl(
@@ -1362,12 +1505,8 @@ async def scan_loop():
             tf_order = (
                 list(reversed(active_tfs)) if morning else list(active_tfs)
             )
-            # Cooldown: breakout keys 1h, candle pattern keys 8h
-            for key, seen_at in list(cooldown.items()):
-                is_candle = any(p in key for p in CANDLE_PATTERNS)
-                ttl = D1_PATTERN_ALERT_TTL_SEC if is_candle else BREAKOUT_ALERT_TTL_SEC
-                if seen_at < started - ttl:
-                    del cooldown[key]
+            # Cooldown prune — fingerprint based (pattern TTL)
+            prune_cooldown(started)
             removed = prune_alert_history(started)
             if removed:
                 _push_sse({
@@ -1455,60 +1594,64 @@ async def scan_loop():
                             if pending.get("complete_sent") or pending.get("failed"):
                                 if pending.get("failed"):
                                     del pending_retests[rk]
+                                    _persist_pending_retests()
                                 continue
                             done = detect_retest_complete(ohlc, pending)
                             if done:
                                 filtered.append(done)
                                 pending["complete_sent"] = True
+                                _persist_pending_retests()
+                        # Prefer CLOSED over LIVE for same fingerprint in this batch
+                        filtered.sort(key=lambda h: 1 if h.get("live") else 0)
+                        emitted_fps: set[str] = set()
                         for hit in filtered:
+                            fp = signal_fingerprint(sym, tf_label, hit)
+                            if fp in emitted_fps or is_signal_cooled(sym, tf_label, hit):
+                                continue
+                            emitted_fps.add(fp)
+                            mark_signal_cooldown(sym, tf_label, hit)
                             live_tag = "LIVE" if hit.get("live") else "CLOSED"
-                            key = (
-                                f"{sym}:{tf_label}:{hit['pattern']}:"
-                                f"{hit['direction']}:{hit['candleTime']}:{live_tag}"
+                            alert = {
+                                "symbol": sym,
+                                "timeframe": tf_label,
+                                "volume": vol,
+                                "alertedAt": int(time.time() * 1000),
+                                **hit,
+                            }
+                            coin_hits += 1
+                            new_alerts += 1
+                            print(
+                                f"[My Signals] {sym} {tf_label} "
+                                f"{hit['pattern']} {hit['direction']} "
+                                f"{live_tag} score={hit.get('score')} "
+                                f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
+                                f"{' · HTF' if hit.get('htfConfluence') else ''}"
                             )
-                            if key not in cooldown:
-                                cooldown[key] = time.time()
-                                alert = {
-                                    "symbol": sym,
-                                    "timeframe": tf_label,
-                                    "volume": vol,
-                                    "alertedAt": int(time.time() * 1000),
-                                    **hit,
-                                }
-                                coin_hits += 1
-                                new_alerts += 1
-                                print(
-                                    f"[My Signals] {sym} {tf_label} "
-                                    f"{hit['pattern']} {hit['direction']} "
-                                    f"{live_tag} score={hit.get('score')} "
-                                    f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
-                                    f"{' · HTF' if hit.get('htfConfluence') else ''}"
-                                )
-                                _broadcast(alert)
-                                # Breakout ke baad turant Retest Wait alert
-                                if hit.get("pattern") == "S/R Breakout":
-                                    wait_hit = build_retest_wait_hit(ohlc, hit)
-                                    wait_key = (
-                                        f"{sym}:{tf_label}:Retest Wait:"
-                                        f"{hit['direction']}:{hit['candleTime']}:CLOSED"
+                            _broadcast(alert)
+                            # Breakout ke baad turant Retest Wait — sirf ek dafa
+                            if hit.get("pattern") == "S/R Breakout":
+                                wait_hit = build_retest_wait_hit(ohlc, hit)
+                                wait_fp = signal_fingerprint(sym, tf_label, wait_hit)
+                                if wait_fp not in emitted_fps and not is_signal_cooled(
+                                    sym, tf_label, wait_hit
+                                ):
+                                    emitted_fps.add(wait_fp)
+                                    mark_signal_cooldown(sym, tf_label, wait_hit)
+                                    wait_alert = {
+                                        "symbol": sym,
+                                        "timeframe": tf_label,
+                                        "volume": vol,
+                                        "alertedAt": int(time.time() * 1000),
+                                        **wait_hit,
+                                    }
+                                    coin_hits += 1
+                                    new_alerts += 1
+                                    print(
+                                        f"[My Signals] {sym} {tf_label} Retest Wait "
+                                        f"{hit['direction']} limit={wait_hit.get('entry')}"
                                     )
-                                    if wait_key not in cooldown:
-                                        cooldown[wait_key] = time.time()
-                                        wait_alert = {
-                                            "symbol": sym,
-                                            "timeframe": tf_label,
-                                            "volume": vol,
-                                            "alertedAt": int(time.time() * 1000),
-                                            **wait_hit,
-                                        }
-                                        coin_hits += 1
-                                        new_alerts += 1
-                                        print(
-                                            f"[My Signals] {sym} {tf_label} Retest Wait "
-                                            f"{hit['direction']} limit={wait_hit.get('entry')}"
-                                        )
-                                        _broadcast(wait_alert)
-                                        register_pending_retest(sym, tf_label, hit)
+                                    _broadcast(wait_alert)
+                                    register_pending_retest(sym, tf_label, hit)
                         await asyncio.sleep(0.04)
                     scan_stats["scannedCoins"].append({
                         "symbol": sym,
@@ -1560,6 +1703,8 @@ def start_device_care_scanner():
     if _scan_task is not None:
         return
     _load_persisted_alerts()
+    _load_persisted_pending_retests()
+    _load_persisted_cooldown()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[My Signals] PWA → /my-signals (4H/D1 LIVE breakouts, score>=90 ntfy)")
+    print("[My Signals] PWA → /my-signals (HTF breakouts + retest, deduped cooldown)")
