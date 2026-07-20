@@ -5,17 +5,26 @@ from unittest.mock import MagicMock
 
 
 class ReferralHelperTests(unittest.TestCase):
-    def test_build_invite_url_from_request(self):
-        # Import after path setup — avoid full main app deps when possible
-        os.environ.setdefault("DATABASE_URL", "sqlite:///./test_referral_tmp.db")
+    def test_build_invite_url_forces_https_on_railway(self):
         from main import build_invite_url
 
         req = MagicMock()
-        req.base_url = "https://web-production-26ef9.up.railway.app/"
+        req.base_url = "http://web-production-26ef9.up.railway.app/"
+        req.url.scheme = "http"
+        req.headers = {
+            "x-forwarded-proto": "https",
+            "host": "web-production-26ef9.up.railway.app",
+        }
         self.assertEqual(
             build_invite_url(req, "ABC12345"),
             "https://web-production-26ef9.up.railway.app/my-signals/?ref=ABC12345",
         )
+
+        req2 = MagicMock()
+        req2.base_url = "http://web-production-26ef9.up.railway.app/"
+        req2.url.scheme = "http"
+        req2.headers = {}
+        self.assertTrue(build_invite_url(req2, "ZZ").startswith("https://"))
 
     def test_build_invite_url_empty_code(self):
         from main import build_invite_url

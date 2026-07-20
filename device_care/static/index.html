@@ -1020,8 +1020,17 @@
       return `${location.origin}/my-signals/?ref=${encodeURIComponent(c)}`;
     }
 
+    function normalizeInviteUrl(url) {
+      let u = (url || '').trim();
+      if (!u) return '';
+      if (u.startsWith('http://') && u.includes('railway.app')) {
+        u = 'https://' + u.slice('http://'.length);
+      }
+      return u;
+    }
+
     function resolveInviteUrl(me) {
-      if (me && me.invite_url) return me.invite_url;
+      if (me && me.invite_url) return normalizeInviteUrl(me.invite_url);
       return inviteUrlFromCode(me && me.referral_code);
     }
 

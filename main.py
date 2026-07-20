@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.18.1"   # Fix referral link — auto-code + robust copy
+API_VERSION = "3.18.2"   # Referral invite_url force https on Railway
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -180,12 +180,23 @@ def build_invite_url(request, code: str) -> str:
     """Public invite link for My Signals register prefill."""
     if not code:
         return ""
-    if request is not None:
-        base = str(request.base_url).rstrip("/")
-    else:
-        base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base and request is not None:
+        # Prefer proxy HTTPS (Railway terminates TLS in front)
+        proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip()
+        host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+        if host:
+            if proto != "https" and "railway.app" in host:
+                proto = "https"
+            base = f"{proto}://{host}".rstrip("/")
+        else:
+            base = str(request.base_url).rstrip("/")
+            if base.startswith("http://") and "railway.app" in base:
+                base = "https://" + base[len("http://"):]
     if not base:
         return f"/my-signals/?ref={code}"
+    if base.startswith("http://") and "railway.app" in base:
+        base = "https://" + base[len("http://"):]
     return f"{base}/my-signals/?ref={code}"
 
 
