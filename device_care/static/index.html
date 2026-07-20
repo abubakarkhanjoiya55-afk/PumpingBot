@@ -1681,9 +1681,10 @@
       if (!('Notification' in window) || Notification.permission !== 'granted') return false;
       const up = a.direction === 'UP';
       const options = {
-        body: `${a.timeframe} ${a.pattern} ${up ? '▲ UP' : '▼ DOWN'}` +
+        body: `${a.timeframe || ''} ${a.pattern || ''} ${up ? '▲ UP' : '▼ DOWN'}` +
           (a.score != null ? ` · ${a.score}/100` : '') +
-          `\nE ${a.entry ?? a.close} · SL ${a.sl ?? '—'} · TP ${a.tp ?? '—'}`,
+          `\n${a.pattern === 'Retest Wait' ? 'Limit' : 'E'} ${a.entry ?? a.close} · SL ${a.sl ?? '—'} · TP ${a.tp ?? '—'}` +
+          (a.advice ? `\n${a.advice}` : ''),
         icon: BASE + '/icon-192.png',
         badge: BASE + '/icon-192.png',
         tag: 'dc-' + a.symbol + a.timeframe,
