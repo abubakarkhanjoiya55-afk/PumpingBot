@@ -7,8 +7,10 @@ from device_care.scanner import (
     detect_hammer,
     detect_sr_breakout,
     detect_triangle_breakout,
+    detect_retest_complete,
     enrich_trade_plan,
     extract_sr_levels,
+    build_retest_wait_hit,
     has_sr_confluence,
     in_morning_window,
     scan_ohlc,
@@ -340,6 +342,51 @@ class HtfConfluenceAndSlTests(unittest.TestCase):
         # SL should be above the prior swing low (88) but below entry
         self.assertGreater(plan["sl"], 88.0)
         self.assertLess(plan["sl"], plan["entry"])
+
+
+class RetestAlertTests(unittest.TestCase):
+    def test_retest_wait_uses_level_as_limit_with_sl_tp(self):
+        size = 30
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        highs[-2], lows[-2], opens[-2], closes[-2] = 106.0, 94.0, 95.0, 105.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+        brk = detect_sr_breakout(ohlc)
+        self.assertIsNotNone(brk)
+        brk = enrich_trade_plan(ohlc, brk)
+        wait = build_retest_wait_hit(ohlc, brk)
+        self.assertEqual("Retest Wait", wait["pattern"])
+        self.assertEqual(wait["entry"], wait["level"])
+        self.assertIn("sl", wait)
+        self.assertIn("tp", wait)
+        self.assertIn("retest", (wait.get("advice") or "").lower())
+        self.assertLess(wait["sl"], wait["entry"])
+        self.assertGreater(wait["tp"], wait["entry"])
+
+    def test_retest_complete_on_pullback_hold(self):
+        size = 30
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        # Breakout candle earlier
+        highs[-4], lows[-4], opens[-4], closes[-4] = 106.0, 94.0, 95.0, 105.0
+        # Retest candle: wick to 100, close holds above
+        highs[-2], lows[-2], opens[-2], closes[-2] = 103.0, 99.5, 102.0, 101.5
+        ohlc = _ohlc(highs, lows, opens, closes)
+        pending = {
+            "direction": "UP",
+            "level": 100.0,
+            "candleTime": ohlc["times"][-4],
+            "htfConfluence": True,
+        }
+        done = detect_retest_complete(ohlc, pending)
+        self.assertIsNotNone(done)
+        self.assertEqual("Retest Complete", done["pattern"])
+        self.assertEqual(done["entry"], 100.0)
+        self.assertLess(done["sl"], done["entry"])
 
 
 class MorningWindowTests(unittest.TestCase):

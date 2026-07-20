@@ -5,6 +5,7 @@ Mount: /my-signals  (legacy alias: /device-care)
 Sirf USDT-M futures (spot nahi).
 Strategy:
   - S/R Breakout only when level also exists on 4H + 1D + 1W (HTF confluence)
+  - After breakout → Retest Wait (limit at level) + later Retest Complete
   - SL from prior breakout/swing area (last move), not just candle extreme
   - 5m / 15m / 1h / 4H / D1 / 1W toggles (default: 4H+1D+1W)
   - 1h / 4H / D1 → Triangle Breakout
@@ -44,6 +45,10 @@ SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
 D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
 STRONG_SCORE = int(os.environ.get("DC_STRONG_SCORE", "90"))
+RETEST_TTL_SEC = int(os.environ.get("DC_RETEST_TTL_SEC", str(24 * 3600)))
+RETEST_TOUCH_TOL = float(os.environ.get("DC_RETEST_TOUCH_TOL", "0.008"))
+# Pending retests after S/R breakout: key -> meta
+pending_retests: dict[str, dict] = {}
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
@@ -127,6 +132,8 @@ scan_stats = {
     "enabledTfs": dict(enabled_tfs),
     "patterns": [
         "S/R Breakout",
+        "Retest Wait",
+        "Retest Complete",
         "Triangle Breakout",
         "Dragonfly Doji",
         "Hammer",
@@ -306,6 +313,8 @@ def _normalize_alert(alert: dict) -> dict:
         "sl": alert.get("sl"),
         "tp": alert.get("tp"),
         "riskReward": alert.get("riskReward"),
+        "advice": alert.get("advice"),
+        "stage": alert.get("stage"),
         "at": alert.get("alertedAt") or alert.get("at"),
     }
 
@@ -315,9 +324,11 @@ def _is_d1_pattern_alert(alert: dict) -> bool:
 
 
 def _alert_ttl_sec(alert: dict) -> int:
-    """S/R + Triangle alerts 1h, candle patterns (D1/1W) 8h."""
+    """S/R + Triangle + retest alerts 1h (retest wait can live longer via pending), candles 8h."""
     if _is_d1_pattern_alert(alert):
         return D1_PATTERN_ALERT_TTL_SEC
+    if alert.get("pattern") in ("Retest Wait", "Retest Complete"):
+        return max(BREAKOUT_ALERT_TTL_SEC, 2 * 3600)
     return BREAKOUT_ALERT_TTL_SEC
 
 
@@ -544,6 +555,25 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             if lower_wick / rng > 0.45:
                 score -= 10
 
+    elif pattern in ("Retest Wait", "Retest Complete"):
+        # Limit / entry at broken S/R level — wait or confirmed retest
+        score = 70 if pattern == "Retest Wait" else 84
+        if hit.get("htfConfluence"):
+            score += 6
+        entry = float(hit.get("entryOverride") or level or close)
+        prior_sl = _prior_breakout_sl(ohlc, direction, level or entry, i, buffer)
+        if direction == "UP":
+            sl = prior_sl if prior_sl is not None else (entry - buffer * 2)
+            if sl >= entry:
+                sl = entry - max(buffer * 2, abs(entry) * 0.004)
+        else:
+            sl = prior_sl if prior_sl is not None else (entry + buffer * 2)
+            if sl <= entry:
+                sl = entry + max(buffer * 2, abs(entry) * 0.004)
+        # Slightly tighter RR for wait; stronger for complete
+        if pattern == "Retest Complete":
+            score += 4
+
     elif pattern in CANDLE_PATTERNS:
         # Pattern candle is -3; confirmation (last closed) is -2
         _, _, _, _, body_p, rng_p, uw_p, lw_p = _candle_parts(ohlc, -3)
@@ -601,6 +631,115 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     if hit.get("level") is not None:
         hit["level"] = _round_price(float(hit["level"]))
     return hit
+
+
+def build_retest_wait_hit(ohlc: dict, breakout: dict) -> dict:
+    """
+    Breakout ke turant baad: retest abhi nahi hua —
+    level pe limit lagao, wait karo. SL/TP saath.
+    """
+    level = float(breakout.get("level") or breakout.get("entry") or 0)
+    direction = breakout.get("direction", "UP")
+    lvl_txt = _round_price(level)
+    if direction == "UP":
+        advice = (
+            f"Breakout ho chuka hai lekin abi retest nahi hua. "
+            f"Level {lvl_txt} pe limit lagao aur retest ka wait karo. "
+            f"SL/TP plan saath mein diya hai."
+        )
+    else:
+        advice = (
+            f"Support break ho chuka hai lekin abi retest nahi hua. "
+            f"Level {lvl_txt} pe limit lagao aur retest ka wait karo. "
+            f"SL/TP plan saath mein diya hai."
+        )
+    hit = {
+        "side": breakout.get("side", "BUY" if direction == "UP" else "SELL"),
+        "direction": direction,
+        "pattern": "Retest Wait",
+        "patternDetail": f"Breakout done · retest pending · limit @ {lvl_txt}",
+        "level": level,
+        "close": breakout.get("close"),
+        "candleTime": breakout.get("candleTime"),
+        "live": False,
+        "htfConfluence": breakout.get("htfConfluence"),
+        "entryOverride": level,
+        "advice": advice,
+        "stage": "wait",
+    }
+    return enrich_trade_plan(ohlc, hit)
+
+
+def detect_retest_complete(ohlc: dict, pending: dict) -> dict | None:
+    """
+    Price ne broken level ko touch kiya aur hold kiya → Retest Complete signal.
+    """
+    h, l, c, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["times"]
+    if len(c) < 4:
+        return None
+    i = -2  # last closed
+    direction = pending.get("direction", "UP")
+    level = float(pending.get("level") or 0)
+    if level <= 0:
+        return None
+    brk_time = pending.get("candleTime") or 0
+    if t[i] <= brk_time:
+        return None
+    tol = max(abs(level) * RETEST_TOUCH_TOL, _avg_range(ohlc) * 0.15)
+    if direction == "UP":
+        touched = l[i] <= level + tol
+        held = c[i] >= level - tol * 0.5
+        if not (touched and held):
+            # Fake: closed hard back below level
+            if l[i] <= level + tol and c[i] < level - tol:
+                pending["failed"] = True
+            return None
+        advice = (
+            f"Retest complete @ {_round_price(level)}. "
+            f"Ab long entry / limit fill zone. SL neeche, TP upar plan dekho."
+        )
+    else:
+        touched = h[i] >= level - tol
+        held = c[i] <= level + tol * 0.5
+        if not (touched and held):
+            if h[i] >= level - tol and c[i] > level + tol:
+                pending["failed"] = True
+            return None
+        advice = (
+            f"Retest complete @ {_round_price(level)}. "
+            f"Ab short entry / limit fill zone. SL upar, TP neeche plan dekho."
+        )
+    hit = {
+        "side": "BUY" if direction == "UP" else "SELL",
+        "direction": direction,
+        "pattern": "Retest Complete",
+        "patternDetail": f"Retest ho chuka · entry zone {_round_price(level)}",
+        "level": level,
+        "close": c[i],
+        "candleTime": t[i],
+        "live": False,
+        "htfConfluence": pending.get("htfConfluence"),
+        "entryOverride": level,
+        "advice": advice,
+        "stage": "complete",
+    }
+    return enrich_trade_plan(ohlc, hit)
+
+
+def register_pending_retest(sym: str, tf_label: str, breakout: dict):
+    key = f"{sym}:{tf_label}:{breakout.get('direction')}"
+    pending_retests[key] = {
+        "symbol": sym,
+        "tf": tf_label,
+        "direction": breakout.get("direction"),
+        "level": float(breakout.get("level") or 0),
+        "candleTime": breakout.get("candleTime"),
+        "htfConfluence": breakout.get("htfConfluence"),
+        "at": time.time(),
+        "wait_sent": True,
+        "complete_sent": False,
+        "failed": False,
+    }
 
 
 def _prior_breakout_sl(
@@ -1299,7 +1438,28 @@ async def scan_loop():
                                 if "HTF 4H+1D+1W" not in detail:
                                     hit["patternDetail"] = f"{detail} · HTF 4H+1D+1W"
                                 hit = enrich_trade_plan(ohlc, hit)
+                                lvl = hit.get("level")
+                                hit["advice"] = (
+                                    f"Breakout confirm. Level {lvl}. "
+                                    f"Abhi retest ka wait — limit plan alag alert mein."
+                                )
+                                hit["stage"] = "breakout"
                             filtered.append(hit)
+                        # Pending retest complete check for this TF
+                        for rk, pending in list(pending_retests.items()):
+                            if pending.get("symbol") != sym or pending.get("tf") != tf_label:
+                                continue
+                            if time.time() - pending.get("at", 0) > RETEST_TTL_SEC:
+                                del pending_retests[rk]
+                                continue
+                            if pending.get("complete_sent") or pending.get("failed"):
+                                if pending.get("failed"):
+                                    del pending_retests[rk]
+                                continue
+                            done = detect_retest_complete(ohlc, pending)
+                            if done:
+                                filtered.append(done)
+                                pending["complete_sent"] = True
                         for hit in filtered:
                             live_tag = "LIVE" if hit.get("live") else "CLOSED"
                             key = (
@@ -1325,6 +1485,30 @@ async def scan_loop():
                                     f"{' · HTF' if hit.get('htfConfluence') else ''}"
                                 )
                                 _broadcast(alert)
+                                # Breakout ke baad turant Retest Wait alert
+                                if hit.get("pattern") == "S/R Breakout":
+                                    wait_hit = build_retest_wait_hit(ohlc, hit)
+                                    wait_key = (
+                                        f"{sym}:{tf_label}:Retest Wait:"
+                                        f"{hit['direction']}:{hit['candleTime']}:CLOSED"
+                                    )
+                                    if wait_key not in cooldown:
+                                        cooldown[wait_key] = time.time()
+                                        wait_alert = {
+                                            "symbol": sym,
+                                            "timeframe": tf_label,
+                                            "volume": vol,
+                                            "alertedAt": int(time.time() * 1000),
+                                            **wait_hit,
+                                        }
+                                        coin_hits += 1
+                                        new_alerts += 1
+                                        print(
+                                            f"[My Signals] {sym} {tf_label} Retest Wait "
+                                            f"{hit['direction']} limit={wait_hit.get('entry')}"
+                                        )
+                                        _broadcast(wait_alert)
+                                        register_pending_retest(sym, tf_label, hit)
                         await asyncio.sleep(0.04)
                     scan_stats["scannedCoins"].append({
                         "symbol": sym,
