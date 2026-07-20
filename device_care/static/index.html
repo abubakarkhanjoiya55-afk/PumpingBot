@@ -484,6 +484,10 @@
   <div class="trial-banner hidden" id="trialBanner">
     🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
   </div>
+  <div class="trial-banner" id="refChipBanner" style="border-color:rgba(251,191,36,0.35);color:#fbbf24">
+    🎁 Referral: <b id="refChipCode">—</b>
+    <button type="button" id="refChipCopyBtn" style="margin-left:8px;border:1px solid #666;background:#1a1a2e;color:#fbbf24;border-radius:8px;padding:4px 8px;font-size:0.72rem;cursor:pointer">Copy link</button>
+  </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
     <h2 id="activationTitle">Alarm activate karein</h2>
@@ -578,11 +582,18 @@
     <h2>🎁 Referral</h2>
     <div class="ref-box">
       <div>Aapka code: <b id="refCode">—</b></div>
+      <div style="margin-top:10px">
+        <label style="font-size:0.75rem;color:#888">Invite / Referral link (share karo)</label>
+        <div class="wallet-box" style="margin-top:6px">
+          <code id="refInviteUrl">—</code>
+        </div>
+        <button type="button" class="btn-gold" id="refCopyInviteBtn" style="margin-top:8px;padding:8px;font-size:0.8rem">Copy referral link</button>
+      </div>
       <div style="margin-top:6px">Balance: <b style="color:#34d399">$<span id="refBal">0</span></b>
         <span style="color:#888"> (har referral sub pe +$<span id="refComm">3</span>)</span>
       </div>
       <p style="margin-top:8px;font-size:0.75rem;line-height:1.4">
-        User $10 admin wallet mein bhejta hai. Approve ke baad aapko $3 credit milta hai.
+        Apna link dost ko bhejo. Wo register + $10 pay kare — admin approve ke baad aapko $3 credit.
         Withdraw request lagao — admin approve karke aapke BEP20 wallet mein transfer karega.
       </p>
       <label style="font-size:0.75rem;color:#888">Aapka USDT BEP20 wallet</label>
@@ -825,6 +836,7 @@
 
       monitoringAllowed = true;
       updateTrialBanner(me);
+      updateRefChips(me);
       setView('signals');
       if (typeof startMonitoring === 'function') startMonitoring();
     }
@@ -886,6 +898,15 @@
     if (isAdminGateOpen()) {
       setAuthTab('admin');
     }
+
+    // Referral invite: /my-signals/?ref=CODE → Register form prefill
+    (function prefillReferralFromQuery() {
+      const ref = (new URLSearchParams(location.search).get('ref') || '').trim();
+      if (!ref) return;
+      const input = document.getElementById('regReferral');
+      if (input) input.value = ref;
+      if (!isAdminGateOpen() && !getToken()) setAuthTab('register');
+    })();
 
     document.getElementById('userLoginForm').onsubmit = async (e) => {
       e.preventDefault();
@@ -992,11 +1013,34 @@
     document.getElementById('btnAdminNav').onclick = () => { setView('admin'); loadAdmin(); };
     document.getElementById('adminRefreshBtn').onclick = () => loadAdmin();
 
+    function inviteUrlFromCode(code) {
+      if (!code) return '';
+      return `${location.origin}/my-signals/?ref=${encodeURIComponent(code)}`;
+    }
+
+    async function copyText(text, okMsg) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return okMsg || 'Copied!';
+      } catch (_) {
+        return text;
+      }
+    }
+
+    function updateRefChips(me) {
+      const code = (me && me.referral_code) || '';
+      const chip = document.getElementById('refChipCode');
+      if (chip) chip.textContent = code || '—';
+      const inviteEl = document.getElementById('refInviteUrl');
+      if (inviteEl) inviteEl.textContent = inviteUrlFromCode(code) || '—';
+    }
+
     async function loadReferral() {
       try {
         const me = await apiMe();
         currentUser = me;
         document.getElementById('refCode').textContent = me.referral_code || '—';
+        updateRefChips(me);
         document.getElementById('refBal').textContent = (me.referral_balance ?? 0).toFixed(2);
         document.getElementById('refComm').textContent = me.referral_commission ?? 3;
         document.getElementById('refWalletInput').value = me.referral_wallet || '';
@@ -1014,6 +1058,17 @@
         showRefError(ex.message);
       }
     }
+
+    document.getElementById('refCopyInviteBtn').onclick = async () => {
+      const url = document.getElementById('refInviteUrl').textContent.trim();
+      showRefError(await copyText(url, 'Referral link copied!'));
+    };
+    document.getElementById('refChipCopyBtn').onclick = async () => {
+      const code = document.getElementById('refChipCode').textContent.trim();
+      const url = inviteUrlFromCode(code);
+      const msg = await copyText(url, 'Referral link copied!');
+      if (msg && msg !== url) alert(msg);
+    };
 
     document.getElementById('refSaveWalletBtn').onclick = async () => {
       try {
@@ -1359,10 +1414,19 @@
       const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
       const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
       const isTriangle = a.pattern === 'Triangle Breakout';
+      const isRetestWait = a.pattern === 'Retest Wait';
+      const isRetestDone = a.pattern === 'Retest Complete';
       const isLive = (a.patternDetail || '').includes('LIVE');
-      const dirLabel = up
-        ? (isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : (isLive ? '▲ LIVE Breakout UP' : '▲ Breakout UP')))
-        : (isTriangle ? '▼ Triangle DOWN' : (isLive ? '▼ LIVE Breakout DOWN' : '▼ Breakout DOWN'));
+      let dirLabel;
+      if (isRetestWait) {
+        dirLabel = up ? '⏳ Retest WAIT · LONG limit' : '⏳ Retest WAIT · SHORT limit';
+      } else if (isRetestDone) {
+        dirLabel = up ? '✅ Retest DONE · LONG' : '✅ Retest DONE · SHORT';
+      } else if (up) {
+        dirLabel = isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : (isLive ? '▲ LIVE Breakout UP' : '▲ Breakout UP'));
+      } else {
+        dirLabel = isTriangle ? '▼ Triangle DOWN' : (isLive ? '▼ LIVE Breakout DOWN' : '▼ Breakout DOWN');
+      }
       const score = a.score != null ? Number(a.score) : null;
       const scoreClass = score == null ? '' : (score >= 75 ? '' : (score >= 60 ? ' mid' : ' low'));
       const scoreHtml = score != null
@@ -1373,10 +1437,13 @@
         : '';
       const levelsHtml = (a.entry != null || a.sl != null || a.tp != null)
         ? `<div class="levels">
-             <div class="lvl"><div class="lbl">Entry</div><div class="val">${a.entry ?? '—'}</div></div>
+             <div class="lvl"><div class="lbl">${isRetestWait ? 'Limit' : 'Entry'}</div><div class="val">${a.entry ?? '—'}</div></div>
              <div class="lvl sl"><div class="lbl">SL</div><div class="val">${a.sl ?? '—'}</div></div>
              <div class="lvl tp"><div class="lbl">TP</div><div class="val">${a.tp ?? '—'}</div></div>
            </div>`
+        : '';
+      const adviceHtml = a.advice
+        ? `<div class="meta" style="margin-top:6px;color:#93c5fd"><b>Detail:</b> ${a.advice}</div>`
         : '';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
@@ -1390,8 +1457,10 @@
         <div class="pattern">${a.pattern || 'Alert'}${a.patternDetail ? ' · ' + a.patternDetail : ''}</div>
         ${scoreHtml}
         ${levelsHtml}
+        ${adviceHtml}
         <div class="meta">
-          <b>Candle:</b> ${fmtCandle(a.candleTime)} · <b>Close:</b> ${a.close ?? '—'}<br>
+          <b>Candle:</b> ${fmtCandle(a.candleTime)} · <b>Close:</b> ${a.close ?? '—'}
+          ${a.level != null ? ` · <b>Level:</b> ${a.level}` : ''}<br>
           <b>Alert:</b> ${fmtTime(a.at)}
         </div>
       `;
@@ -1556,14 +1625,20 @@
     function startPersistentAlarm(a) {
       activeAlert = a;
       const up = a.direction === 'UP';
+      let title;
+      if (a.pattern === 'Retest Wait') title = up ? '⏳ RETEST WAIT · LONG' : '⏳ RETEST WAIT · SHORT';
+      else if (a.pattern === 'Retest Complete') title = up ? '✅ RETEST DONE · LONG' : '✅ RETEST DONE · SHORT';
+      else title = up ? '▲ BREAKOUT UP' : '▼ BREAKOUT DOWN';
       alarmBox.className = 'alarm-box' + (up ? ' up' : '');
       document.getElementById('alarmSym').textContent = a.symbol;
-      document.getElementById('alarmDir').textContent = up ? '▲ BREAKOUT UP' : '▼ BREAKOUT DOWN';
+      document.getElementById('alarmDir').textContent = title;
       document.getElementById('alarmDir').className = 'alarm-dir ' + (up ? 'up' : 'down');
       document.getElementById('alarmInfo').innerHTML =
-        `<b>${a.timeframe}</b> · ${a.pattern}` +
+        `<b>${a.timeframe || ''}</b> · ${a.pattern || 'Alert'}` +
         (a.score != null ? ` · Score ${a.score}` : '') +
-        `<br>Entry: ${a.entry ?? a.close} · SL: ${a.sl ?? '—'} · TP: ${a.tp ?? '—'}`;
+        (a.advice ? `<br>${a.advice}` : '') +
+        `<br>${a.pattern === 'Retest Wait' ? 'Limit' : 'Entry'}: ${a.entry ?? a.close} · SL: ${a.sl ?? '—'} · TP: ${a.tp ?? '—'}` +
+        (a.level != null ? `<br>Level: ${a.level}` : '');
       alarmOverlay.classList.add('active');
       const sounded = playAlarmPattern();
       document.getElementById('alarmDelivery').textContent = sounded
