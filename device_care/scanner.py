@@ -43,12 +43,15 @@ PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "300000"))
 TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
-# Alert history TTL — triangles jaldi clear, candle patterns zyada der
-BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h history
-D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", str(8 * 3600)))  # 8h
+# Alert history TTL — har alert ~1h baad UI se clear (chart clean)
+BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
+D1_PATTERN_ALERT_TTL_SEC = int(os.environ.get("DC_D1_ALERT_TTL_SEC", "3600"))  # 1h (was 8h)
 STRONG_SCORE = int(os.environ.get("DC_STRONG_SCORE", "90"))
 RETEST_TTL_SEC = int(os.environ.get("DC_RETEST_TTL_SEC", str(24 * 3600)))
 RETEST_TOUCH_TOL = float(os.environ.get("DC_RETEST_TOUCH_TOL", "0.008"))
+# Early breakout — near level only; pehle se pump/dump chase mat karo
+MAX_LIVE_EXTENSION_ATR = float(os.environ.get("DC_MAX_LIVE_EXT_ATR", "0.65"))
+MAX_CLOSED_EXTENSION_ATR = float(os.environ.get("DC_MAX_CLOSED_EXT_ATR", "0.90"))
 # Same signal dubara na aaye — pattern-wise cooldown (candleTime/LIVE ignore)
 PATTERN_COOLDOWN_SEC = {
     "S/R Breakout": int(os.environ.get("DC_SR_COOLDOWN_SEC", str(6 * 3600))),
@@ -336,11 +339,9 @@ def _is_d1_pattern_alert(alert: dict) -> bool:
 
 
 def _alert_ttl_sec(alert: dict) -> int:
-    """S/R + Triangle + retest alerts 1h (retest wait can live longer via pending), candles 8h."""
+    """Har alert ~1h baad history/UI se clear — retest cards bhi hourly."""
     if _is_d1_pattern_alert(alert):
         return D1_PATTERN_ALERT_TTL_SEC
-    if alert.get("pattern") in ("Retest Wait", "Retest Complete"):
-        return max(BREAKOUT_ALERT_TTL_SEC, 2 * 3600)
     return BREAKOUT_ALERT_TTL_SEC
 
 
@@ -503,9 +504,7 @@ def _persist_alerts():
 
 def prune_alert_history(now: float | None = None) -> list[dict]:
     """
-    Purani alerts history se hatao:
-    - Breakouts (S/R, Triangle): 1 hour
-    - Candle patterns (Dragonfly/Hammer/Doji+Green): 8 hours
+    Purani alerts history se hatao (~1 hour sab patterns).
     Returns list of removed alert ids (for SSE clear).
     """
     global alert_history
@@ -668,6 +667,8 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
         score = 72
         if hit.get("htfConfluence"):
             score = 80
+        if hit.get("live"):
+            score += 4  # early LIVE pierce — pehle catch
         prior_sl = _prior_breakout_sl(ohlc, direction, level, i, buffer)
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
@@ -680,11 +681,16 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             sl = prior_sl if prior_sl is not None else (candle_high + buffer)
             if prior_sl is not None and prior_sl <= entry:
                 sl = max(candle_high, level) + buffer
-        score += min(14, int(dist * 8))
+        # Near-level early break = better; late chase (far from level) = worse
+        if dist <= 0.55:
+            score += min(16, int((0.55 - dist) * 22))
+        else:
+            score -= min(22, int((dist - 0.55) * 18))
         score += min(10, int(body_str * 7))
-        if direction == "UP" and close > level * 1.003:
+        # Small clean pierce bonus (not "already pumped far")
+        if direction == "UP" and 0 < dist <= 0.45:
             score += 6
-        if direction == "DOWN" and close < level * 0.997:
+        if direction == "DOWN" and 0 < dist <= 0.45:
             score += 6
         # Reject-style wick penalty (fake break scent)
         rng = max(candle_high - candle_low, 1e-12)
@@ -980,7 +986,7 @@ def detect_sr_breakout(
 ) -> dict | None:
     """
     S/R breakout on closed candle (-2) or LIVE forming candle (-1).
-    Stricter body + distance filters to cut fake pierces.
+    Early near-level break preferred; late chase (price already far past level) rejected.
     HTF 4H/1D/1W confluence is applied in scan_loop.
     """
     h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
@@ -992,21 +998,25 @@ def detect_sr_breakout(
     if live:
         rh = max(h[-lookback - 1:-1])
         rl = min(l[-lookback - 1:-1])
-        body_frac = 0.28  # LIVE bhi strong body — weak wick pierce skip
+        body_frac = 0.18  # early LIVE pierce — soft body, wick-only still blocked below
     else:
         rh = max(h[-lookback - 2:i])
         rl = min(l[-lookback - 2:i])
-        body_frac = 0.32
+        body_frac = 0.28
     if not _body_ok(h, l, c, o, i, min_frac=body_frac):
         return None
     avg_rng = _avg_range(ohlc) or abs(c[i]) * 0.01
-    min_break = max(avg_rng * 0.12, abs(c[i]) * 0.0015)
+    # LIVE: chhoti pehli pierce catch; CLOSED: thoda confirmation
+    if live:
+        min_break = max(avg_rng * 0.05, abs(c[i]) * 0.0007)
+    else:
+        min_break = max(avg_rng * 0.08, abs(c[i]) * 0.0010)
     detail_suffix = " (LIVE)" if live else ""
-    # Prefer real close break; LIVE still allows strong high/low pierce
-    buy_hit = (c[i] > rh + min_break * 0.35 and c[i - 1] <= rh) or (
+    # Prefer real close break; LIVE allows early high/low pierce with close at/through level
+    buy_hit = (c[i] > rh + min_break * 0.25 and c[i - 1] <= rh) or (
         live and h[i] > rh + min_break and c[i - 1] <= rh and c[i] >= rh
     )
-    sell_hit = (c[i] < rl - min_break * 0.35 and c[i - 1] >= rl) or (
+    sell_hit = (c[i] < rl - min_break * 0.25 and c[i - 1] >= rl) or (
         live and l[i] < rl - min_break and c[i - 1] >= rl and c[i] <= rl
     )
     # Fake-break wick filter on closed candles
@@ -1018,7 +1028,11 @@ def detect_sr_breakout(
         rng = max(h[i] - l[i], 1e-12)
         if (min(c[i], o[i]) - l[i]) / rng > 0.5 and c[i] > rl - min_break:
             return None
+    max_ext = MAX_LIVE_EXTENSION_ATR if live else MAX_CLOSED_EXTENSION_ATR
     if buy_hit:
+        ext = (c[i] - rh) / (avg_rng or 1e-12)
+        if ext > max_ext:
+            return None  # pehle se pump ho chuka — late chase skip
         return {
             "side": "BUY", "direction": "UP", "pattern": "S/R Breakout",
             "patternDetail": f"Resistance breakout{detail_suffix}",
@@ -1026,6 +1040,9 @@ def detect_sr_breakout(
             "live": live,
         }
     if sell_hit:
+        ext = (rl - c[i]) / (avg_rng or 1e-12)
+        if ext > max_ext:
+            return None  # pehle se dump ho chuka — late chase skip
         return {
             "side": "SELL", "direction": "DOWN", "pattern": "S/R Breakout",
             "patternDetail": f"Support breakdown{detail_suffix}",
@@ -1601,8 +1618,8 @@ async def scan_loop():
                                 filtered.append(done)
                                 pending["complete_sent"] = True
                                 _persist_pending_retests()
-                        # Prefer CLOSED over LIVE for same fingerprint in this batch
-                        filtered.sort(key=lambda h: 1 if h.get("live") else 0)
+                        # Prefer LIVE over CLOSED — early pierce pehle, late closed chase baad
+                        filtered.sort(key=lambda h: 0 if h.get("live") else 1)
                         emitted_fps: set[str] = set()
                         for hit in filtered:
                             fp = signal_fingerprint(sym, tf_label, hit)

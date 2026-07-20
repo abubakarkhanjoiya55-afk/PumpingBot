@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.17.1"   # Stop duplicate signals — fingerprint cooldown + persist
+API_VERSION = "3.18.0"   # Early near-level signals + hourly alert clear
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
