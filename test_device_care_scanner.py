@@ -273,8 +273,8 @@ class D1CandlePatternTests(unittest.TestCase):
         lows = [90.0] * size
         opens = [94.0] * size
         closes = [95.0] * size
-        # Forming candle (-1) breaks resistance
-        highs[-1], lows[-1], opens[-1], closes[-1] = 108.0, 96.0, 97.0, 107.0
+        # Forming candle (-1) early pierce — near level, not already pumped
+        highs[-1], lows[-1], opens[-1], closes[-1] = 104.5, 96.0, 97.0, 103.5
         ohlc = _ohlc(highs, lows, opens, closes)
 
         live = detect_sr_breakout(ohlc, live=True)
@@ -302,13 +302,30 @@ class D1CandlePatternTests(unittest.TestCase):
         ohlc = _ohlc(highs, lows, opens, closes)
         self.assertIsNone(detect_sr_breakout(ohlc, live=True))
 
-        # Strong LIVE: pierce + close back at/above resistance
-        highs[-1], lows[-1], opens[-1], closes[-1] = 108.0, 96.0, 97.0, 101.5
+        # Strong LIVE: pierce + close back at/above resistance (early)
+        highs[-1], lows[-1], opens[-1], closes[-1] = 104.0, 96.0, 97.0, 101.5
         ohlc2 = _ohlc(highs, lows, opens, closes)
         live = detect_sr_breakout(ohlc2, live=True)
         self.assertIsNotNone(live)
         self.assertEqual("UP", live["direction"])
         self.assertTrue(live["live"])
+
+    def test_rejects_late_chase_after_big_pump(self):
+        """Price already far past level = late — signal mat bhejo."""
+        size = 23
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [94.0] * size
+        closes = [95.0] * size
+        # ~1.2 ATR past resistance — chase, not early break
+        highs[-1], lows[-1], opens[-1], closes[-1] = 118.0, 108.0, 109.0, 116.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+        self.assertIsNone(detect_sr_breakout(ohlc, live=True))
+
+        highs[-2], lows[-2], opens[-2], closes[-2] = 118.0, 108.0, 109.0, 116.0
+        highs[-1], lows[-1], opens[-1], closes[-1] = 117.0, 110.0, 112.0, 115.0
+        ohlc2 = _ohlc(highs, lows, opens, closes)
+        self.assertIsNone(detect_sr_breakout(ohlc2, live=False))
 
 
 class HtfConfluenceAndSlTests(unittest.TestCase):
@@ -451,7 +468,7 @@ class AlertTtlTests(unittest.TestCase):
         self.sc.alert_history.clear()
         self.sc.scan_stats["alertsTotal"] = 0
 
-    def test_breakout_clears_after_1h_d1_after_8h(self):
+    def test_all_alerts_clear_after_1h(self):
         now = 1_800_000_000.0  # fixed epoch
         self.sc.alert_history.extend([
             {
@@ -473,21 +490,28 @@ class AlertTtlTests(unittest.TestCase):
                 "symbol": "SOL_USDT",
                 "pattern": "Dragonfly Doji",
                 "direction": "UP",
-                "alertedAt": int((now - 8 * 3600 - 1) * 1000),
+                "alertedAt": int((now - 3601) * 1000),
             },
             {
                 "id": "d1-keep",
                 "symbol": "DOGE_USDT",
                 "pattern": "Hammer",
                 "direction": "UP",
-                "alertedAt": int((now - 4 * 3600) * 1000),
+                "alertedAt": int((now - 1800) * 1000),
+            },
+            {
+                "id": "retest-old",
+                "symbol": "XRP_USDT",
+                "pattern": "Retest Wait",
+                "direction": "UP",
+                "alertedAt": int((now - 3601) * 1000),
             },
         ])
 
         removed = self.sc.prune_alert_history(now)
         removed_ids = {r["id"] for r in removed}
 
-        self.assertEqual({"brk", "d1-old"}, removed_ids)
+        self.assertEqual({"brk", "d1-old", "retest-old"}, removed_ids)
         kept_ids = {a["id"] for a in self.sc.alert_history}
         self.assertEqual({"tri", "d1-keep"}, kept_ids)
         self.assertEqual(2, self.sc.scan_stats["alertsTotal"])

@@ -1509,7 +1509,16 @@
           [...alerts].reverse().forEach((a) => addCard(a));
           return alerts;
         }
-        // Poll mode: only append truly new alerts and optionally alarm
+        // Poll mode: append new alerts + remove cards server already pruned (hourly clear)
+        const serverIds = new Set(alerts.map((a) => alertId(a)).filter(Boolean));
+        [...alertsEl.children].forEach((card) => {
+          const id = card.dataset.alertId;
+          if (id && !serverIds.has(id)) {
+            renderedAlertIds.delete(id);
+            acknowledgedAlertIds.delete(id);
+            card.remove();
+          }
+        });
         let newest = null;
         [...alerts].reverse().forEach((a) => {
           const added = addCard(a, { alarm: false });
