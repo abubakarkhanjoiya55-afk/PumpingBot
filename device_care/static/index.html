@@ -487,6 +487,7 @@
   <div class="trial-banner" id="refChipBanner" style="border-color:rgba(251,191,36,0.35);color:#fbbf24">
     🎁 Referral: <b id="refChipCode">—</b>
     <button type="button" id="refChipCopyBtn" style="margin-left:8px;border:1px solid #666;background:#1a1a2e;color:#fbbf24;border-radius:8px;padding:4px 8px;font-size:0.72rem;cursor:pointer">Copy link</button>
+    <div id="refChipUrl" style="margin-top:6px;font-size:0.68rem;color:#c4b5a0;word-break:break-all;line-height:1.35;user-select:all">—</div>
   </div>
 
   <section class="activation" id="activationCard" aria-labelledby="activationTitle">
@@ -1014,25 +1015,52 @@
     document.getElementById('adminRefreshBtn').onclick = () => loadAdmin();
 
     function inviteUrlFromCode(code) {
-      if (!code) return '';
-      return `${location.origin}/my-signals/?ref=${encodeURIComponent(code)}`;
+      const c = (code || '').trim();
+      if (!c || c === '—' || c === '-') return '';
+      return `${location.origin}/my-signals/?ref=${encodeURIComponent(c)}`;
+    }
+
+    function resolveInviteUrl(me) {
+      if (me && me.invite_url) return me.invite_url;
+      return inviteUrlFromCode(me && me.referral_code);
     }
 
     async function copyText(text, okMsg) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return okMsg || 'Copied!';
-      } catch (_) {
-        return text;
+      const t = (text || '').trim();
+      if (!t || t === '—' || t === '-') {
+        return { ok: false, message: 'Pehle referral code load hone do' };
       }
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(t);
+          return { ok: true, message: okMsg || 'Copied!' };
+        }
+      } catch (_) { /* fallback below */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, t.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) return { ok: true, message: okMsg || 'Copied!' };
+      } catch (_) { /* show text */ }
+      return { ok: false, message: t };
     }
 
     function updateRefChips(me) {
       const code = (me && me.referral_code) || '';
+      const url = resolveInviteUrl(me) || inviteUrlFromCode(code);
       const chip = document.getElementById('refChipCode');
       if (chip) chip.textContent = code || '—';
+      const chipUrl = document.getElementById('refChipUrl');
+      if (chipUrl) chipUrl.textContent = url || 'Link load ho raha hai…';
       const inviteEl = document.getElementById('refInviteUrl');
-      if (inviteEl) inviteEl.textContent = inviteUrlFromCode(code) || '—';
+      if (inviteEl) inviteEl.textContent = url || '—';
     }
 
     async function loadReferral() {
@@ -1060,14 +1088,44 @@
     }
 
     document.getElementById('refCopyInviteBtn').onclick = async () => {
-      const url = document.getElementById('refInviteUrl').textContent.trim();
-      showRefError(await copyText(url, 'Referral link copied!'));
+      let url = (document.getElementById('refInviteUrl').textContent || '').trim();
+      if (!url || url === '—') {
+        try {
+          const me = await apiMe();
+          currentUser = me;
+          updateRefChips(me);
+          url = resolveInviteUrl(me);
+        } catch (_) {}
+      }
+      const res = await copyText(url, 'Referral link copied!');
+      showRefError(res.message);
+      if (!res.ok && res.message && res.message.startsWith('http')) {
+        showRefError('Copy nahi hua — link select karke manually copy karo:\n' + res.message);
+      }
     };
     document.getElementById('refChipCopyBtn').onclick = async () => {
-      const code = document.getElementById('refChipCode').textContent.trim();
-      const url = inviteUrlFromCode(code);
-      const msg = await copyText(url, 'Referral link copied!');
-      if (msg && msg !== url) alert(msg);
+      let code = (currentUser && currentUser.referral_code) || '';
+      let url = (currentUser && currentUser.invite_url) || inviteUrlFromCode(code);
+      if (!url) {
+        try {
+          const me = await apiMe();
+          currentUser = me;
+          updateRefChips(me);
+          code = me.referral_code || '';
+          url = resolveInviteUrl(me);
+        } catch (ex) {
+          alert(ex.message || 'Link load fail');
+          return;
+        }
+      }
+      const res = await copyText(url, 'Referral link copied!');
+      if (res.ok) {
+        alert(res.message);
+      } else if (res.message && res.message.startsWith('http')) {
+        prompt('Copy nahi hua — yeh link copy karo:', res.message);
+      } else {
+        alert(res.message || 'Copy fail');
+      }
     };
 
     document.getElementById('refSaveWalletBtn').onclick = async () => {
