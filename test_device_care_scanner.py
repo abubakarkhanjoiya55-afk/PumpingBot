@@ -13,7 +13,10 @@ from device_care.scanner import (
     build_retest_wait_hit,
     has_sr_confluence,
     in_morning_window,
+    is_signal_cooled,
+    mark_signal_cooldown,
     scan_ohlc,
+    signal_fingerprint,
 )
 
 
@@ -387,6 +390,45 @@ class RetestAlertTests(unittest.TestCase):
         self.assertEqual("Retest Complete", done["pattern"])
         self.assertEqual(done["entry"], 100.0)
         self.assertLess(done["sl"], done["entry"])
+
+
+class DedupCooldownTests(unittest.TestCase):
+    def setUp(self):
+        import device_care.scanner as sc
+        self.sc = sc
+        sc.cooldown.clear()
+
+    def tearDown(self):
+        self.sc.cooldown.clear()
+
+    def test_fingerprint_ignores_live_and_candle_time(self):
+        a = {
+            "pattern": "S/R Breakout",
+            "direction": "UP",
+            "level": 100.123456,
+            "candleTime": 111,
+            "live": True,
+        }
+        b = {
+            "pattern": "S/R Breakout",
+            "direction": "UP",
+            "level": 100.1234,
+            "candleTime": 222,
+            "live": False,
+        }
+        self.assertEqual(
+            signal_fingerprint("BTC_USDT", "4H", a),
+            signal_fingerprint("BTC_USDT", "4H", b),
+        )
+
+    def test_mark_blocks_repeat(self):
+        hit = {"pattern": "S/R Breakout", "direction": "DOWN", "level": 0.12}
+        self.assertFalse(is_signal_cooled("CC_USDT", "4H", hit))
+        mark_signal_cooldown("CC_USDT", "4H", hit)
+        self.assertTrue(is_signal_cooled("CC_USDT", "4H", hit))
+        # live variant same fingerprint
+        hit_live = {**hit, "live": True, "candleTime": 999}
+        self.assertTrue(is_signal_cooled("CC_USDT", "4H", hit_live))
 
 
 class MorningWindowTests(unittest.TestCase):
