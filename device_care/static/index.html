@@ -1480,15 +1480,23 @@
       const up = a.direction === 'UP';
       const sym = (a.symbol || '').replace('_USDT', '').replace('USDT', '');
       const isPattern = ['Dragonfly Doji', 'Hammer', 'Doji + Green'].includes(a.pattern);
-      const isTriangle = a.pattern === 'Triangle Breakout';
+      const isClean = a.pattern === 'Clean Breakout' || a.pattern === 'Break Setup';
+      const isTriangle = a.pattern === 'Triangle Breakout' || isClean;
       const isRetestWait = a.pattern === 'Retest Wait';
       const isRetestDone = a.pattern === 'Retest Complete';
-      const isLive = (a.patternDetail || '').includes('LIVE');
+      const isLive = (a.patternDetail || '').includes('LIVE') || !!a.live;
+      const aboutTo = a.stage === 'about_to_break' || a.pattern === 'Break Setup';
       let dirLabel;
       if (isRetestWait) {
         dirLabel = up ? '⏳ Retest WAIT · LONG limit' : '⏳ Retest WAIT · SHORT limit';
       } else if (isRetestDone) {
         dirLabel = up ? '✅ Retest DONE · LONG' : '✅ Retest DONE · SHORT';
+      } else if (aboutTo) {
+        dirLabel = up
+          ? `⏳ ABOUT TO BREAK · LONG (~${a.breakChance || 70}%)`
+          : `⏳ ABOUT TO BREAK · SHORT (~${a.breakChance || 70}%)`;
+      } else if (isClean) {
+        dirLabel = up ? '▲ CLEAN BREAK · LONG (just now)' : '▼ CLEAN BREAK · SHORT (just now)';
       } else if (up) {
         dirLabel = isPattern ? '▲ Bullish pattern' : (isTriangle ? '▲ Triangle UP' : (isLive ? '▲ LIVE Breakout UP' : '▲ Breakout UP'));
       } else {
@@ -1512,6 +1520,9 @@
       const adviceHtml = a.advice
         ? `<div class="meta" style="margin-top:6px;color:#93c5fd"><b>Detail:</b> ${a.advice}</div>`
         : '';
+      const chartHtml = a.chartImage
+        ? `<img alt="breakout chart" src="data:image/png;base64,${a.chartImage}" style="width:100%;max-width:360px;border-radius:8px;margin-top:8px;border:1px solid #2a2a3a" />`
+        : '';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
       c.dataset.alertId = id;
@@ -1525,6 +1536,7 @@
         ${scoreHtml}
         ${levelsHtml}
         ${adviceHtml}
+        ${chartHtml}
         <div class="meta">
           <b>Candle:</b> ${fmtCandle(a.candleTime)} · <b>Close:</b> ${a.close ?? '—'}
           ${a.level != null ? ` · <b>Level:</b> ${a.level}` : ''}<br>

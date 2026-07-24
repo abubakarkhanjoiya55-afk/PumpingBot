@@ -58,18 +58,13 @@ class BreakoutDetectorTests(unittest.TestCase):
         self.assertEqual(90.0, hit["level"])
 
     def test_triangle_formation_excludes_breakout_candidate(self):
-        size = 21
-        highs = [100.0] * size
-        lows = [89.0] + [90.0 + 0.45 * i for i in range(18)] + [98.0, 98.0]
-        opens = [95.0] * size
-        closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 102.0, 98.0, 99.0, 101.0
+        """Legacy triangle wrapper — 2-touch clean detector underneath."""
+        from test_clean_breakouts import _build_descending_resistance_break
 
-        hit = detect_triangle_breakout(_ohlc(highs, lows, opens, closes))
-
+        hit = detect_triangle_breakout(_build_descending_resistance_break())
+        self.assertIsNotNone(hit)
         self.assertEqual("UP", hit["direction"])
-        self.assertEqual("Ascending triangle", hit["patternDetail"])
-        self.assertEqual(100.0, hit["level"])
+        self.assertIn(hit["pattern"], ("Triangle Breakout", "Clean Breakout"))
 
 
 class D1CandlePatternTests(unittest.TestCase):
@@ -228,23 +223,21 @@ class D1CandlePatternTests(unittest.TestCase):
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="D1")
         ))
 
-        # Ascending triangle — 1h / 4H / D1 (not 5m)
-        size = 21
-        highs = [100.0] * size
-        lows = [89.0] + [90.0 + 0.45 * i for i in range(18)] + [98.0, 98.0]
-        opens = [95.0] * size
-        closes = [95.0] * size
-        highs[-2], lows[-2], opens[-2], closes[-2] = 102.0, 98.0, 99.0, 101.0
-        tri = _ohlc(highs, lows, opens, closes)
+        # Clean / triangle style — 1h / 4H / D1 / 1W (not 5m)
+        from test_clean_breakouts import _build_descending_resistance_break
+        tri = _build_descending_resistance_break()
 
         m5 = scan_ohlc(tri, timeframe="5m")
         h1 = scan_ohlc(tri, timeframe="1h")
         h4 = scan_ohlc(tri, timeframe="4H")
         d1 = scan_ohlc(tri, timeframe="D1")
-        self.assertFalse(any(h["pattern"] == "Triangle Breakout" for h in m5))
-        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h1))
-        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in h4))
-        self.assertTrue(any(h["pattern"] == "Triangle Breakout" for h in d1))
+        w1 = scan_ohlc(tri, timeframe="1W")
+        clean_names = {"Clean Breakout", "Break Setup", "Triangle Breakout"}
+        self.assertFalse(any(h["pattern"] in clean_names for h in m5))
+        self.assertTrue(any(h["pattern"] in clean_names for h in h1))
+        self.assertTrue(any(h["pattern"] in clean_names for h in h4))
+        self.assertTrue(any(h["pattern"] in clean_names for h in d1))
+        self.assertTrue(any(h["pattern"] in clean_names for h in w1))
 
     def test_scan_ohlc_sr_breakout_all_toggle_tfs(self):
         size = 23
