@@ -4,12 +4,12 @@ Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
 Strategy:
-  - S/R Breakout only when level also exists on 4H + 1D + 1W (HTF confluence)
-  - After breakout → Retest Wait (limit at level) + later Retest Complete
-  - SL from prior breakout/swing area (last move), not just candle extreme
-  - 5m / 15m / 1h / 4H / D1 / 1W toggles (default: 4H+1D+1W)
-  - 1h / 4H / D1 → Triangle Breakout
-  - D1 → Doji/Hammer patterns
+  - Clean 2-touch trendline / triangle breakouts (LONG+SHORT) on 1h/4H/D1/1W
+  - Signal at break moment (LIVE) — late chase reject
+  - Optional Break Setup (~70%) when price hugs the line
+  - S/R Breakout only with HTF 4H+1D+1W confluence (secondary)
+  - Diversify: ~3 distinct coins/hour, ~1 alert/coin/day
+  - Mini chart PNG on clean breakouts when Pillow available
 Score >= 90 → ntfy push (app band ho tab bhi phone par alert).
 """
 import asyncio
@@ -24,6 +24,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 
+from device_care.trendlines import (
+    TRENDLINE_WINDOW,
+    detect_clean_trendline_breakout,
+    detect_triangle_breakout,
+)
+from device_care.chart_render import attach_chart
+
 APP_NAME = "My Signals"
 APP_PREFIX = "/my-signals"
 LEGACY_PREFIX = "/device-care"
@@ -33,6 +40,7 @@ DATA_DIR = Path(__file__).parent / "data"
 ALERT_STORE = DATA_DIR / "alerts.json"
 COOLDOWN_STORE = DATA_DIR / "cooldown.json"
 PENDING_RETEST_STORE = DATA_DIR / "pending_retests.json"
+DIVERSIFY_STORE = DATA_DIR / "diversify.json"
 LOOKBACK = int(os.environ.get("DC_LOOKBACK", "20"))
 SCAN_SEC = int(os.environ.get("DC_SCAN_SEC", "60"))
 # Subah window mein tez scan — zyada coins jaldi dhoondne ke liye
@@ -41,7 +49,7 @@ MORNING_START_HOUR = int(os.environ.get("DC_MORNING_START_HOUR", "5"))
 MORNING_END_HOUR = int(os.environ.get("DC_MORNING_END_HOUR", "9"))
 PKT_OFFSET_HOURS = int(os.environ.get("DC_PKT_OFFSET_HOURS", "5"))
 MIN_VOL = float(os.environ.get("DC_MIN_VOLUME", "300000"))
-TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", "18"))
+TRIANGLE_WINDOW = int(os.environ.get("DC_TRIANGLE_WINDOW", str(TRENDLINE_WINDOW)))
 SYMBOL_CACHE_SEC = int(os.environ.get("DC_SYMBOL_CACHE_SEC", "3600"))
 # Alert history TTL — har alert ~1h baad UI se clear (chart clean)
 BREAKOUT_ALERT_TTL_SEC = int(os.environ.get("DC_BREAKOUT_ALERT_TTL_SEC", "3600"))  # 1h
@@ -52,29 +60,39 @@ RETEST_TOUCH_TOL = float(os.environ.get("DC_RETEST_TOUCH_TOL", "0.008"))
 # Early breakout — near level only; pehle se pump/dump chase mat karo
 MAX_LIVE_EXTENSION_ATR = float(os.environ.get("DC_MAX_LIVE_EXT_ATR", "0.65"))
 MAX_CLOSED_EXTENSION_ATR = float(os.environ.get("DC_MAX_CLOSED_EXT_ATR", "0.90"))
+# Diversify — har ghante ~3 alag coins, ek coin din mein dubara spam nahi
+HOURLY_DISTINCT_SYMBOL_CAP = int(os.environ.get("DC_HOURLY_SYMBOL_CAP", "3"))
+SYMBOL_DAY_COOLDOWN_SEC = int(os.environ.get("DC_SYMBOL_DAY_COOLDOWN_SEC", str(20 * 3600)))
+EMIT_RETEST_WAIT = os.environ.get("DC_EMIT_RETEST_WAIT", "0") == "1"
 # Same signal dubara na aaye — pattern-wise cooldown (candleTime/LIVE ignore)
 PATTERN_COOLDOWN_SEC = {
+    "Clean Breakout": int(os.environ.get("DC_CLEAN_COOLDOWN_SEC", str(12 * 3600))),
+    "Break Setup": int(os.environ.get("DC_SETUP_COOLDOWN_SEC", str(6 * 3600))),
     "S/R Breakout": int(os.environ.get("DC_SR_COOLDOWN_SEC", str(6 * 3600))),
     "Retest Wait": int(os.environ.get("DC_RETEST_WAIT_COOLDOWN_SEC", str(6 * 3600))),
     "Retest Complete": int(os.environ.get("DC_RETEST_DONE_COOLDOWN_SEC", str(12 * 3600))),
-    "Triangle Breakout": int(os.environ.get("DC_TRI_COOLDOWN_SEC", str(4 * 3600))),
+    "Triangle Breakout": int(os.environ.get("DC_TRI_COOLDOWN_SEC", str(8 * 3600))),
     "Dragonfly Doji": D1_PATTERN_ALERT_TTL_SEC,
     "Hammer": D1_PATTERN_ALERT_TTL_SEC,
     "Doji + Green": D1_PATTERN_ALERT_TTL_SEC,
 }
 # Pending retests after S/R breakout: key -> meta
 pending_retests: dict[str, dict] = {}
+# Diversify state
+symbol_last_alert_at: dict[str, float] = {}
+hourly_symbols: dict[str, list[str]] = {}  # hour_key -> [symbols]
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
+CLEAN_PATTERNS = frozenset({"Clean Breakout", "Break Setup", "Triangle Breakout"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
 # User kisi bhi TF ko on/off kar sakta hai
 BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
-TRIANGLE_TFS = frozenset({"1h", "4H", "D1"})
+TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})  # clean trendline TFs
 CANDLE_TFS = frozenset({"D1"})
 SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
 # S/R must align on these higher timeframes (fake breakout filter)
@@ -97,14 +115,14 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# Saari TFs scan ho sakti hain — default 4H+D1 ON, baaki user on kare
+# Default: 1h + 4H + D1 + 1W (user requested HTF clean breakouts)
 TIMEFRAMES = [
     ("Min5", "5m", 80),
     ("Min15", "15m", 80),
-    ("Min60", "1h", 70),
-    ("Hour4", "4H", 60),
-    ("Day1", "D1", 50),
-    ("Week1", "1W", 40),
+    ("Min60", "1h", 80),
+    ("Hour4", "4H", 70),
+    ("Day1", "D1", 60),
+    ("Week1", "1W", 50),
 ]
 
 TF_BUTTONS = [
@@ -118,7 +136,7 @@ TF_BUTTONS = [
 enabled_tfs: dict[str, bool] = {
     "5m": False,
     "15m": False,
-    "1h": False,
+    "1h": True,
     "4H": True,
     "D1": True,
     "1W": True,
@@ -146,6 +164,8 @@ scan_stats = {
     "tfButtons": TF_BUTTONS,
     "enabledTfs": dict(enabled_tfs),
     "patterns": [
+        "Clean Breakout",
+        "Break Setup",
         "S/R Breakout",
         "Retest Wait",
         "Retest Complete",
@@ -157,10 +177,13 @@ scan_stats = {
     "strategy": {
         "5m": "S/R LIVE (user toggle)",
         "15m": "S/R LIVE (user toggle)",
-        "1h": "S/R LIVE + Triangle (user toggle)",
-        "4H": "S/R LIVE + Triangle (user toggle)",
-        "D1": "S/R LIVE + Triangle + Doji/Hammer (user toggle)",
+        "1h": "Clean 2-touch trendline LIVE + S/R",
+        "4H": "Clean 2-touch trendline LIVE + S/R",
+        "D1": "Clean 2-touch trendline LIVE + S/R + Doji/Hammer",
+        "1W": "Clean 2-touch trendline LIVE + S/R",
     },
+    "hourlySymbolCap": HOURLY_DISTINCT_SYMBOL_CAP,
+    "symbolDayCooldownSec": SYMBOL_DAY_COOLDOWN_SEC,
     "exchange": "MEXC Futures",
     "market": "futures",
     "minVolumeUsdt": MIN_VOL,
@@ -312,7 +335,7 @@ def _normalize_alert(alert: dict) -> dict:
         direction = "UP"
     elif direction in ("BEARISH", "SELL"):
         direction = "DOWN"
-    return {
+    out = {
         "id": alert.get("id"),
         "symbol": alert["symbol"],
         "direction": direction,
@@ -330,8 +353,12 @@ def _normalize_alert(alert: dict) -> dict:
         "riskReward": alert.get("riskReward"),
         "advice": alert.get("advice"),
         "stage": alert.get("stage"),
+        "breakChance": alert.get("breakChance"),
         "at": alert.get("alertedAt") or alert.get("at"),
     }
+    if alert.get("chartImage"):
+        out["chartImage"] = alert["chartImage"]
+    return out
 
 
 def _is_d1_pattern_alert(alert: dict) -> bool:
@@ -474,6 +501,112 @@ def is_signal_cooled(sym: str, tf: str, hit: dict) -> bool:
         return False
     return True
 
+
+def _hour_key(now: float | None = None) -> str:
+    return str(int((now or time.time()) // 3600))
+
+
+def _persist_diversify():
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        DIVERSIFY_STORE.write_text(
+            json.dumps(
+                {
+                    "symbol_last_alert_at": symbol_last_alert_at,
+                    "hourly_symbols": hourly_symbols,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[My Signals] diversify persist failed: {e}")
+
+
+def _load_diversify():
+    global symbol_last_alert_at, hourly_symbols
+    try:
+        if not DIVERSIFY_STORE.is_file():
+            return
+        raw = json.loads(DIVERSIFY_STORE.read_text(encoding="utf-8"))
+        if isinstance(raw.get("symbol_last_alert_at"), dict):
+            symbol_last_alert_at = {
+                str(k): float(v) for k, v in raw["symbol_last_alert_at"].items()
+            }
+        if isinstance(raw.get("hourly_symbols"), dict):
+            hourly_symbols = {
+                str(k): list(v) for k, v in raw["hourly_symbols"].items() if isinstance(v, list)
+            }
+        # prune old hours
+        cur = _hour_key()
+        for hk in list(hourly_symbols.keys()):
+            if hk < str(int(cur) - 3):
+                del hourly_symbols[hk]
+        print(
+            f"[My Signals] Diversify restored: "
+            f"{len(symbol_last_alert_at)} symbols, hour={cur}"
+        )
+    except Exception as e:
+        print(f"[My Signals] diversify restore failed: {e}")
+
+
+def is_symbol_day_cooled(sym: str, now: float | None = None) -> bool:
+    t = now or time.time()
+    last = symbol_last_alert_at.get(sym)
+    if not last:
+        return False
+    return last >= t - SYMBOL_DAY_COOLDOWN_SEC
+
+
+def hourly_slots_remaining(now: float | None = None) -> int:
+    t = now or time.time()
+    hk = _hour_key(t)
+    used = len(set(hourly_symbols.get(hk) or []))
+    return max(0, HOURLY_DISTINCT_SYMBOL_CAP - used)
+
+
+def can_emit_diversified(sym: str, now: float | None = None) -> bool:
+    """~3 alag coins / hour + ~1 alert / coin / day."""
+    t = now or time.time()
+    if is_symbol_day_cooled(sym, t):
+        return False
+    hk = _hour_key(t)
+    used = set(hourly_symbols.get(hk) or [])
+    if sym in used:
+        return False  # already alerted this hour
+    if len(used) >= HOURLY_DISTINCT_SYMBOL_CAP:
+        return False
+    return True
+
+
+def mark_diversified_emit(sym: str, now: float | None = None):
+    t = now or time.time()
+    symbol_last_alert_at[sym] = t
+    hk = _hour_key(t)
+    row = hourly_symbols.setdefault(hk, [])
+    if sym not in row:
+        row.append(sym)
+    # keep map small
+    for old in list(hourly_symbols.keys()):
+        if old < str(int(hk) - 6):
+            del hourly_symbols[old]
+    _persist_diversify()
+
+
+def pattern_priority(hit: dict) -> int:
+    """Higher = emit first when choosing hourly best."""
+    p = hit.get("pattern") or ""
+    if p == "Clean Breakout":
+        return 100 + int(hit.get("score") or 0)
+    if p == "Break Setup":
+        return 70 + int(hit.get("score") or 0)
+    if p == "Triangle Breakout":
+        return 85 + int(hit.get("score") or 0)
+    if p == "S/R Breakout":
+        return 50 + int(hit.get("score") or 0)
+    if p == "Retest Complete":
+        return 40 + int(hit.get("score") or 0)
+    return int(hit.get("score") or 0)
 
 def _load_persisted_alerts():
     """Restart ke baad purani alerts wapas lao."""
@@ -633,34 +766,45 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     sl = candle_low
     buffer = max(avg_rng * 0.15, abs(close) * 0.001)
 
-    if pattern == "Triangle Breakout":
-        # Base by triangle type
-        if "Ascending" in detail:
-            score = 72
-        elif "Descending" in detail:
-            score = 72
+    if pattern in ("Clean Breakout", "Break Setup", "Triangle Breakout"):
+        # 2-touch trendline / triangle — early near-line break scores higher
+        if pattern == "Clean Breakout":
+            score = 82
+        elif pattern == "Break Setup":
+            score = 68
+        elif "Ascending" in detail or "Descending" in detail:
+            score = 74
         else:
-            score = 60  # symmetrical
-        # Breakout distance beyond level
+            score = 70
+        if hit.get("live") and pattern == "Clean Breakout":
+            score += 5
+        if hit.get("stage") == "just_broke":
+            score += 4
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
-            sl = min(float(hit.get("level") or candle_low), candle_low) - buffer
-            # Prefer triangle support if available via level for descending/sym
-            if "Ascending" in detail or "Symmetrical" in detail:
-                # SL under recent swing low before breakout
-                sl = min(l[-TRIANGLE_WINDOW - 2:i][-6:]) - buffer
+            sl = min(l[max(0, i - 8):i] or [candle_low]) - buffer
+            if sl >= entry:
+                sl = min(candle_low, level) - buffer
         else:
             dist = (level - close) / (avg_rng or 0.0001)
-            sl = max(float(hit.get("level") or candle_high), candle_high) + buffer
-            if "Descending" in detail or "Symmetrical" in detail:
-                sl = max(h[-TRIANGLE_WINDOW - 2:i][-6:]) + buffer
-        score += min(18, int(dist * 10))
-        score += min(12, int(body_str * 8))
-        # Clean close beyond level
-        if direction == "UP" and close > level * 1.002:
-            score += 5
-        if direction == "DOWN" and close < level * 0.998:
-            score += 5
+            sl = max(h[max(0, i - 8):i] or [candle_high]) + buffer
+            if sl <= entry:
+                sl = max(candle_high, level) + buffer
+        # Near break = better (not already pumped)
+        if dist <= 0.55:
+            score += min(14, int((0.55 - dist) * 20))
+        else:
+            score -= min(20, int((dist - 0.55) * 16))
+        score += min(10, int(body_str * 6))
+        touches = 0
+        lines = hit.get("chartLines") or {}
+        for k in ("upper", "lower"):
+            ln = lines.get(k) or {}
+            touches = max(touches, int(ln.get("touches") or 0))
+        if touches >= 2:
+            score += 6
+        if touches >= 3:
+            score += 4
 
     elif pattern == "S/R Breakout":
         # Stronger baseline — fake breaks filtered via HTF confluence in scan_loop
@@ -778,6 +922,12 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     hit["close"] = _round_price(close)
     if hit.get("level") is not None:
         hit["level"] = _round_price(float(hit["level"]))
+    # Preserve detector advice for clean breakouts; else leave as-is
+    if not hit.get("advice") and pattern in CLEAN_PATTERNS:
+        if hit.get("stage") == "about_to_break":
+            hit["advice"] = "Clean break ~70% — abi hony wala (price 2-touch line ke qareeb)."
+        else:
+            hit["advice"] = "Clean break abi abi hua — LONG/SHORT entry abhi, chase mat karo."
     return hit
 
 
@@ -969,18 +1119,6 @@ def _body_ok(highs, lows, closes, opens, idx: int, min_frac: float = 0.3) -> boo
     return body >= avg * min_frac
 
 
-def _slope(vals: list[float]) -> float:
-    n = len(vals)
-    if n < 2:
-        return 0.0
-    x = list(range(n))
-    xm = sum(x) / n
-    ym = sum(vals) / n
-    num = sum((x[i] - xm) * (vals[i] - ym) for i in range(n))
-    den = sum((x[i] - xm) ** 2 for i in range(n)) or 1
-    return num / den
-
-
 def detect_sr_breakout(
     ohlc: dict, lookback: int = LOOKBACK, *, live: bool = False
 ) -> dict | None:
@@ -1049,68 +1187,6 @@ def detect_sr_breakout(
             "level": rl, "close": c[i], "candleTime": t[i],
             "live": live,
         }
-    return None
-
-
-def detect_triangle_breakout(ohlc: dict, window: int = TRIANGLE_WINDOW) -> dict | None:
-    h, l, c, o, t = ohlc["highs"], ohlc["lows"], ohlc["closes"], ohlc["opens"], ohlc["times"]
-    if len(c) < window + 3:
-        return None
-
-    i = -2
-    # Triangle geometry is formed only by candles before the breakout candle.
-    seg_h = h[-window - 2:i]
-    seg_l = l[-window - 2:i]
-    avg_price = sum(c[-window - 2:i]) / len(seg_h)
-    if avg_price <= 0:
-        return None
-
-    high_slope = _slope(seg_h)
-    low_slope = _slope(seg_l)
-    high_span = max(seg_h) - min(seg_h)
-    low_span = max(seg_l) - min(seg_l)
-    flat_tol = avg_price * 0.012
-
-    resistance = max(seg_h[-6:])
-    support = min(seg_l[-6:])
-    if not _body_ok(h, l, c, o, i):
-        return None
-
-    flat_high = high_span < avg_price * 0.02 and abs(high_slope) < avg_price * 0.0008
-    flat_low = low_span < avg_price * 0.02 and abs(low_slope) < avg_price * 0.0008
-    rising_low = low_slope > avg_price * 0.0005
-    falling_high = high_slope < -avg_price * 0.0005
-    converging = falling_high and rising_low
-
-    if flat_high and rising_low and c[i] > resistance and c[i - 1] <= resistance:
-        return {
-            "side": "BUY", "direction": "UP", "pattern": "Triangle Breakout",
-            "patternDetail": "Ascending triangle",
-            "level": resistance, "close": c[i], "candleTime": t[i],
-        }
-    if flat_low and falling_high and c[i] < support and c[i - 1] >= support:
-        return {
-            "side": "SELL", "direction": "DOWN", "pattern": "Triangle Breakout",
-            "patternDetail": "Descending triangle",
-            "level": support, "close": c[i], "candleTime": t[i],
-        }
-    if converging:
-        upper = max(seg_h[-4:])
-        lower = min(seg_l[-4:])
-        mid = (upper + lower) / 2
-        inside_prev = lower <= c[i - 1] <= upper
-        if inside_prev and c[i] > upper:
-            return {
-                "side": "BUY", "direction": "UP", "pattern": "Triangle Breakout",
-                "patternDetail": "Symmetrical triangle UP",
-                "level": upper, "close": c[i], "candleTime": t[i],
-            }
-        if inside_prev and c[i] < lower:
-            return {
-                "side": "SELL", "direction": "DOWN", "pattern": "Triangle Breakout",
-                "patternDetail": "Symmetrical triangle DOWN",
-                "level": lower, "close": c[i], "candleTime": t[i],
-            }
     return None
 
 
@@ -1326,9 +1402,9 @@ def scan_ohlc(
 ) -> list[dict]:
     """
     TF-gated strategy:
-      Breakout TFs → S/R LIVE-first + Triangle (1h+)
+      Clean TFs (1h/4H/D1/1W) → 2-touch trendline LIVE-first + about-to-break
+      Breakout TFs → S/R LIVE (secondary)
       D1 → also Dragonfly/Hammer/Doji + green close
-    htf_confluence=True marks S/R hits that already passed 4H+1D+1W gate.
     """
     hits: list[dict] = []
     tf = timeframe or ""
@@ -1337,9 +1413,33 @@ def scan_ohlc(
     run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
     run_candles = tf in CANDLE_TFS or include_d1_patterns
 
+    seen_dirs: set[str] = set()
+
+    if run_triangle:
+        # LIVE clean break first — pump/dump wait nahi
+        for live in (True, False):
+            clean = detect_clean_trendline_breakout(
+                ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
+            )
+            if not clean:
+                continue
+            if clean["direction"] in seen_dirs:
+                continue
+            seen_dirs.add(clean["direction"])
+            plan = enrich_trade_plan(ohlc, clean)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
+        # About-to-break setups (if no hard break this direction yet)
+        setup = detect_clean_trendline_breakout(
+            ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
+        )
+        if setup and setup["direction"] not in seen_dirs:
+            seen_dirs.add(setup["direction"])
+            plan = enrich_trade_plan(ohlc, setup)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
+
     if run_breakouts:
-        # LIVE first — breakout hoti hi signal (pump wait nahi)
-        seen_dirs: set[str] = set()
         for live in (True, False):
             sr = detect_sr_breakout(ohlc, live=live)
             if not sr:
@@ -1353,10 +1453,6 @@ def scan_ohlc(
                     f"{sr.get('patternDetail', 'S/R')} · HTF 4H+1D+1W"
                 )
             hits.append(enrich_trade_plan(ohlc, sr))
-        if run_triangle:
-            tri = detect_triangle_breakout(ohlc)
-            if tri and tri["direction"] not in seen_dirs:
-                hits.append(enrich_trade_plan(ohlc, tri))
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
             hits.append(enrich_trade_plan(ohlc, hit))
@@ -1501,7 +1597,10 @@ async def fetch_klines(
 
 
 async def scan_loop():
-    print("[My Signals] Strategy: HTF 4H+1D+1W S/R confluence · prior-area SL · strong>=90 ntfy")
+    print(
+        "[My Signals] Strategy: Clean 2-touch trendline LIVE (1h/4H/D1/1W) · "
+        f"~{HOURLY_DISTINCT_SYMBOL_CAP}/hour diversify · strong>=90 ntfy"
+    )
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
@@ -1510,6 +1609,7 @@ async def scan_loop():
             scan_stats["d1PatternsEnabled"] = True
             scan_stats["enabledTfs"] = dict(enabled_tfs)
             scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)
+            scan_stats["hourlySlotsLeft"] = hourly_slots_remaining(started)
             wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
             # Only scan TFs that are both capable and enabled
             active_tfs = [
@@ -1540,17 +1640,26 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = "MORNING HTF first" if morning else "4H+1D+1W confluence"
+                mode = "MORNING HTF first" if morning else "clean 2-touch + HTF S/R"
                 print(
                     f"[My Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
-                    f"({mode}, wait={wait_sec}s)..."
+                    f"({mode}, slots={hourly_slots_remaining(started)}, wait={wait_sec}s)..."
                 )
                 new_alerts = 0
+                # Collect candidates — emit best distinct coins at end (hourly cap)
+                candidates: list[tuple[int, str, str, dict]] = []
+                # (priority, sym, tf, alert_hit)
+
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
                     coin_hits = 0
                     coin_err = False
+                    if is_symbol_day_cooled(sym, started):
+                        scan_stats["scannedCoins"].append({
+                            "symbol": sym, "hits": 0, "ok": True, "skipped": "day_cd",
+                        })
+                        continue
                     ohlc_cache: dict[str, dict] = {}
                     # Always load 4H + 1D + 1W for S/R confluence gate
                     htf_levels: dict[str, tuple[float | None, float | None]] = {}
@@ -1563,6 +1672,7 @@ async def scan_loop():
                             htf_levels[tf_label] = (None, None)
                         await asyncio.sleep(0.02)
 
+                    best_for_sym: tuple[int, str, dict] | None = None
                     for interval, tf_label, limit in tf_order:
                         scan_stats["currentTimeframe"] = tf_label
                         if i % 3 == 0:
@@ -1588,20 +1698,18 @@ async def scan_loop():
                                     float(hit.get("close") or hit.get("entry") or 0),
                                 ):
                                     continue
-                                # Re-enrich with confluence flag for better score/SL context
                                 hit["htfConfluence"] = True
                                 detail = hit.get("patternDetail") or "S/R Breakout"
                                 if "HTF 4H+1D+1W" not in detail:
                                     hit["patternDetail"] = f"{detail} · HTF 4H+1D+1W"
                                 hit = enrich_trade_plan(ohlc, hit)
-                                lvl = hit.get("level")
-                                hit["advice"] = (
-                                    f"Breakout confirm. Level {lvl}. "
-                                    f"Abhi retest ka wait — limit plan alag alert mein."
-                                )
-                                hit["stage"] = "breakout"
+                                if not hit.get("advice"):
+                                    hit["advice"] = (
+                                        "S/R HTF break — early entry; late chase mat karo."
+                                    )
+                                hit["stage"] = hit.get("stage") or "breakout"
                             filtered.append(hit)
-                        # Pending retest complete check for this TF
+                        # Pending retest complete (optional)
                         for rk, pending in list(pending_retests.items()):
                             if pending.get("symbol") != sym or pending.get("tf") != tf_label:
                                 continue
@@ -1618,58 +1726,32 @@ async def scan_loop():
                                 filtered.append(done)
                                 pending["complete_sent"] = True
                                 _persist_pending_retests()
-                        # Prefer LIVE over CLOSED — early pierce pehle, late closed chase baad
-                        filtered.sort(key=lambda h: 0 if h.get("live") else 1)
-                        emitted_fps: set[str] = set()
+
+                        filtered.sort(
+                            key=lambda h: (
+                                0 if h.get("pattern") in CLEAN_PATTERNS else 1,
+                                0 if h.get("live") else 1,
+                                -pattern_priority(h),
+                            )
+                        )
                         for hit in filtered:
-                            fp = signal_fingerprint(sym, tf_label, hit)
-                            if fp in emitted_fps or is_signal_cooled(sym, tf_label, hit):
+                            if is_signal_cooled(sym, tf_label, hit):
                                 continue
-                            emitted_fps.add(fp)
-                            mark_signal_cooldown(sym, tf_label, hit)
-                            live_tag = "LIVE" if hit.get("live") else "CLOSED"
-                            alert = {
+                            pri = pattern_priority(hit)
+                            packed = {
                                 "symbol": sym,
                                 "timeframe": tf_label,
                                 "volume": vol,
                                 "alertedAt": int(time.time() * 1000),
                                 **hit,
                             }
-                            coin_hits += 1
-                            new_alerts += 1
-                            print(
-                                f"[My Signals] {sym} {tf_label} "
-                                f"{hit['pattern']} {hit['direction']} "
-                                f"{live_tag} score={hit.get('score')} "
-                                f"E={hit.get('entry')} SL={hit.get('sl')} TP={hit.get('tp')}"
-                                f"{' · HTF' if hit.get('htfConfluence') else ''}"
-                            )
-                            _broadcast(alert)
-                            # Breakout ke baad turant Retest Wait — sirf ek dafa
-                            if hit.get("pattern") == "S/R Breakout":
-                                wait_hit = build_retest_wait_hit(ohlc, hit)
-                                wait_fp = signal_fingerprint(sym, tf_label, wait_hit)
-                                if wait_fp not in emitted_fps and not is_signal_cooled(
-                                    sym, tf_label, wait_hit
-                                ):
-                                    emitted_fps.add(wait_fp)
-                                    mark_signal_cooldown(sym, tf_label, wait_hit)
-                                    wait_alert = {
-                                        "symbol": sym,
-                                        "timeframe": tf_label,
-                                        "volume": vol,
-                                        "alertedAt": int(time.time() * 1000),
-                                        **wait_hit,
-                                    }
-                                    coin_hits += 1
-                                    new_alerts += 1
-                                    print(
-                                        f"[My Signals] {sym} {tf_label} Retest Wait "
-                                        f"{hit['direction']} limit={wait_hit.get('entry')}"
-                                    )
-                                    _broadcast(wait_alert)
-                                    register_pending_retest(sym, tf_label, hit)
-                        await asyncio.sleep(0.04)
+                            if best_for_sym is None or pri > best_for_sym[0]:
+                                best_for_sym = (pri, tf_label, packed)
+
+                    if best_for_sym:
+                        pri, tf_label, packed = best_for_sym
+                        candidates.append((pri, sym, tf_label, packed))
+                        coin_hits = 1
                     scan_stats["scannedCoins"].append({
                         "symbol": sym,
                         "hits": coin_hits,
@@ -1678,13 +1760,50 @@ async def scan_loop():
                     if len(scan_stats["scannedCoins"]) > 120:
                         scan_stats["scannedCoins"] = scan_stats["scannedCoins"][-120:]
                     _broadcast_stats()
+
+                # Emit top distinct symbols for this hour (quality first)
+                candidates.sort(key=lambda row: -row[0])
+                emitted_syms: set[str] = set()
+                for pri, sym, tf_label, alert in candidates:
+                    if sym in emitted_syms:
+                        continue
+                    if not can_emit_diversified(sym, started):
+                        continue
+                    if is_signal_cooled(sym, tf_label, alert):
+                        continue
+                    mark_signal_cooldown(sym, tf_label, alert)
+                    mark_diversified_emit(sym, started)
+                    emitted_syms.add(sym)
+                    live_tag = "LIVE" if alert.get("live") else "CLOSED"
+                    new_alerts += 1
+                    print(
+                        f"[My Signals] {sym} {tf_label} "
+                        f"{alert.get('pattern')} {alert.get('direction')} "
+                        f"{live_tag} score={alert.get('score')} "
+                        f"stage={alert.get('stage')} "
+                        f"E={alert.get('entry')} SL={alert.get('sl')} TP={alert.get('tp')}"
+                    )
+                    _broadcast(alert)
+                    if EMIT_RETEST_WAIT and alert.get("pattern") == "S/R Breakout":
+                        # Optional — default off to cut spam
+                        pass
+                    if len(emitted_syms) >= HOURLY_DISTINCT_SYMBOL_CAP:
+                        # Still allow filling remaining hourly slots only
+                        if hourly_slots_remaining(started) <= 0:
+                            break
+
                 scan_stats["scanned"] = len(symbols)
                 scan_stats["currentCoin"] = ""
                 scan_stats["currentTimeframe"] = ""
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"
-                print(f"[My Signals] Scan done — {new_alerts} new alert(s)")
+                scan_stats["hourlySlotsLeft"] = hourly_slots_remaining()
+                print(
+                    f"[My Signals] Scan done — {new_alerts} new alert(s) "
+                    f"(candidates={len(candidates)}, "
+                    f"slots_left={hourly_slots_remaining()})"
+                )
                 _broadcast_stats()
             except Exception as e:
                 scan_stats["phase"] = "error"
@@ -1722,6 +1841,7 @@ def start_device_care_scanner():
     _load_persisted_alerts()
     _load_persisted_pending_retests()
     _load_persisted_cooldown()
+    _load_diversify()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
     print("[My Signals] PWA → /my-signals (HTF breakouts + retest, deduped cooldown)")
