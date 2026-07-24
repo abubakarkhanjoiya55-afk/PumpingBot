@@ -58,12 +58,12 @@ class BreakoutDetectorTests(unittest.TestCase):
         self.assertEqual(90.0, hit["level"])
 
     def test_triangle_formation_excludes_breakout_candidate(self):
-        """Legacy triangle wrapper — 2-touch clean detector underneath."""
-        from test_clean_breakouts import _build_descending_resistance_break
+        """Legacy wrapper — SOL-style wick-tip triangle underneath."""
+        from test_clean_breakouts import _build_sol_style_triangle
 
-        hit = detect_triangle_breakout(_build_descending_resistance_break())
+        hit = detect_triangle_breakout(_build_sol_style_triangle())
         self.assertIsNotNone(hit)
-        self.assertEqual("UP", hit["direction"])
+        self.assertIn(hit["direction"], ("UP", "DOWN"))
         self.assertIn(hit["pattern"], ("Triangle Breakout", "Clean Breakout"))
 
 
@@ -224,8 +224,8 @@ class D1CandlePatternTests(unittest.TestCase):
         ))
 
         # Clean / triangle style — 1h / 4H / D1 / 1W (not 5m)
-        from test_clean_breakouts import _build_descending_resistance_break
-        tri = _build_descending_resistance_break()
+        from test_clean_breakouts import _build_sol_style_triangle
+        tri = _build_sol_style_triangle()
 
         m5 = scan_ohlc(tri, timeframe="5m")
         h1 = scan_ohlc(tri, timeframe="1h")

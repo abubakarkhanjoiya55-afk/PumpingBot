@@ -1,22 +1,18 @@
-"""Mini OHLC chart PNG (base64) for clean breakout alerts."""
+"""Mini OHLC chart PNG — wick-tip trendlines with touch dots (SOL style)."""
 from __future__ import annotations
 
 import base64
 import io
-from typing import Any
 
 
 def render_breakout_chart_b64(
     ohlc: dict,
     hit: dict,
     *,
-    width: int = 360,
-    height: int = 200,
-    candles: int = 40,
+    width: int = 380,
+    height: int = 220,
+    candles: int = 48,
 ) -> str | None:
-    """
-    Draw last N candles + trendlines. Returns raw base64 PNG (no data: prefix).
-    """
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
@@ -39,50 +35,61 @@ def render_breakout_chart_b64(
     if m < 5:
         return None
 
-    pad_l, pad_r, pad_t, pad_b = 8, 8, 22, 8
+    pad_l, pad_r, pad_t, pad_b = 10, 10, 24, 10
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
-    ymin = min(ls)
-    ymax = max(hs)
+
+    # Include trendline tip prices in scale so lines aren't clipped
+    tip_prices: list[float] = []
+    lines = hit.get("chartLines") or {}
+    for key in ("upper", "lower"):
+        ln = lines.get(key) or {}
+        for pt in ln.get("points") or []:
+            tip_prices.append(float(pt["p"]))
+        if ln.get("p1") is not None:
+            tip_prices.append(float(ln["p1"]))
+        if ln.get("p2") is not None:
+            tip_prices.append(float(ln["p2"]))
+
+    ymin = min(min(ls), min(tip_prices) if tip_prices else min(ls))
+    ymax = max(max(hs), max(tip_prices) if tip_prices else max(hs))
     if ymax <= ymin:
         ymax = ymin + 1e-9
-    # Extra headroom
     span = ymax - ymin
-    ymin -= span * 0.06
-    ymax += span * 0.06
+    ymin -= span * 0.08
+    ymax += span * 0.08
 
     def yx(price: float) -> float:
         return pad_t + (ymax - price) / (ymax - ymin) * plot_h
 
-    def xx(i_local: int) -> float:
+    def xx(i_local: float) -> float:
         return pad_l + (i_local + 0.5) / m * plot_w
 
-    bg = (18, 18, 28)
-    up_c = (52, 211, 153)
-    dn_c = (248, 113, 113)
-    grid = (42, 42, 58)
-    line_u = (251, 146, 60)
-    line_l = (96, 165, 250)
-    txt = (226, 232, 240)
+    bg = (12, 14, 22)
+    up_c = (46, 204, 113)
+    dn_c = (231, 76, 60)
+    grid = (36, 40, 56)
+    line_u = (255, 152, 0)      # orange like user chart
+    line_l = (255, 152, 0)
+    dot_c = (255, 214, 10)
+    txt = (236, 240, 245)
 
     img = Image.new("RGB", (width, height), bg)
     draw = ImageDraw.Draw(img)
 
-    # Title
     stage = hit.get("stage") or ""
     direction = hit.get("direction") or ""
     side = "LONG" if direction == "UP" else "SHORT"
     if stage == "about_to_break":
-        title = f"{side} · about to break (~70%)"
+        title = f"{side} · 3-touch · about to break"
     else:
-        title = f"{side} · clean break just happened"
+        title = f"{side} · wick-tip clean break"
     try:
         font = ImageFont.load_default()
     except Exception:
         font = None
-    draw.text((pad_l, 4), title, fill=txt, font=font)
+    draw.text((pad_l, 5), title, fill=txt, font=font)
 
-    # Grid
     for g in range(1, 4):
         gy = pad_t + plot_h * g / 4
         draw.line([(pad_l, gy), (width - pad_r, gy)], fill=grid, width=1)
@@ -102,19 +109,18 @@ def render_breakout_chart_b64(
             outline=color,
         )
 
-    # Trendlines from hit.chartLines (absolute indices)
-    lines = hit.get("chartLines") or {}
-    for key, color in (("upper", line_u), ("lower", line_l)):
-        ln = lines.get(key)
+    def _draw_line(ln: dict, color: tuple[int, int, int]):
         if not ln:
-            continue
-        i1, p1 = int(ln["i1"]), float(ln["p1"])
-        i2, p2 = int(ln["i2"]), float(ln["p2"])
-        # Extend to last candle
+            return
+        points = ln.get("points") or []
+        i1 = int(ln["i1"])
+        p1 = float(ln["p1"])
+        i2 = int(ln["i2"])
+        p2 = float(ln["p2"])
         if i2 == i1:
-            continue
+            return
         slope = (p2 - p1) / (i2 - i1)
-        # Draw across visible window
+        # Extend across visible window
         abs_start = start
         abs_end = n - 1
         p_start = p1 + slope * (abs_start - i1)
@@ -124,12 +130,26 @@ def render_breakout_chart_b64(
             fill=color,
             width=2,
         )
+        # Exact wick-tip touch dots
+        tips = points if points else [{"i": i1, "p": p1}, {"i": i2, "p": p2}]
+        for pt in tips:
+            abs_i = int(pt["i"])
+            if abs_i < start or abs_i >= n:
+                continue
+            loc = abs_i - start
+            px, py = xx(loc), yx(float(pt["p"]))
+            r = 3
+            draw.ellipse([px - r, py - r, px + r, py + r], fill=dot_c, outline=color)
 
-    # Break level marker
+    _draw_line(lines.get("upper") or {}, line_u)
+    _draw_line(lines.get("lower") or {}, line_l)
+
+    # Soft level dash at break price
     level = hit.get("level")
     if level is not None:
         yl = yx(float(level))
-        draw.line([(pad_l, yl), (width - pad_r, yl)], fill=(250, 204, 21), width=1)
+        for x0 in range(pad_l, width - pad_r, 8):
+            draw.line([(x0, yl), (min(x0 + 4, width - pad_r), yl)], fill=(250, 204, 21), width=1)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -137,7 +157,6 @@ def render_breakout_chart_b64(
 
 
 def attach_chart(ohlc: dict, hit: dict) -> dict:
-    """Mutate hit with chartImage if rendering succeeds."""
     b64 = render_breakout_chart_b64(ohlc, hit)
     if b64:
         hit["chartImage"] = b64
