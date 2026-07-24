@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.19.0"   # Clean 2-touch trendline breakouts + hourly diversify + charts
+API_VERSION = "3.20.0"   # Wick-tip ranked 3-touch trendlines (SOL style)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
