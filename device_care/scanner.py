@@ -60,9 +60,13 @@ RETEST_TOUCH_TOL = float(os.environ.get("DC_RETEST_TOUCH_TOL", "0.008"))
 # Early breakout — near level only; pehle se pump/dump chase mat karo
 MAX_LIVE_EXTENSION_ATR = float(os.environ.get("DC_MAX_LIVE_EXT_ATR", "0.65"))
 MAX_CLOSED_EXTENSION_ATR = float(os.environ.get("DC_MAX_CLOSED_EXT_ATR", "0.90"))
-# Diversify — har ghante ~3 alag coins, ek coin din mein dubara spam nahi
-HOURLY_DISTINCT_SYMBOL_CAP = int(os.environ.get("DC_HOURLY_SYMBOL_CAP", "3"))
-SYMBOL_DAY_COOLDOWN_SEC = int(os.environ.get("DC_SYMBOL_DAY_COOLDOWN_SEC", str(20 * 3600)))
+# Diversify — kam az kam ~3/hour target; ziyada setups = ziyada alerts
+# Same coin alag TF pe OK; same coin+same TF hour mein ek hi dafa
+HOURLY_MIN_TARGET = int(os.environ.get("DC_HOURLY_MIN_TARGET", "3"))
+MAX_ALERTS_PER_HOUR = int(os.environ.get("DC_MAX_ALERTS_PER_HOUR", "40"))  # safety only
+# Back-compat aliases (old env names)
+HOURLY_DISTINCT_SYMBOL_CAP = HOURLY_MIN_TARGET
+SYMBOL_DAY_COOLDOWN_SEC = int(os.environ.get("DC_SYMBOL_DAY_COOLDOWN_SEC", "0"))  # 0 = off
 EMIT_RETEST_WAIT = os.environ.get("DC_EMIT_RETEST_WAIT", "0") == "1"
 # Same signal dubara na aaye — pattern-wise cooldown (candleTime/LIVE ignore)
 PATTERN_COOLDOWN_SEC = {
@@ -78,9 +82,10 @@ PATTERN_COOLDOWN_SEC = {
 }
 # Pending retests after S/R breakout: key -> meta
 pending_retests: dict[str, dict] = {}
-# Diversify state
-symbol_last_alert_at: dict[str, float] = {}
-hourly_symbols: dict[str, list[str]] = {}  # hour_key -> [symbols]
+# Diversify state — hour -> list of "SYM|TF" already emitted
+symbol_last_alert_at: dict[str, float] = {}  # legacy
+hourly_symbols: dict[str, list[str]] = {}  # hour_key -> ["BTC_USDT|4H", ...]
+hourly_alert_count: dict[str, int] = {}
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
@@ -182,7 +187,9 @@ scan_stats = {
         "D1": "Clean 2-touch trendline LIVE + S/R + Doji/Hammer",
         "1W": "Clean 2-touch trendline LIVE + S/R",
     },
-    "hourlySymbolCap": HOURLY_DISTINCT_SYMBOL_CAP,
+    "hourlyMinTarget": HOURLY_MIN_TARGET,
+    "hourlySymbolCap": HOURLY_MIN_TARGET,  # legacy field name
+    "maxAlertsPerHour": MAX_ALERTS_PER_HOUR,
     "symbolDayCooldownSec": SYMBOL_DAY_COOLDOWN_SEC,
     "exchange": "MEXC Futures",
     "market": "futures",
@@ -514,6 +521,7 @@ def _persist_diversify():
                 {
                     "symbol_last_alert_at": symbol_last_alert_at,
                     "hourly_symbols": hourly_symbols,
+                    "hourly_alert_count": hourly_alert_count,
                 },
                 ensure_ascii=False,
             ),
@@ -524,7 +532,7 @@ def _persist_diversify():
 
 
 def _load_diversify():
-    global symbol_last_alert_at, hourly_symbols
+    global symbol_last_alert_at, hourly_symbols, hourly_alert_count
     try:
         if not DIVERSIFY_STORE.is_file():
             return
@@ -537,20 +545,29 @@ def _load_diversify():
             hourly_symbols = {
                 str(k): list(v) for k, v in raw["hourly_symbols"].items() if isinstance(v, list)
             }
-        # prune old hours
+        if isinstance(raw.get("hourly_alert_count"), dict):
+            hourly_alert_count = {
+                str(k): int(v) for k, v in raw["hourly_alert_count"].items()
+            }
         cur = _hour_key()
         for hk in list(hourly_symbols.keys()):
             if hk < str(int(cur) - 3):
                 del hourly_symbols[hk]
+        for hk in list(hourly_alert_count.keys()):
+            if hk < str(int(cur) - 3):
+                del hourly_alert_count[hk]
         print(
             f"[My Signals] Diversify restored: "
-            f"{len(symbol_last_alert_at)} symbols, hour={cur}"
+            f"hour={cur} alerts={hourly_alerts_used()} "
+            f"(min target {HOURLY_MIN_TARGET}, max {MAX_ALERTS_PER_HOUR})"
         )
     except Exception as e:
         print(f"[My Signals] diversify restore failed: {e}")
 
-
 def is_symbol_day_cooled(sym: str, now: float | None = None) -> bool:
+    """Legacy — day cooldown OFF by default (0) so multi-TF same coin allowed."""
+    if SYMBOL_DAY_COOLDOWN_SEC <= 0:
+        return False
     t = now or time.time()
     last = symbol_last_alert_at.get(sym)
     if not last:
@@ -558,43 +575,56 @@ def is_symbol_day_cooled(sym: str, now: float | None = None) -> bool:
     return last >= t - SYMBOL_DAY_COOLDOWN_SEC
 
 
+def hourly_alerts_used(now: float | None = None) -> int:
+    hk = _hour_key(now)
+    return int(hourly_alert_count.get(hk) or 0)
+
+
 def hourly_slots_remaining(now: float | None = None) -> int:
-    t = now or time.time()
-    hk = _hour_key(t)
-    used = len(set(hourly_symbols.get(hk) or []))
-    return max(0, HOURLY_DISTINCT_SYMBOL_CAP - used)
+    """Safety ceiling remaining (not a tight 3-cap)."""
+    return max(0, MAX_ALERTS_PER_HOUR - hourly_alerts_used(now))
 
 
-def can_emit_diversified(sym: str, now: float | None = None) -> bool:
-    """~3 alag coins / hour + ~1 alert / coin / day."""
+def can_emit_diversified(sym: str, tf: str = "", now: float | None = None) -> bool:
+    """
+    Same coin + same TF → hour mein ek hi dafa.
+    Alag TF pe same coin OK.
+    Hard max sirf safety ceiling (default 40/hour) — 3 minimum target hai, max nahi.
+    """
     t = now or time.time()
     if is_symbol_day_cooled(sym, t):
         return False
     hk = _hour_key(t)
-    used = set(hourly_symbols.get(hk) or [])
-    if sym in used:
-        return False  # already alerted this hour
-    if len(used) >= HOURLY_DISTINCT_SYMBOL_CAP:
+    if hourly_alerts_used(t) >= MAX_ALERTS_PER_HOUR:
         return False
+    if tf:
+        key = f"{sym}|{tf}"
+        used = set(hourly_symbols.get(hk) or [])
+        if key in used:
+            return False
     return True
 
 
-def mark_diversified_emit(sym: str, now: float | None = None):
+def mark_diversified_emit(sym: str, tf: str = "", now: float | None = None):
     t = now or time.time()
     symbol_last_alert_at[sym] = t
     hk = _hour_key(t)
+    hourly_alert_count[hk] = int(hourly_alert_count.get(hk) or 0) + 1
     row = hourly_symbols.setdefault(hk, [])
-    if sym not in row:
-        row.append(sym)
-    # keep map small
+    key = f"{sym}|{tf}" if tf else sym
+    if key not in row:
+        row.append(key)
     for old in list(hourly_symbols.keys()):
         if old < str(int(hk) - 6):
             del hourly_symbols[old]
+    for old in list(hourly_alert_count.keys()):
+        if old < str(int(hk) - 6):
+            del hourly_alert_count[old]
     _persist_diversify()
 
 
 def pattern_priority(hit: dict) -> int:
-    """Higher = emit first when choosing hourly best."""
+    """Higher = emit first when ranking candidates."""
     p = hit.get("pattern") or ""
     if p == "Clean Breakout":
         return 100 + int(hit.get("score") or 0)
@@ -1598,8 +1628,8 @@ async def fetch_klines(
 
 async def scan_loop():
     print(
-        "[My Signals] Strategy: Clean 2-touch trendline LIVE (1h/4H/D1/1W) · "
-        f"~{HOURLY_DISTINCT_SYMBOL_CAP}/hour diversify · strong>=90 ntfy"
+        "[My Signals] Strategy: wick-tip 3-touch LIVE (1h/4H/D1/1W) · "
+        f"min ~{HOURLY_MIN_TARGET}/hour (multi-TF OK) · max {MAX_ALERTS_PER_HOUR}/hour · ntfy"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
@@ -1609,20 +1639,19 @@ async def scan_loop():
             scan_stats["d1PatternsEnabled"] = True
             scan_stats["enabledTfs"] = dict(enabled_tfs)
             scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)
+            scan_stats["hourlyMinTarget"] = HOURLY_MIN_TARGET
+            scan_stats["hourlyAlertsUsed"] = hourly_alerts_used(started)
             scan_stats["hourlySlotsLeft"] = hourly_slots_remaining(started)
             wait_sec = MORNING_SCAN_SEC if morning else SCAN_SEC
-            # Only scan TFs that are both capable and enabled
             active_tfs = [
                 row for row in TIMEFRAMES
                 if row[1] in SIGNAL_CAPABLE_TFS and enabled_tfs.get(row[1], True)
             ]
             if not active_tfs:
                 active_tfs = list(TIMEFRAMES)
-            # Subah: D1/1W pehle
             tf_order = (
                 list(reversed(active_tfs)) if morning else list(active_tfs)
             )
-            # Cooldown prune — fingerprint based (pattern TTL)
             prune_cooldown(started)
             removed = prune_alert_history(started)
             if removed:
@@ -1640,28 +1669,22 @@ async def scan_loop():
                 symbols = await fetch_symbols(client)
                 scan_stats["phase"] = "scanning"
                 scan_stats["totalCoins"] = len(symbols)
-                mode = "MORNING HTF first" if morning else "clean 2-touch + HTF S/R"
+                mode = "MORNING HTF first" if morning else "wick-tip multi-TF"
                 print(
                     f"[My Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
-                    f"({mode}, slots={hourly_slots_remaining(started)}, wait={wait_sec}s)..."
+                    f"({mode}, used={hourly_alerts_used(started)}/"
+                    f"{MAX_ALERTS_PER_HOUR}, wait={wait_sec}s)..."
                 )
                 new_alerts = 0
-                # Collect candidates — emit best distinct coins at end (hourly cap)
+                # Collect best hit per (symbol, timeframe) — multi-TF same coin OK
                 candidates: list[tuple[int, str, str, dict]] = []
-                # (priority, sym, tf, alert_hit)
 
                 for i, (sym, vol) in enumerate(symbols):
                     scan_stats["currentCoin"] = sym
                     scan_stats["scanned"] = i
                     coin_hits = 0
                     coin_err = False
-                    if is_symbol_day_cooled(sym, started):
-                        scan_stats["scannedCoins"].append({
-                            "symbol": sym, "hits": 0, "ok": True, "skipped": "day_cd",
-                        })
-                        continue
                     ohlc_cache: dict[str, dict] = {}
-                    # Always load 4H + 1D + 1W for S/R confluence gate
                     htf_levels: dict[str, tuple[float | None, float | None]] = {}
                     for interval, tf_label, limit in CONFLUENCE_FETCH:
                         ohlc_htf = await fetch_klines(client, sym, interval, limit)
@@ -1672,7 +1695,6 @@ async def scan_loop():
                             htf_levels[tf_label] = (None, None)
                         await asyncio.sleep(0.02)
 
-                    best_for_sym: tuple[int, str, dict] | None = None
                     for interval, tf_label, limit in tf_order:
                         scan_stats["currentTimeframe"] = tf_label
                         if i % 3 == 0:
@@ -1709,7 +1731,6 @@ async def scan_loop():
                                     )
                                 hit["stage"] = hit.get("stage") or "breakout"
                             filtered.append(hit)
-                        # Pending retest complete (optional)
                         for rk, pending in list(pending_retests.items()):
                             if pending.get("symbol") != sym or pending.get("tf") != tf_label:
                                 continue
@@ -1734,8 +1755,11 @@ async def scan_loop():
                                 -pattern_priority(h),
                             )
                         )
+                        best_tf: tuple[int, dict] | None = None
                         for hit in filtered:
                             if is_signal_cooled(sym, tf_label, hit):
+                                continue
+                            if not can_emit_diversified(sym, tf_label, started):
                                 continue
                             pri = pattern_priority(hit)
                             packed = {
@@ -1745,13 +1769,13 @@ async def scan_loop():
                                 "alertedAt": int(time.time() * 1000),
                                 **hit,
                             }
-                            if best_for_sym is None or pri > best_for_sym[0]:
-                                best_for_sym = (pri, tf_label, packed)
+                            if best_tf is None or pri > best_tf[0]:
+                                best_tf = (pri, packed)
+                        if best_tf:
+                            pri, packed = best_tf
+                            candidates.append((pri, sym, tf_label, packed))
+                            coin_hits += 1
 
-                    if best_for_sym:
-                        pri, tf_label, packed = best_for_sym
-                        candidates.append((pri, sym, tf_label, packed))
-                        coin_hits = 1
                     scan_stats["scannedCoins"].append({
                         "symbol": sym,
                         "hits": coin_hits,
@@ -1761,19 +1785,20 @@ async def scan_loop():
                         scan_stats["scannedCoins"] = scan_stats["scannedCoins"][-120:]
                     _broadcast_stats()
 
-                # Emit top distinct symbols for this hour (quality first)
+                # Emit all quality (sym, tf) hits — no artificial 3-max
                 candidates.sort(key=lambda row: -row[0])
-                emitted_syms: set[str] = set()
+                emitted_keys: set[str] = set()
                 for pri, sym, tf_label, alert in candidates:
-                    if sym in emitted_syms:
+                    key = f"{sym}|{tf_label}"
+                    if key in emitted_keys:
                         continue
-                    if not can_emit_diversified(sym, started):
+                    if not can_emit_diversified(sym, tf_label, started):
                         continue
                     if is_signal_cooled(sym, tf_label, alert):
                         continue
                     mark_signal_cooldown(sym, tf_label, alert)
-                    mark_diversified_emit(sym, started)
-                    emitted_syms.add(sym)
+                    mark_diversified_emit(sym, tf_label, started)
+                    emitted_keys.add(key)
                     live_tag = "LIVE" if alert.get("live") else "CLOSED"
                     new_alerts += 1
                     print(
@@ -1784,13 +1809,8 @@ async def scan_loop():
                         f"E={alert.get('entry')} SL={alert.get('sl')} TP={alert.get('tp')}"
                     )
                     _broadcast(alert)
-                    if EMIT_RETEST_WAIT and alert.get("pattern") == "S/R Breakout":
-                        # Optional — default off to cut spam
-                        pass
-                    if len(emitted_syms) >= HOURLY_DISTINCT_SYMBOL_CAP:
-                        # Still allow filling remaining hourly slots only
-                        if hourly_slots_remaining(started) <= 0:
-                            break
+                    if hourly_slots_remaining(started) <= 0:
+                        break
 
                 scan_stats["scanned"] = len(symbols)
                 scan_stats["currentCoin"] = ""
@@ -1798,11 +1818,13 @@ async def scan_loop():
                 scan_stats["lastScanAt"] = int(time.time() * 1000)
                 scan_stats["lastDurationSec"] = round(time.time() - started)
                 scan_stats["phase"] = "waiting"
+                scan_stats["hourlyAlertsUsed"] = hourly_alerts_used()
                 scan_stats["hourlySlotsLeft"] = hourly_slots_remaining()
                 print(
                     f"[My Signals] Scan done — {new_alerts} new alert(s) "
                     f"(candidates={len(candidates)}, "
-                    f"slots_left={hourly_slots_remaining()})"
+                    f"hour={hourly_alerts_used()}/{MAX_ALERTS_PER_HOUR}, "
+                    f"min_target={HOURLY_MIN_TARGET})"
                 )
                 _broadcast_stats()
             except Exception as e:
@@ -1810,7 +1832,6 @@ async def scan_loop():
                 print(f"[My Signals] scan error: {e}")
                 _broadcast_stats()
 
-            # Wait loop — also prune expired alerts so UI clears on schedule
             for remaining in range(wait_sec, 0, -1):
                 scan_stats["nextScanInSec"] = remaining
                 scan_stats["morningWindow"] = in_morning_window()

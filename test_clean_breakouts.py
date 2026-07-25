@@ -177,17 +177,32 @@ class DiversifyStillOk(unittest.TestCase):
     def setUp(self):
         sc.symbol_last_alert_at.clear()
         sc.hourly_symbols.clear()
+        sc.hourly_alert_count.clear()
 
     def tearDown(self):
         sc.symbol_last_alert_at.clear()
         sc.hourly_symbols.clear()
+        sc.hourly_alert_count.clear()
 
-    def test_hourly_cap(self):
+    def test_same_coin_different_tfs_allowed(self):
         now = time.time()
-        for sym in ("A_USDT", "B_USDT", "C_USDT"):
-            self.assertTrue(sc.can_emit_diversified(sym, now))
-            sc.mark_diversified_emit(sym, now)
-        self.assertFalse(sc.can_emit_diversified("D_USDT", now))
+        self.assertTrue(sc.can_emit_diversified("BTC_USDT", "1h", now))
+        sc.mark_diversified_emit("BTC_USDT", "1h", now)
+        # Same TF blocked this hour
+        self.assertFalse(sc.can_emit_diversified("BTC_USDT", "1h", now))
+        # Different TF allowed
+        self.assertTrue(sc.can_emit_diversified("BTC_USDT", "4H", now))
+        sc.mark_diversified_emit("BTC_USDT", "4H", now)
+        self.assertTrue(sc.can_emit_diversified("ETH_USDT", "4H", now))
+
+    def test_no_hard_three_cap(self):
+        now = time.time()
+        for i in range(5):
+            sym = f"C{i}_USDT"
+            self.assertTrue(sc.can_emit_diversified(sym, "4H", now), sym)
+            sc.mark_diversified_emit(sym, "4H", now)
+        self.assertEqual(5, sc.hourly_alerts_used(now))
+        self.assertTrue(sc.can_emit_diversified("C5_USDT", "4H", now))
 
 
 if __name__ == "__main__":

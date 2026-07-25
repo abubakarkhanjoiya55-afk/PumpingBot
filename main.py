@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.20.0"   # Wick-tip ranked 3-touch trendlines (SOL style)
+API_VERSION = "3.20.1"   # Min 3/hour target; multi-TF same coin OK; no hard 3-cap
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
