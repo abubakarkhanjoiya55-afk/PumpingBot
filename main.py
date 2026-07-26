@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.20.1"   # Min 3/hour target; multi-TF same coin OK; no hard 3-cap
+API_VERSION = "3.21.0"   # White MEXC charts; last-3 exact wick tips; single-line ENA OK
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

@@ -479,7 +479,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>My Signals</h1>
-    <p class="sub">MEXC Futures · 3-touch wick-tip · multi-TF · min ~3 alerts/hour</p>
+    <p class="sub">MEXC Futures · white last-3 wick-tip charts · multi-TF · min ~3/hour</p>
   </div>
   <div class="trial-banner hidden" id="trialBanner">
     🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
@@ -1521,7 +1521,7 @@
         ? `<div class="meta" style="margin-top:6px;color:#93c5fd"><b>Detail:</b> ${a.advice}</div>`
         : '';
       const chartHtml = a.chartImage
-        ? `<img alt="breakout chart" src="data:image/png;base64,${a.chartImage}" style="width:100%;max-width:360px;border-radius:8px;margin-top:8px;border:1px solid #2a2a3a" />`
+        ? `<img alt="breakout chart" src="data:image/png;base64,${a.chartImage}" style="width:100%;max-width:360px;border-radius:8px;margin-top:8px;border:1px solid #ddd;background:#fff" />`
         : '';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
