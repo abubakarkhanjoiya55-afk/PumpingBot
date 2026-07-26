@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.21.0"   # White MEXC charts; last-3 exact wick tips; single-line ENA OK
+API_VERSION = "3.21.1"   # HANA fix: resistance 3rd tip = SHORT; reject body-cutting lines
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

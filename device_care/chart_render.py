@@ -84,7 +84,7 @@ def render_breakout_chart_b64(
     direction = hit.get("direction") or ""
     side = "LONG" if direction == "UP" else "SHORT"
     if stage == "about_to_break":
-        title = f"{side} · last-3 wick tips · 3rd touch soon"
+        title = f"{side} · last-3 wick tips · 3rd touch"
     else:
         title = f"{side} · last-3 wick tips · clean break"
     try:

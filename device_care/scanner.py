@@ -1446,7 +1446,16 @@ def scan_ohlc(
     seen_dirs: set[str] = set()
 
     if run_triangle:
-        # LIVE clean break first — pump/dump wait nahi
+        # Prefer 3rd-touch / about-to first (HANA: resistance touch = SHORT)
+        setup = detect_clean_trendline_breakout(
+            ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
+        )
+        if setup and setup["direction"] not in seen_dirs:
+            seen_dirs.add(setup["direction"])
+            plan = enrich_trade_plan(ohlc, setup)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
+        # Confirmed clean tip break (strict) — only if that direction not already live
         for live in (True, False):
             clean = detect_clean_trendline_breakout(
                 ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
@@ -1457,15 +1466,6 @@ def scan_ohlc(
                 continue
             seen_dirs.add(clean["direction"])
             plan = enrich_trade_plan(ohlc, clean)
-            attach_chart(ohlc, plan)
-            hits.append(plan)
-        # About-to-break setups (if no hard break this direction yet)
-        setup = detect_clean_trendline_breakout(
-            ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
-        )
-        if setup and setup["direction"] not in seen_dirs:
-            seen_dirs.add(setup["direction"])
-            plan = enrich_trade_plan(ohlc, setup)
             attach_chart(ohlc, plan)
             hits.append(plan)
 

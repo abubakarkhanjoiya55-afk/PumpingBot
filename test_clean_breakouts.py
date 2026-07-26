@@ -252,6 +252,86 @@ class WickTipLineTests(unittest.TestCase):
         b64 = render_breakout_chart_b64(ohlc, hit)
         self.assertIsNotNone(b64)
 
+    def test_hana_descending_resistance_third_touch_is_short(self):
+        """HANA-style: descending resistance 3rd wick tip → SHORT, never LONG."""
+        size = 64
+        highs = [80.0] * size
+        lows = [70.0] * size
+        opens = [75.0] * size
+        closes = [75.0] * size
+        # Tip peaks on one descending line: 14=120, 30=108, 46=96  slope=-0.75
+        tips = ((14, 120.0), (30, 108.0), (46, 96.0))
+        tip_idx = {t[0] for t in tips}
+        for idx, px in tips:
+            highs[idx] = px
+            opens[idx] = px - 8
+            closes[idx] = px - 10
+            lows[idx] = px - 14
+            for j in range(idx - 2, idx + 3):
+                if 0 <= j < size and j not in tip_idx:
+                    # flatten neighbors so idx is strict swing high
+                    line = 120.0 - 0.75 * (j - 14)
+                    highs[j] = min(line - 4, px - 10)
+                    opens[j] = highs[j] - 3
+                    closes[j] = highs[j] - 4
+                    lows[j] = highs[j] - 6
+        for i in range(size):
+            if i in tip_idx:
+                continue
+            line = 120.0 - 0.75 * (i - 14)
+            # Stay clearly below resistance — no body cut
+            highs[i] = min(highs[i], line - 2.5)
+            opens[i] = line - 6
+            closes[i] = line - 5
+            lows[i] = line - 9
+        # Live: tag projected tip (3rd touch zone continuing past tip 46)
+        i = 58
+        line = 120.0 - 0.75 * (i - 14)
+        highs[i] = line + 0.2
+        opens[i] = line - 2.5
+        closes[i] = line - 1.0
+        lows[i] = line - 5
+        # pad end candle (n-1 used when live if we set n correctly — use size=59 end)
+        # detector live uses n-1; make last bar the tag bar
+        ohlc = _ohlc(highs[: i + 1], lows[: i + 1], opens[: i + 1], closes[: i + 1])
+
+        self.assertIsNone(
+            detect_clean_trendline_breakout(ohlc, live=True, approaching=False)
+        )
+        hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
+        self.assertIsNotNone(hit, "expected HANA SHORT at 3rd resistance tip")
+        self.assertEqual("DOWN", hit["direction"])
+        self.assertEqual("Break Setup", hit["pattern"])
+        self.assertEqual("resistance", (hit.get("chartLines") or {}).get("break"))
+
+    def test_rejects_body_cutting_resistance_line(self):
+        """Line that slices candle bodies is rejected (not tip-clean)."""
+        size = 50
+        highs = [100.0] * size
+        lows = [90.0] * size
+        opens = [95.0] * size
+        closes = [95.0] * size
+        for idx, px in ((8, 120.0), (24, 110.0)):
+            highs[idx] = px
+            for j in range(idx - 2, idx + 3):
+                if 0 <= j < size and j != idx:
+                    highs[j] = min(highs[j], px - 6)
+        # Mid candles pierce ABOVE the would-be line
+        for i in range(10, 22):
+            highs[i] = 118.0
+            opens[i] = 112.0
+            closes[i] = 115.0
+            lows[i] = 108.0
+        i = 48
+        highs[i], opens[i], closes[i], lows[i] = 105.0, 102.0, 103.0, 100.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+        self.assertIsNone(
+            detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
+        )
+        self.assertIsNone(
+            detect_clean_trendline_breakout(ohlc, live=False, approaching=False)
+        )
+
 
 class DiversifyStillOk(unittest.TestCase):
     def setUp(self):
