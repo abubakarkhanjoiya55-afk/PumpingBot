@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.21.1"   # HANA fix: resistance 3rd tip = SHORT; reject body-cutting lines
+API_VERSION = "3.21.2"   # Charts on all alerts (S/R + patterns); white mini-chart always
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
