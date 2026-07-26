@@ -16,13 +16,15 @@ PIVOT_LEFT = int(os.environ.get("DC_PIVOT_LEFT", "2"))
 PIVOT_RIGHT = int(os.environ.get("DC_PIVOT_RIGHT", "2"))
 MIN_PIVOT_SEP = int(os.environ.get("DC_MIN_PIVOT_SEP", "3"))
 # Wick tip precision — exact tips (user: 100% chotiyan)
-TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.08"))
-APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.32"))
+TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.07"))
+APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.35"))
 MAX_BREAK_EXT_ATR = float(os.environ.get("DC_TREND_MAX_EXT_ATR", "0.55"))
 MIN_BODY_FRAC_LIVE = float(os.environ.get("DC_TREND_BODY_LIVE", "0.14"))
 MIN_BODY_FRAC_CLOSED = float(os.environ.get("DC_TREND_BODY_CLOSED", "0.20"))
 MIN_TOUCHES = int(os.environ.get("DC_MIN_TOUCHES", "2"))
 PREFER_TOUCHES = int(os.environ.get("DC_PREFER_TOUCHES", "3"))
+# Max body pierces allowed between tip anchors (0 = tip-only clean like MEXC)
+MAX_BODY_PIERCES = int(os.environ.get("DC_MAX_BODY_PIERCES", "0"))
 # ENA-style single ascending/descending line allowed (not only triangles)
 REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "0") == "1"
 
@@ -284,6 +286,53 @@ def _project(line: dict, x: int) -> float:
     return _line_at(i1, p1, i2, p2, x)
 
 
+def _body_pierce_count(
+    ohlc: dict,
+    line: dict,
+    *,
+    kind: str,
+    end: int,
+    tol: float,
+) -> int:
+    """
+    Count candles whose BODY cuts through the tip-to-tip line.
+    Tip touch bars are exempt. Dirty lines (HANA bot chawal) fail this.
+    kind='upper' resistance / 'lower' support.
+    """
+    opens = ohlc["opens"]
+    closes = ohlc["closes"]
+    tip_idxs = {int(p["i"]) for p in (line.get("points") or [])}
+    ai1 = int(line.get("ai1", line["i1"]))
+    pierces = 0
+    # From first tip through current bar — line must stay tip-clean
+    for j in range(ai1, end + 1):
+        if j in tip_idxs:
+            continue
+        if j < 0 or j >= len(closes):
+            continue
+        lp = _project(line, j)
+        o = float(opens[j])
+        c = float(closes[j])
+        body_hi = max(o, c)
+        body_lo = min(o, c)
+        # Full body cross through the line
+        crossed = body_lo < lp - tol * 0.15 and body_hi > lp + tol * 0.15
+        if kind == "upper":
+            # Closed / body above resistance = line cut through price
+            if c > lp + tol * 0.25 or crossed:
+                pierces += 1
+        else:
+            if c < lp - tol * 0.25 or crossed:
+                pierces += 1
+    return pierces
+
+
+def _line_tip_clean(ohlc: dict, line: dict | None, *, kind: str, end: int, tol: float) -> bool:
+    if not line:
+        return False
+    return _body_pierce_count(ohlc, line, kind=kind, end=end, tol=tol) <= MAX_BODY_PIERCES
+
+
 def detect_clean_trendline_breakout(
     ohlc: dict,
     window: int = TRENDLINE_WINDOW,
@@ -317,6 +366,14 @@ def detect_clean_trendline_breakout(
     upper = _fit_ranked_wick_line(high_pivots, kind="upper", tol=tol)
     lower = _fit_ranked_wick_line(low_pivots, kind="lower", tol=tol)
 
+    # Drop dirty lines that cut candle bodies (must be tip-to-tip only).
+    # Exclude current signal bar — break candle is allowed to pierce.
+    hist_end = max(0, i - 1)
+    if upper and not _line_tip_clean(ohlc, upper, kind="upper", end=hist_end, tol=tol):
+        upper = None
+    if lower and not _line_tip_clean(ohlc, lower, kind="lower", end=hist_end, tol=tol):
+        lower = None
+
     if REQUIRE_BOTH_SIDES:
         if not upper or not lower:
             return None
@@ -329,7 +386,6 @@ def detect_clean_trendline_breakout(
         if u_n < MIN_TOUCHES or l_n < MIN_TOUCHES:
             return None
     else:
-        # Single-line ENA style: one side with ≥2 tip touches is enough
         if max(u_n, l_n) < MIN_TOUCHES:
             return None
 
@@ -364,19 +420,15 @@ def detect_clean_trendline_breakout(
         shape = "Descending resistance"
 
     body_frac = MIN_BODY_FRAC_LIVE if live else MIN_BODY_FRAC_CLOSED
-    min_break = max(avg_rng * (0.035 if live else 0.05), abs(c[i]) * 0.0005)
+    min_break = max(avg_rng * (0.05 if live else 0.08), abs(c[i]) * 0.0008)
     detail_live = " (LIVE)" if live else ""
 
     def _hit(direction: str, level: float, line_kind: str, line: dict, stage: str) -> dict:
         side = "BUY" if direction == "UP" else "SELL"
         tn = int(line.get("touches") or 0)
-        # Chart: only the break-side line (clean like MEXC white chart)
+        # Chart: break-side line only (HANA/ENA clean single orange line)
         chart_upper = _line_payload(upper) if upper and line_kind == "resistance" else None
         chart_lower = _line_payload(lower) if lower and line_kind == "support" else None
-        # Keep opposite only when true triangle and both strong (3 tips)
-        if both and u_n >= PREFER_TOUCHES and l_n >= PREFER_TOUCHES:
-            chart_upper = _line_payload(upper) if upper else None
-            chart_lower = _line_payload(lower) if lower else None
         if stage == "about_to_break":
             pattern = "Break Setup"
             advice = (
@@ -413,98 +465,67 @@ def detect_clean_trendline_breakout(
             },
         }
 
-    # --- Just broke ---
+    # --- Just broke (strict — no false LONG on dirty / early resistance) ---
     if not approaching:
         if not _body_ok(ohlc, i, body_frac):
             return None
 
         if upper and upper_now is not None and upper_prev is not None:
+            # LONG only on clear close ABOVE clean descending resistance
+            # Prefer 3 tip touches; 2-touch needs stronger close
+            need_clear = min_break if u_n >= PREFER_TOUCHES else min_break * 1.4
             broke = (
-                c[i] > upper_now + min_break * 0.2 and c[i - 1] <= upper_prev + min_break * 0.15
-            ) or (
-                live
-                and h[i] > upper_now + min_break
-                and c[i - 1] <= upper_prev
-                and c[i] >= upper_now
+                c[i] > upper_now + need_clear
+                and c[i - 1] <= upper_prev + tol * 0.5
+                and c[i] > o[i]  # bullish close confirmation
             )
-            if broke and c[i - 1] <= upper_prev + tol:
+            if broke:
                 ext = (c[i] - upper_now) / (avg_rng or 1e-12)
                 if ext <= MAX_BREAK_EXT_ATR:
                     return _hit("UP", upper_now, "resistance", upper, "just_broke")
 
         if lower and lower_now is not None and lower_prev is not None:
+            need_clear = min_break if l_n >= PREFER_TOUCHES else min_break * 1.4
             broke = (
-                c[i] < lower_now - min_break * 0.2 and c[i - 1] >= lower_prev - min_break * 0.15
-            ) or (
-                live
-                and l[i] < lower_now - min_break
-                and c[i - 1] >= lower_prev
-                and c[i] <= lower_now
+                c[i] < lower_now - need_clear
+                and c[i - 1] >= lower_prev - tol * 0.5
+                and c[i] < o[i]
             )
-            if broke and c[i - 1] >= lower_prev - tol:
+            if broke:
                 ext = (lower_now - c[i]) / (avg_rng or 1e-12)
                 if ext <= MAX_BREAK_EXT_ATR:
                     return _hit("DOWN", lower_now, "support", lower, "just_broke")
         return None
 
-    # --- About to break / 3rd touch zone (ENA: 2 tips done, 3rd imminent) ---
+    # --- About to break / 3rd touch (HANA: resistance touch = SHORT) ---
     approach = avg_rng * APPROACH_ATR
 
     def _ready_for_third(tn: int) -> bool:
-        # 2 tips already = 3rd about to happen; or already 3 tips hugging line
         return tn >= MIN_TOUCHES
 
-    # 3rd-touch rejection on upper (price tags resistance tip, still below)
+    # Descending resistance: price still BELOW line at 3rd touch → SHORT (not LONG)
     if upper and upper_now is not None and c[i] < upper_now and _ready_for_third(u_n):
         dist = upper_now - c[i]
         wick_tag = h[i] >= upper_now - tol and c[i] <= upper_now
         near = 0 < dist <= approach
         if wick_tag or near:
-            if lower and lower_now is not None and (c[i] - lower_now) <= approach * 0.8:
-                if wick_tag or (upper_now - c[i]) <= (c[i] - (lower_now or c[i])):
-                    if c[i] < o[i] and wick_tag:
-                        return _hit(
-                            "DOWN",
-                            lower_now or upper_now,
-                            "support",
-                            lower or upper,
-                            "about_to_break",
-                        )
-                    return _hit("UP", upper_now, "resistance", upper, "about_to_break")
-            if wick_tag and c[i] < o[i]:
-                if lower and lower_now is not None:
-                    return _hit("DOWN", lower_now, "support", lower, "about_to_break")
-                # Single descending resistance — 3rd touch reject → SHORT setup
-                return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
-            if near and c[i] >= c[i - 1]:
-                return _hit("UP", upper_now, "resistance", upper, "about_to_break")
-            # ENA-style single line: sitting on tip = alert
-            if not both and (wick_tag or near):
-                return _hit("UP", upper_now, "resistance", upper, "about_to_break")
+            return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
 
-    # 3rd-touch / hug on lower support (ENA ascending orange line)
+    # Ascending support: hugging / about to break down → SHORT watch
     if lower and lower_now is not None and c[i] > lower_now and _ready_for_third(l_n):
         dist = c[i] - lower_now
         wick_tag = l[i] <= lower_now + tol and c[i] >= lower_now
         near = 0 < dist <= approach
         if wick_tag or near:
-            if wick_tag and (c[i] < o[i] or (live and l[i] < lower_now)):
-                return _hit("DOWN", lower_now, "support", lower, "about_to_break")
-            if near and c[i] <= c[i - 1]:
-                return _hit("DOWN", lower_now, "support", lower, "about_to_break")
-            # Single ascending support: price approaching 3rd tip → LONG bias hold / SHORT if break
-            if not both:
-                if wick_tag or near:
-                    # About to tag / break support → watch SHORT on break (user ENA)
-                    return _hit("DOWN", lower_now, "support", lower, "about_to_break")
+            return _hit("DOWN", lower_now, "support", lower, "about_to_break")
 
-    # Apex squeeze
+    # Apex squeeze — nearer side wins; resistance side = SHORT, support = SHORT break watch
     if both and upper_now is not None and lower_now is not None:
         width = upper_now - lower_now
         if 0 < width < avg_rng * 1.6 and lower_now < c[i] < upper_now:
             if (upper_now - c[i]) <= approach or (c[i] - lower_now) <= approach:
                 if (upper_now - c[i]) <= (c[i] - lower_now):
-                    return _hit("UP", upper_now, "resistance", upper, "about_to_break")
+                    return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
                 return _hit("DOWN", lower_now, "support", lower, "about_to_break")
 
     return None
