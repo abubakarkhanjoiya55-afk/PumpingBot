@@ -1,20 +1,11 @@
 """
-Clean wick-tip trendlines — SOL-chart style.
+Clean wick-tip trendlines — MEXC / ENA style.
 
-Upper line (descending resistance):
-  1st touch = sab se oonchi wick
-  2nd touch = us se neeche wali next peak wick
-  3rd touch = us se aur neeche wali peak
-  → tip-to-tip descending line (kam az kam 2, prefer 3)
-
-Lower line (ascending support):
-  1st touch = sab se neeche wali wick
-  2nd = us se oonchi next trough
-  3rd = us se aur oonchi
-  → tip-to-tip ascending line
-
-Signal tabhi jab dono sides clean 2/3-touch triangle bani ho,
-aur 3rd touch pe reject / break ho raha ho (ya abi abi break).
+- Line tip-to-tip on exact wick chotiyan (100% tip fit)
+- Use only the LAST 3 chronological tip touches
+- Single ascending support OR descending resistance is enough
+  (triangles still OK when both sides are clean)
+- Signal when 3rd touch is live / about to happen, or just broke
 """
 from __future__ import annotations
 
@@ -24,15 +15,16 @@ TRENDLINE_WINDOW = int(os.environ.get("DC_TRENDLINE_WINDOW", "48"))
 PIVOT_LEFT = int(os.environ.get("DC_PIVOT_LEFT", "2"))
 PIVOT_RIGHT = int(os.environ.get("DC_PIVOT_RIGHT", "2"))
 MIN_PIVOT_SEP = int(os.environ.get("DC_MIN_PIVOT_SEP", "3"))
-# Wick tip precision — tight (user: exact tips, not messy)
-TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.10"))
-APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.28"))
+# Wick tip precision — exact tips (user: 100% chotiyan)
+TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.08"))
+APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.32"))
 MAX_BREAK_EXT_ATR = float(os.environ.get("DC_TREND_MAX_EXT_ATR", "0.55"))
 MIN_BODY_FRAC_LIVE = float(os.environ.get("DC_TREND_BODY_LIVE", "0.14"))
 MIN_BODY_FRAC_CLOSED = float(os.environ.get("DC_TREND_BODY_CLOSED", "0.20"))
 MIN_TOUCHES = int(os.environ.get("DC_MIN_TOUCHES", "2"))
 PREFER_TOUCHES = int(os.environ.get("DC_PREFER_TOUCHES", "3"))
-REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "1") != "0"
+# ENA-style single ascending/descending line allowed (not only triangles)
+REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "0") == "1"
 
 
 def _avg_range(ohlc: dict, end: int, look: int = 14) -> float:
@@ -183,26 +175,61 @@ def _fit_ranked_wick_line(
             if touch_n < MIN_TOUCHES:
                 continue
 
-            # First touch must be the extreme among selected (user rule)
+            # User rule: only LAST 3 tip touches (ignore older history)
+            touches = sorted(touches, key=lambda x: x[0])
+            if touch_n > PREFER_TOUCHES:
+                touches = touches[-PREFER_TOUCHES:]
+                touch_n = len(touches)
+
+            # Re-anchor 100% tip-to-tip on first→last of those last-N tips
+            ai1, ap1 = touches[0]
+            ai2, ap2 = touches[-1]
+            if ai2 <= ai1:
+                continue
+            slope = (ap2 - ap1) / float(ai2 - ai1)
+            if kind == "upper" and slope >= 0:
+                continue
+            if kind == "lower" and slope <= 0:
+                continue
+
+            # Every kept tip must still sit on the re-anchored line
+            refined: list[tuple[int, float]] = []
+            for ix, px in touches:
+                if _on_line(ix, px, ai1, ap1, ai2, ap2, tol):
+                    refined.append((ix, px))
+            if len(refined) < MIN_TOUCHES:
+                continue
+            touches = refined
+            touch_n = len(touches)
+            # Force exact tip prices on endpoints (draw = wick tip)
+            touches[0] = (touches[0][0], float(touches[0][1]))
+            touches[-1] = (touches[-1][0], float(touches[-1][1]))
+            ai1, ap1 = touches[0]
+            ai2, ap2 = touches[-1]
+            slope = (ap2 - ap1) / float(ai2 - ai1)
+
+            # First touch must be the extreme among selected (rank rule)
             prices = [p for _, p in touches]
             if kind == "upper" and max(prices) != touches[0][1]:
-                # Allow if first is within tol of max (almost highest)
                 if touches[0][1] < max(prices) - tol:
                     continue
             if kind == "lower" and min(prices) != touches[0][1]:
                 if touches[0][1] > min(prices) + tol:
                     continue
 
-            # Score: prefer 3 touches, longer span, tighter tip fit
+            # Score: prefer 3 touches, recent last tip, tight tip fit
             span = touches[-1][0] - touches[0][0]
             fit_err = 0.0
             for ix, px in touches:
-                fit_err += abs(px - _line_at(i1, p1, i2, p2, ix))
+                fit_err += abs(px - _line_at(ai1, ap1, ai2, ap2, ix))
             fit_err /= touch_n
-            # Higher touches better; prefer PREFER_TOUCHES; lower error better
+            last_idx = pivots[-1][0] if pivots else touches[-1][0]
+            last_touch_age = max(0, last_idx - touches[-1][0])
+            recency = max(0, 20 - last_touch_age)
             key = (
                 1 if touch_n >= PREFER_TOUCHES else 0,
                 touch_n,
+                recency,
                 span,
                 -fit_err,
             )
@@ -217,11 +244,11 @@ def _fit_ranked_wick_line(
                         "touches": touch_n,
                         "slope": slope,
                         "points": [{"i": i, "p": p} for i, p in touches],
-                        # Anchor for projection = first→last for clean draw
-                        "ai1": touches[0][0],
-                        "ap1": touches[0][1],
-                        "ai2": touches[-1][0],
-                        "ap2": touches[-1][1],
+                        # Anchor for projection / draw = first→last tip
+                        "ai1": ai1,
+                        "ap1": ap1,
+                        "ai2": ai2,
+                        "ap2": ap2,
                     },
                 )
 
@@ -265,7 +292,7 @@ def detect_clean_trendline_breakout(
     approaching: bool = False,
 ) -> dict | None:
     """
-    Clean wick-tip triangle: upper descending + lower ascending (2–3 touches each).
+    Clean wick-tip line(s): last-3 tip touches, single-line OK (ENA) or triangle.
     Signal on just-broke or about-to-break at 3rd touch zone.
     """
     h = ohlc["highs"]
@@ -296,14 +323,15 @@ def detect_clean_trendline_breakout(
     elif not upper and not lower:
         return None
 
-    # Prefer quality: at least one side with 3 touches
     u_n = int(upper["touches"]) if upper else 0
     l_n = int(lower["touches"]) if lower else 0
-    if max(u_n, l_n) < PREFER_TOUCHES and (u_n < MIN_TOUCHES or l_n < MIN_TOUCHES):
-        return None
-    # Both sides must meet min touches when both required
-    if REQUIRE_BOTH_SIDES and (u_n < MIN_TOUCHES or l_n < MIN_TOUCHES):
-        return None
+    if REQUIRE_BOTH_SIDES:
+        if u_n < MIN_TOUCHES or l_n < MIN_TOUCHES:
+            return None
+    else:
+        # Single-line ENA style: one side with ≥2 tip touches is enough
+        if max(u_n, l_n) < MIN_TOUCHES:
+            return None
 
     upper_now = _project(upper, i) if upper else None
     lower_now = _project(lower, i) if lower else None
@@ -330,6 +358,10 @@ def detect_clean_trendline_breakout(
             shape = "Symmetrical triangle"
         else:
             shape = "3-touch channel"
+    elif lower is not None:
+        shape = "Ascending support"
+    elif upper is not None:
+        shape = "Descending resistance"
 
     body_frac = MIN_BODY_FRAC_LIVE if live else MIN_BODY_FRAC_CLOSED
     min_break = max(avg_rng * (0.035 if live else 0.05), abs(c[i]) * 0.0005)
@@ -338,10 +370,17 @@ def detect_clean_trendline_breakout(
     def _hit(direction: str, level: float, line_kind: str, line: dict, stage: str) -> dict:
         side = "BUY" if direction == "UP" else "SELL"
         tn = int(line.get("touches") or 0)
+        # Chart: only the break-side line (clean like MEXC white chart)
+        chart_upper = _line_payload(upper) if upper and line_kind == "resistance" else None
+        chart_lower = _line_payload(lower) if lower and line_kind == "support" else None
+        # Keep opposite only when true triangle and both strong (3 tips)
+        if both and u_n >= PREFER_TOUCHES and l_n >= PREFER_TOUCHES:
+            chart_upper = _line_payload(upper) if upper else None
+            chart_lower = _line_payload(lower) if lower else None
         if stage == "about_to_break":
             pattern = "Break Setup"
             advice = (
-                f"3-touch wick tip setup · {shape} · {line_kind} ({tn} touches). "
+                f"Last-3 wick tip setup · {shape} · {line_kind} ({tn} tips). "
                 f"{'LONG' if direction == 'UP' else 'SHORT'} — teesra touch / break abi hony wala (~70%)."
             )
             detail = f"{shape} · 3rd touch / about to break{detail_live}"
@@ -368,8 +407,8 @@ def detect_clean_trendline_breakout(
             "advice": advice,
             "breakChance": chance,
             "chartLines": {
-                "upper": _line_payload(upper) if upper else None,
-                "lower": _line_payload(lower) if lower else None,
+                "upper": chart_upper,
+                "lower": chart_lower,
                 "break": line_kind,
             },
         }
@@ -408,42 +447,56 @@ def detect_clean_trendline_breakout(
                     return _hit("DOWN", lower_now, "support", lower, "just_broke")
         return None
 
-    # --- About to break / 3rd touch zone ---
+    # --- About to break / 3rd touch zone (ENA: 2 tips done, 3rd imminent) ---
     approach = avg_rng * APPROACH_ATR
 
+    def _ready_for_third(tn: int) -> bool:
+        # 2 tips already = 3rd about to happen; or already 3 tips hugging line
+        return tn >= MIN_TOUCHES
+
     # 3rd-touch rejection on upper (price tags resistance tip, still below)
-    if upper and upper_now is not None and c[i] < upper_now:
+    if upper and upper_now is not None and c[i] < upper_now and _ready_for_third(u_n):
         dist = upper_now - c[i]
         wick_tag = h[i] >= upper_now - tol and c[i] <= upper_now
         near = 0 < dist <= approach
-        if (wick_tag or near) and (u_n >= PREFER_TOUCHES or near):
-            # Prefer SHORT if also near lower break, else LONG setup on resistance break
+        if wick_tag or near:
             if lower and lower_now is not None and (c[i] - lower_now) <= approach * 0.8:
-                # Squeeze at apex — bias by closer side / wick
                 if wick_tag or (upper_now - c[i]) <= (c[i] - (lower_now or c[i])):
-                    # At upper 3rd touch reject → often short if rejecting; user SOL broke lower
-                    # If tagging upper and rejecting (close back down) → about SHORT on fail, else LONG break
                     if c[i] < o[i] and wick_tag:
-                        return _hit("DOWN", lower_now or upper_now, "support", lower or upper, "about_to_break")
+                        return _hit(
+                            "DOWN",
+                            lower_now or upper_now,
+                            "support",
+                            lower or upper,
+                            "about_to_break",
+                        )
                     return _hit("UP", upper_now, "resistance", upper, "about_to_break")
             if wick_tag and c[i] < o[i]:
-                # Reject at resistance 3rd touch — wait for lower break more often
                 if lower and lower_now is not None:
                     return _hit("DOWN", lower_now, "support", lower, "about_to_break")
+                # Single descending resistance — 3rd touch reject → SHORT setup
+                return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
             if near and c[i] >= c[i - 1]:
                 return _hit("UP", upper_now, "resistance", upper, "about_to_break")
+            # ENA-style single line: sitting on tip = alert
+            if not both and (wick_tag or near):
+                return _hit("UP", upper_now, "resistance", upper, "about_to_break")
 
-    # 3rd-touch / hug on lower support
-    if lower and lower_now is not None and c[i] > lower_now:
+    # 3rd-touch / hug on lower support (ENA ascending orange line)
+    if lower and lower_now is not None and c[i] > lower_now and _ready_for_third(l_n):
         dist = c[i] - lower_now
         wick_tag = l[i] <= lower_now + tol and c[i] >= lower_now
         near = 0 < dist <= approach
-        if (wick_tag or near) and (l_n >= PREFER_TOUCHES or near):
-            # Breaking / about to break support (SOL style)
-            if wick_tag and (c[i] < o[i] or live and l[i] < lower_now):
+        if wick_tag or near:
+            if wick_tag and (c[i] < o[i] or (live and l[i] < lower_now)):
                 return _hit("DOWN", lower_now, "support", lower, "about_to_break")
             if near and c[i] <= c[i - 1]:
                 return _hit("DOWN", lower_now, "support", lower, "about_to_break")
+            # Single ascending support: price approaching 3rd tip → LONG bias hold / SHORT if break
+            if not both:
+                if wick_tag or near:
+                    # About to tag / break support → watch SHORT on break (user ENA)
+                    return _hit("DOWN", lower_now, "support", lower, "about_to_break")
 
     # Apex squeeze
     if both and upper_now is not None and lower_now is not None:

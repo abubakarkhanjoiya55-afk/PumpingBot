@@ -1,4 +1,4 @@
-"""Mini OHLC chart PNG — wick-tip trendlines with touch dots (SOL style)."""
+"""Mini OHLC chart — clean white MEXC style, orange wick-tip trendlines."""
 from __future__ import annotations
 
 import base64
@@ -9,8 +9,8 @@ def render_breakout_chart_b64(
     ohlc: dict,
     hit: dict,
     *,
-    width: int = 380,
-    height: int = 220,
+    width: int = 400,
+    height: int = 240,
     candles: int = 48,
 ) -> str | None:
     try:
@@ -35,16 +35,16 @@ def render_breakout_chart_b64(
     if m < 5:
         return None
 
-    pad_l, pad_r, pad_t, pad_b = 10, 10, 24, 10
+    pad_l, pad_r, pad_t, pad_b = 12, 12, 26, 12
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
 
-    # Include trendline tip prices in scale so lines aren't clipped
     tip_prices: list[float] = []
     lines = hit.get("chartLines") or {}
+    primary = (lines.get("break") or hit.get("chartPrimary") or "").lower()
     for key in ("upper", "lower"):
         ln = lines.get(key) or {}
-        for pt in ln.get("points") or []:
+        for pt in (ln.get("points") or [])[-3:]:
             tip_prices.append(float(pt["p"]))
         if ln.get("p1") is not None:
             tip_prices.append(float(ln["p1"]))
@@ -56,8 +56,8 @@ def render_breakout_chart_b64(
     if ymax <= ymin:
         ymax = ymin + 1e-9
     span = ymax - ymin
-    ymin -= span * 0.08
-    ymax += span * 0.08
+    ymin -= span * 0.06
+    ymax += span * 0.06
 
     def yx(price: float) -> float:
         return pad_t + (ymax - price) / (ymax - ymin) * plot_h
@@ -65,14 +65,17 @@ def render_breakout_chart_b64(
     def xx(i_local: float) -> float:
         return pad_l + (i_local + 0.5) / m * plot_w
 
-    bg = (12, 14, 22)
-    up_c = (46, 204, 113)
-    dn_c = (231, 76, 60)
-    grid = (36, 40, 56)
-    line_u = (255, 152, 0)      # orange like user chart
-    line_l = (255, 152, 0)
-    dot_c = (255, 214, 10)
-    txt = (236, 240, 245)
+    # Clean white MEXC-like palette
+    bg = (255, 255, 255)
+    up_c = (14, 203, 129)      # green candle
+    dn_c = (246, 70, 93)       # red candle
+    grid = (240, 242, 245)
+    axis = (220, 223, 228)
+    line_orange = (255, 140, 0)  # user orange trendline
+    line_soft = (255, 180, 80)
+    dot_fill = (255, 140, 0)
+    txt = (40, 45, 55)
+    title_c = (30, 34, 42)
 
     img = Image.new("RGB", (width, height), bg)
     draw = ImageDraw.Draw(img)
@@ -81,18 +84,24 @@ def render_breakout_chart_b64(
     direction = hit.get("direction") or ""
     side = "LONG" if direction == "UP" else "SHORT"
     if stage == "about_to_break":
-        title = f"{side} · 3-touch · about to break"
+        title = f"{side} · last-3 wick tips · 3rd touch soon"
     else:
-        title = f"{side} · wick-tip clean break"
+        title = f"{side} · last-3 wick tips · clean break"
     try:
         font = ImageFont.load_default()
     except Exception:
         font = None
-    draw.text((pad_l, 5), title, fill=txt, font=font)
+    draw.text((pad_l, 6), title, fill=title_c, font=font)
 
+    # Light grid only
     for g in range(1, 4):
         gy = pad_t + plot_h * g / 4
         draw.line([(pad_l, gy), (width - pad_r, gy)], fill=grid, width=1)
+    draw.rectangle(
+        [pad_l, pad_t, width - pad_r, height - pad_b],
+        outline=axis,
+        width=1,
+    )
 
     candle_w = max(2, int(plot_w / m * 0.55))
     for i in range(m):
@@ -109,47 +118,68 @@ def render_breakout_chart_b64(
             outline=color,
         )
 
-    def _draw_line(ln: dict, color: tuple[int, int, int]):
+    def _draw_line(ln: dict, *, bold: bool):
         if not ln:
             return
-        points = ln.get("points") or []
+        points = list(ln.get("points") or [])[-3:]  # last 3 tips only
         i1 = int(ln["i1"])
         p1 = float(ln["p1"])
         i2 = int(ln["i2"])
         p2 = float(ln["p2"])
+        if points and len(points) >= 2:
+            i1 = int(points[0]["i"])
+            p1 = float(points[0]["p"])
+            i2 = int(points[-1]["i"])
+            p2 = float(points[-1]["p"])
         if i2 == i1:
             return
         slope = (p2 - p1) / (i2 - i1)
-        # Extend across visible window
-        abs_start = start
+        # Extend slightly past last tip toward current candle (MEXC style)
         abs_end = n - 1
+        abs_start = max(start, min(i1, i2) - 2)
         p_start = p1 + slope * (abs_start - i1)
         p_end = p1 + slope * (abs_end - i1)
-        draw.line(
-            [(xx(0), yx(p_start)), (xx(m - 1), yx(p_end))],
-            fill=color,
-            width=2,
-        )
-        # Exact wick-tip touch dots
+        x0 = xx(max(0, abs_start - start))
+        x1 = xx(m - 1)
+        color = line_orange if bold else line_soft
+        width_px = 3 if bold else 1
+        draw.line([(x0, yx(p_start)), (x1, yx(p_end))], fill=color, width=width_px)
+
         tips = points if points else [{"i": i1, "p": p1}, {"i": i2, "p": p2}]
-        for pt in tips:
+        for pt in tips[-3:]:
             abs_i = int(pt["i"])
             if abs_i < start or abs_i >= n:
                 continue
             loc = abs_i - start
             px, py = xx(loc), yx(float(pt["p"]))
-            r = 3
-            draw.ellipse([px - r, py - r, px + r, py + r], fill=dot_c, outline=color)
+            r = 4 if bold else 3
+            # Hollow orange ring on exact wick tip (clean, not loud)
+            draw.ellipse(
+                [px - r, py - r, px + r, py + r],
+                outline=dot_fill,
+                width=2,
+            )
+            draw.ellipse(
+                [px - 1, py - 1, px + 1, py + 1],
+                fill=dot_fill,
+            )
 
-    _draw_line(lines.get("upper") or {}, line_u)
-    _draw_line(lines.get("lower") or {}, line_l)
-
-    # Soft level dash at break price
-    level = hit.get("level")
-    if level is not None:
-        yl = yx(float(level))
-        for x0 in range(pad_l, width - pad_r, 8):
-            draw.line([(x0, yl), (min(x0 + 4, width - pad_r), yl)], fill=(250, 204, 21), width=1)
+    upper = lines.get("upper") or {}
+    lower = lines.get("lower") or {}
+    # Prefer ONE clean orange line (ENA/MEXC style). Soft second only if both present.
+    if primary == "resistance":
+        _draw_line(upper, bold=True)
+        if lower and lower.get("points"):
+            _draw_line(lower, bold=False)
+    elif primary == "support":
+        _draw_line(lower, bold=True)
+        if upper and upper.get("points"):
+            _draw_line(upper, bold=False)
+    else:
+        if lower:
+            _draw_line(lower, bold=True)
+        if upper:
+            _draw_line(upper, bold=bool(not lower))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)

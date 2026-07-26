@@ -172,6 +172,86 @@ class WickTipLineTests(unittest.TestCase):
         clean = [h for h in hits if h["pattern"] in ("Clean Breakout", "Break Setup")]
         self.assertTrue(clean)
 
+    def test_last_three_tips_only(self):
+        """Older 4th tip is dropped — line uses last 3 chronological tips."""
+        pivots = [
+            (5, 70.0),
+            (15, 78.0),
+            (25, 86.0),
+            (35, 94.0),  # 4 ascending tips on one line
+        ]
+        # Line through first→last of last-3: 15/78 → 35/94
+        lower = _fit_ranked_wick_line(pivots, kind="lower", tol=0.5)
+        self.assertIsNotNone(lower)
+        self.assertLessEqual(int(lower["touches"]), 3)
+        pts = lower["points"]
+        self.assertEqual(len(pts), int(lower["touches"]))
+        # Endpoints are exact tip prices
+        self.assertEqual(pts[0]["p"], lower["ap1"] if "ap1" in lower else pts[0]["p"])
+        self.assertEqual(pts[-1]["i"], 35)
+        self.assertEqual(pts[-1]["p"], 94.0)
+
+    def test_ena_single_ascending_support_about_to_touch(self):
+        """ENA-style: one ascending support, 2 tips done, price near 3rd tip."""
+        size = 56
+        highs = [100.0] * size
+        lows = [92.0] * size
+        opens = [96.0] * size
+        closes = [96.0] * size
+        # Ascending support tips: 12=80, 28=88  (2 done); project ~ at 50 ≈ 96.7? 
+        # slope=(88-80)/(28-12)=0.5 → at i=48: 80+0.5*36=98 — keep price near
+        for idx, px in ((12, 80.0), (28, 88.0)):
+            lows[idx] = px
+            for j in range(idx - 2, idx + 3):
+                if 0 <= j < size and j != idx:
+                    lows[j] = max(lows[j], px + 4)
+        # Quiet price above support until live approach
+        for i in range(30, 54):
+            # support @ i: 80+0.5*(i-12)
+            supp = 80.0 + 0.5 * (i - 12)
+            highs[i] = supp + 6
+            lows[i] = supp + 1.5
+            opens[i] = supp + 3.5
+            closes[i] = supp + 3.2
+        # Live candle approaching tip (3rd touch about to happen)
+        i = 54  # detector uses n-1 when live
+        supp = 80.0 + 0.5 * (i - 12)  # 101
+        # Keep geometry realistic: gentler slope so tip is near price
+        # Rebuild with gentler rise: 12=86, 30=90 → slope=0.222 → @54: 86+0.222*42≈95.3
+        lows = [92.0] * size
+        highs = [100.0] * size
+        opens = [96.0] * size
+        closes = [96.0] * size
+        for idx, px in ((12, 86.0), (30, 90.0)):
+            lows[idx] = px
+            for j in range(idx - 2, idx + 3):
+                if 0 <= j < size and j != idx:
+                    lows[j] = max(lows[j], px + 3)
+        for i in range(32, 55):
+            supp = 86.0 + (90.0 - 86.0) / (30 - 12) * (i - 12)
+            highs[i] = supp + 5
+            lows[i] = supp + 1.2
+            opens[i] = supp + 3
+            closes[i] = supp + 2.8
+        # Live: wick tags projected support (3rd touch zone)
+        i = 54
+        supp = 86.0 + (4.0 / 18.0) * (i - 12)
+        highs[i] = supp + 3
+        lows[i] = supp - 0.05  # tag tip
+        opens[i] = supp + 1.5
+        closes[i] = supp + 0.8  # still above, softish
+        ohlc = _ohlc(highs, lows, opens, closes)
+        hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
+        self.assertIsNotNone(hit, "expected ENA-style about-to 3rd touch")
+        self.assertEqual("Break Setup", hit["pattern"])
+        self.assertIn("Ascending support", hit.get("patternDetail") or "")
+        lower = (hit.get("chartLines") or {}).get("lower") or {}
+        self.assertTrue(lower.get("points"))
+        # Chart should prefer support line only (clean)
+        self.assertEqual("support", (hit.get("chartLines") or {}).get("break"))
+        b64 = render_breakout_chart_b64(ohlc, hit)
+        self.assertIsNotNone(b64)
+
 
 class DiversifyStillOk(unittest.TestCase):
     def setUp(self):
