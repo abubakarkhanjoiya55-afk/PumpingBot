@@ -207,6 +207,11 @@
     .card .lvl.sl .val { color: var(--red); }
     .card .lvl.tp .val { color: var(--green); }
     .card .meta { font-size: 0.74rem; color: var(--muted); line-height: 1.6; }
+    .card .alert-chart {
+      display: block; width: 100%; max-width: 380px; height: auto;
+      margin-top: 10px; border-radius: 8px; border: 1px solid #ddd;
+      background: #fff; image-rendering: auto;
+    }
     .card .meta b { color: #c4c8e8; font-weight: 600; }
 
     .empty {
@@ -1521,7 +1526,7 @@
         ? `<div class="meta" style="margin-top:6px;color:#93c5fd"><b>Detail:</b> ${a.advice}</div>`
         : '';
       const chartHtml = a.chartImage
-        ? `<img alt="breakout chart" src="data:image/png;base64,${a.chartImage}" style="width:100%;max-width:360px;border-radius:8px;margin-top:8px;border:1px solid #ddd;background:#fff" />`
+        ? `<img class="alert-chart" alt="breakout chart" src="data:image/png;base64,${a.chartImage}" />`
         : '';
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');

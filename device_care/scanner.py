@@ -995,7 +995,9 @@ def build_retest_wait_hit(ohlc: dict, breakout: dict) -> dict:
         "advice": advice,
         "stage": "wait",
     }
-    return enrich_trade_plan(ohlc, hit)
+    plan = enrich_trade_plan(ohlc, hit)
+    attach_chart(ohlc, plan)
+    return plan
 
 
 def detect_retest_complete(ohlc: dict, pending: dict) -> dict | None:
@@ -1051,7 +1053,9 @@ def detect_retest_complete(ohlc: dict, pending: dict) -> dict | None:
         "advice": advice,
         "stage": "complete",
     }
-    return enrich_trade_plan(ohlc, hit)
+    plan = enrich_trade_plan(ohlc, hit)
+    attach_chart(ohlc, plan)
+    return plan
 
 
 def register_pending_retest(sym: str, tf_label: str, breakout: dict):
@@ -1482,10 +1486,14 @@ def scan_ohlc(
                 sr["patternDetail"] = (
                     f"{sr.get('patternDetail', 'S/R')} · HTF 4H+1D+1W"
                 )
-            hits.append(enrich_trade_plan(ohlc, sr))
+            plan = enrich_trade_plan(ohlc, sr)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
-            hits.append(enrich_trade_plan(ohlc, hit))
+            plan = enrich_trade_plan(ohlc, hit)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
     return hits
 
 
@@ -1725,6 +1733,8 @@ async def scan_loop():
                                 if "HTF 4H+1D+1W" not in detail:
                                     hit["patternDetail"] = f"{detail} · HTF 4H+1D+1W"
                                 hit = enrich_trade_plan(ohlc, hit)
+                                if not hit.get("chartImage"):
+                                    attach_chart(ohlc, hit)
                                 if not hit.get("advice"):
                                     hit["advice"] = (
                                         "S/R HTF break — early entry; late chase mat karo."
