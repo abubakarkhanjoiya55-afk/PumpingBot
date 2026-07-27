@@ -25,8 +25,10 @@ function migrateJsonValue(raw) {
     .replaceAll('"zrBalance"', '"voltBalance"')
     .replaceAll('"REF_ZR"', '"REF_VOLT"')
     .replaceAll('"SIGNUP_ZR"', '"SIGNUP_VOLT"')
-    .replaceAll('Welcome ZR allocation', 'Welcome VOLT allocation')
-    .replaceAll(' ZR', ' VOLT')
+    .replaceAll('Welcome ZR allocation', 'Welcome Volt allocation')
+    .replaceAll(' ZR', ' Volt')
+    .replaceAll('Welcome VOLT allocation', 'Welcome Volt allocation')
+    .replaceAll(' VOLT', ' Volt')
 }
 
 let migrated = false
@@ -159,7 +161,7 @@ export function registerUser({ name, email, password, referralCode }) {
         id: uid(),
         type: 'SIGNUP_VOLT',
         amount: SIGNUP_VOLT,
-        note: 'Welcome VOLT allocation',
+        note: 'Welcome Volt allocation',
         at: Date.now(),
       },
     ],

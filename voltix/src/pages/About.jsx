@@ -11,7 +11,7 @@ export default function About({ publicMode = false }) {
     <main className="page">
       <h1 className="pageTitle">About Voltix</h1>
       <p className="pageSub">
-        This app is <strong>Voltix</strong> — USDT staking, VOLT rewards, team ranks, and milestone gifts.
+        This app is <strong>Voltix</strong> — USDT staking, Volt coin rewards, team ranks, and milestone gifts.
         Our larger platform, <strong>Voltix Exchange</strong>, is a separate crypto + forex project.
       </p>
       <article className="card aboutBlock">
@@ -67,9 +67,9 @@ export default function About({ publicMode = false }) {
         </div>
       </article>
       <article className="card aboutBlock" style={{ marginTop: '0.85rem' }}>
-        <h3>Volt Coin</h3>
+        <h3>Volt coin</h3>
         <p>
-          Every new user gets <strong>1,000 VOLT</strong>. Referrals earn <strong>200 VOLT</strong> plus
+          Every new user gets <strong>1,000 Volt</strong> (VOLT). Referrals earn <strong>200 Volt</strong> plus
           rank-based % of deposits.
         </p>
       </article>

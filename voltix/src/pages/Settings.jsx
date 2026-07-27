@@ -24,7 +24,7 @@ export default function Settings() {
           Team & Ranks<span>Deposits · Gifts →</span>
         </Link>
         <Link to="/app/settings/about">
-          About<span>VOLT · Earn · Voltix Exchange →</span>
+          About<span>Volt · Earn · Voltix Exchange →</span>
         </Link>
         <button type="button" onClick={copyRef}>
           Referral code · {user?.referralCode || '—'}

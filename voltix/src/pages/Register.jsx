@@ -29,7 +29,7 @@ export default function Register() {
     <main className="page">
       <form className="card authCard" onSubmit={onSubmit}>
         <h1 className="pageTitle">Register</h1>
-        <p className="pageSub">Get 1,000 VOLT on signup. Stay logged in until you logout.</p>
+        <p className="pageSub">Get 1,000 Volt coin on signup. Stay logged in until you logout.</p>
         <div className="field">
           <label htmlFor="name">Full name</label>
           <input id="name" value={name} onChange={(e) => setName(e.target.value)} required />

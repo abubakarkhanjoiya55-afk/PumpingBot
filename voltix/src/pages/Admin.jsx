@@ -449,7 +449,7 @@ export default function Admin() {
                   </div>
                 </div>
                 <small className="wdMeta">
-                  VOLT {formatVolt(u.voltBalance)} · unlock {formatDate(u.withdrawUnlockAt)}
+                  {formatVolt(u.voltBalance)} · unlock {formatDate(u.withdrawUnlockAt)}
                 </small>
               </article>
             ))}

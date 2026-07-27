@@ -46,7 +46,7 @@ export default function Dashboard() {
             <strong>{formatUsd(stakedTotal)}</strong>
           </div>
           <div>
-            <span>VOLT</span>
+            <span>Volt coin</span>
             <strong>{formatVolt(user?.voltBalance)}</strong>
           </div>
         </div>
@@ -142,7 +142,7 @@ export default function Dashboard() {
           <div className="statLabel">Referral code</div>
           <div className="refCode">{user?.referralCode}</div>
           <p className="pageSub" style={{ margin: '0.45rem 0 0' }}>
-            Invite friends · {team.refPct}% of their deposits + 200 VOLT · grow team gifts
+            Invite friends · {team.refPct}% of their deposits + 200 Volt · grow team gifts
           </p>
         </div>
         <button

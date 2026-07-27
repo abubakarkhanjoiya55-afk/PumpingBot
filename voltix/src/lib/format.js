@@ -3,7 +3,7 @@ export function formatUsd(n) {
 }
 
 export function formatVolt(n) {
-  return `${(Number(n) || 0).toLocaleString()} VOLT`
+  return `${(Number(n) || 0).toLocaleString()} Volt`
 }
 
 export function formatDate(ts) {

@@ -8,8 +8,8 @@ export default function Home() {
       <section className="heroPublic">
         <h1>Voltix</h1>
         <p>
-          USDT staking, team ranks, referral earnings, and milestone rewards — Pixel 7, Pixel 11, or
-          iPhone 17 Pro (or USDT cash). Register once and stay logged in until you log out.
+          USDT staking, Volt coin rewards, team ranks, referral earnings, and milestone gifts — Pixel 7,
+          Pixel 11, or iPhone 17 Pro (or USDT cash). Register once and stay logged in until you log out.
         </p>
         <div className="heroActions">
           <Link className="btn btnGold" to="/register">
@@ -44,16 +44,16 @@ export default function Home() {
         <div className="grid2">
           <article className="card cardStrong">
             <div className="statLabel">New user</div>
-            <div className="statValue gold">1,000 VOLT</div>
+            <div className="statValue gold">1,000 Volt</div>
             <p className="pageSub" style={{ marginBottom: 0 }}>
-              Free VOLT on every successful registration.
+              Free Volt coin on every successful registration.
             </p>
           </article>
           <article className="card cardStrong">
             <div className="statLabel">Referral</div>
-            <div className="statValue gold">200 VOLT + 5%</div>
+            <div className="statValue gold">200 Volt + 5%</div>
             <p className="pageSub" style={{ marginBottom: 0 }}>
-              200 VOLT per invite · 5% of referral deposits paid to you.
+              200 Volt coin per invite · 5% of referral deposits paid to you.
             </p>
           </article>
         </div>
