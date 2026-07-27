@@ -1,0 +1,22 @@
+name: Voltix Custom Domain
+
+on:
+  workflow_dispatch:
+
+env:
+  RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
+
+jobs:
+  domain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+      - name: Attach voltix.exchange
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          VOLTIX_RAILWAY_SERVICE: voltix
+        run: |
+          chmod +x scripts/railway-voltix-custom-domain.sh
+          ./scripts/railway-voltix-custom-domain.sh
