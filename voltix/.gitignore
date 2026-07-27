@@ -6,3 +6,6 @@ dist
 .env.*
 server/data/*.db
 server/data/*.db-*
+server/__pycache__/
+**/__pycache__/
+*.pyc
