@@ -36,7 +36,13 @@ jobs:
           chmod +x scripts/railway-deploy-voltix.sh
           ./scripts/railway-deploy-voltix.sh
 
+      - name: Probe custom domain APIs
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          chmod +x scripts/railway-voltix-domain-probe.sh
+          ./scripts/railway-voltix-domain-probe.sh || true
       - name: Print next steps
         run: |
-          echo "After deploy: Railway dashboard → Voltix service → Settings → Networking → Generate domain"
-          echo "Then point voltix.exchange CNAME/DNS to that Railway domain."
+          echo "Desired: https://voltix.exchange"
+          echo "Railway app: https://voltix-production-ecd8.up.railway.app"
