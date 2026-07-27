@@ -192,7 +192,7 @@ export default function Team() {
           ))}
           {team.members.length ? null : (
             <div className="empty">
-              No team yet. Share your code <strong>{user?.referralCode}</strong> from Home.
+              No team yet. Share your referral link from Home.
             </div>
           )}
         </div>

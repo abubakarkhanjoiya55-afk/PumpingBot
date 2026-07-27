@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
+import { referralLink } from '../lib/referral.js'
 
 export default function Settings() {
   const { user, logout } = useAuth()
@@ -11,8 +12,8 @@ export default function Settings() {
   }
 
   function copyRef() {
-    const code = user?.referralCode || ''
-    if (code) navigator.clipboard?.writeText(code).catch(() => {})
+    const link = referralLink(user?.referralCode)
+    if (link) navigator.clipboard?.writeText(link).catch(() => {})
   }
 
   return (
@@ -27,13 +28,14 @@ export default function Settings() {
           About<span>A Voltix Exchange project →</span>
         </Link>
         <button type="button" onClick={copyRef}>
-          Referral code · {user?.referralCode || '—'}
+          Referral link
           <span>Copy</span>
         </button>
         <button type="button" className="dangerRow" onClick={onLogout}>
           Logout<span>Session ends only here</span>
         </button>
       </div>
+      <p className="hintDark refLinkHint">{referralLink(user?.referralCode)}</p>
       <p className="hintDark">
         Bottom menu: Home, Stake, Team, Deposit, Withdraw. Settings via your name (top right).
       </p>

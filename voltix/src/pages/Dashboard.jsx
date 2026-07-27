@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { formatUsd, formatVolt } from '../lib/format.js'
+import { referralLink } from '../lib/referral.js'
 
 function startOfDay(ts = Date.now()) {
   const d = new Date(ts)
@@ -149,8 +150,8 @@ export default function Dashboard() {
 
       <section className="card refHero">
         <div className="refHeroLeft">
-          <div className="statLabel">Referral code</div>
-          <div className="refCode">{user?.referralCode}</div>
+          <div className="statLabel">Referral link</div>
+          <div className="refLink">{referralLink(user?.referralCode)}</div>
           <p className="pageSub" style={{ margin: '0.45rem 0 0' }}>
             Invite friends · {team.refPct}% of their deposits + 200 Volt · grow team gifts
           </p>
@@ -158,9 +159,12 @@ export default function Dashboard() {
         <button
           type="button"
           className="btn btnGold"
-          onClick={() => navigator.clipboard?.writeText(user?.referralCode || '')}
+          onClick={() => {
+            const link = referralLink(user?.referralCode)
+            if (link) navigator.clipboard?.writeText(link)
+          }}
         >
-          Copy code
+          Copy link
         </button>
       </section>
 

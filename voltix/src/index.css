@@ -5,3 +5,8 @@
 .logoSub{font-family:var(--font-body);font-size:.62rem;font-weight:600;letter-spacing:.04em;color:var(--muted2);max-width:11.5rem}
 .heroBelong{margin:.55rem 0 0!important;font-size:.82rem!important;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--gold)!important;max-width:none!important}
 .topbarInner{align-items:center}
+
+.refLink{margin-top:.35rem;font-family:var(--font-body);font-size:.92rem;font-weight:700;color:var(--gold-bright);line-height:1.35;word-break:break-all}
+.refHero{align-items:stretch}
+.refHero .btn{align-self:flex-start;flex-shrink:0}
+.refLinkHint{word-break:break-all;color:var(--gold)!important}
