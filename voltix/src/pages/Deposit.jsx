@@ -1,21 +1,30 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
+import { api } from '../lib/api.js'
 import { DEPOSIT_WALLETS, WITHDRAW_NETWORKS } from '../lib/constants.js'
-import { listDepositRequests } from '../lib/admin.js'
 import { formatUsd } from '../lib/format.js'
 
 export default function Deposit() {
-  const { user, deposit, refresh } = useAuth()
+  const { user, deposit } = useAuth()
   const [amount, setAmount] = useState('100')
   const [networkId, setNetworkId] = useState('trc20')
   const [txHash, setTxHash] = useState('')
   const [toast, setToast] = useState({ type: '', text: '' })
   const [copiedId, setCopiedId] = useState('')
-  const [tick, setTick] = useState(0)
-  const requests = useMemo(
-    () => listDepositRequests().filter((r) => r.userEmail === user?.email).slice(0, 8),
-    [user?.email, tick],
-  )
+  const [requests, setRequests] = useState([])
+
+  async function loadRequests() {
+    try {
+      const list = await api.myDeposits()
+      setRequests((Array.isArray(list) ? list : []).slice(0, 8))
+    } catch {
+      setRequests([])
+    }
+  }
+
+  useEffect(() => {
+    loadRequests()
+  }, [])
 
   async function copyAddr(address, id) {
     try {
@@ -27,13 +36,12 @@ export default function Deposit() {
     }
   }
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     setToast({ type: '', text: '' })
     try {
-      deposit({ amount, networkId, txHash })
-      refresh?.()
-      setTick((n) => n + 1)
+      await deposit({ amount, networkId, txHash })
+      await loadRequests()
       setToast({
         type: 'ok',
         text: `Deposit request submitted for ${formatUsd(amount)}. Balance & referral commission credit only after admin approval.`,

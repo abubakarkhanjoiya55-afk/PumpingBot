@@ -13,11 +13,11 @@ export default function AdminLogin() {
 
   if (isAdminAuthed()) return <Navigate to="/admin" replace />
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     setError('')
     try {
-      adminLogin(email, password)
+      await adminLogin(email, password)
       purgeAdminFromUsers()
       navigate('/admin', { replace: true })
     } catch (err) {

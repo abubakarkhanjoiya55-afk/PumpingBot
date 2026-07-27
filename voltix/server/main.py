@@ -488,6 +488,20 @@ def team(auth: dict = Depends(require_user)):
     return build_team_stats(auth["user"]["email"])
 
 
+@app.get("/api/my/deposits")
+def my_deposits(auth: dict = Depends(require_user)):
+    email = auth["user"]["email"]
+    rows = [r for r in db.list_deposits() if r.get("userEmail") == email]
+    return rows[:40]
+
+
+@app.get("/api/my/gifts")
+def my_gifts(auth: dict = Depends(require_user)):
+    email = auth["user"]["email"]
+    rows = [r for r in db.list_gifts() if r.get("userEmail") == email]
+    return rows[:40]
+
+
 # ── User actions ──────────────────────────────────────────────────────────────
 
 

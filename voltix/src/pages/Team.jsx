@@ -1,29 +1,49 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
-import { buildTeamStats } from '../lib/storage.js'
-import { listGiftClaims } from '../lib/admin.js'
+import { api } from '../lib/api.js'
 import { RANKS } from '../lib/constants.js'
 import { formatUsd } from '../lib/format.js'
 
 export default function Team() {
-  const { user, claimGift, refresh } = useAuth()
+  const { user, team: teamRaw, claimGift, refresh } = useAuth()
   const [toast, setToast] = useState({ type: '', text: '' })
-  const [tick, setTick] = useState(0)
-  void tick
-  const team = buildTeamStats(user?.email)
-  const myClaims = listGiftClaims().filter((c) => c.userEmail === user?.email)
+  const [myClaims, setMyClaims] = useState([])
+
+  async function loadClaims() {
+    try {
+      const list = await api.myGifts()
+      setMyClaims(Array.isArray(list) ? list : [])
+    } catch {
+      setMyClaims([])
+    }
+  }
+
+  useEffect(() => {
+    loadClaims()
+  }, [])
+
+  if (!teamRaw) {
+    return (
+      <main className="page">
+        <h1 className="pageTitle">Team & Ranks</h1>
+        <p className="pageSub">Loading…</p>
+      </main>
+    )
+  }
+
+  const team = teamRaw
   const claimedIds = new Set([
     ...(user?.claimedGifts || []),
     ...myClaims.filter((c) => c.status === 'PENDING' || c.status === 'FULFILLED').map((c) => c.giftId),
   ])
 
-  function onClaim(giftId, choice, label) {
+  async function onClaim(giftId, choice, label) {
     setToast({ type: '', text: '' })
     try {
-      claimGift(giftId, choice)
-      refresh?.()
-      setTick((n) => n + 1)
+      await claimGift(giftId, choice)
+      await refresh?.()
+      await loadClaims()
       setToast({ type: 'ok', text: `Claim sent: ${label}. Admin will see it in Gift claims.` })
     } catch (err) {
       setToast({ type: 'err', text: err?.message || 'Claim failed' })

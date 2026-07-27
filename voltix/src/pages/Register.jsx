@@ -13,15 +13,19 @@ export default function Register() {
   const [show, setShow] = useState(false)
   const [referralCode, setReferralCode] = useState(params.get('ref') || '')
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     setError('')
+    setBusy(true)
     try {
-      register({ name, email, password, referralCode })
+      await register({ name, email, password, referralCode })
       navigate('/app', { replace: true })
     } catch (err) {
       setError(err?.message || 'Registration failed')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -29,7 +33,7 @@ export default function Register() {
     <main className="page">
       <form className="card authCard" onSubmit={onSubmit}>
         <h1 className="pageTitle">Register</h1>
-        <p className="pageSub">Get 1,000 Volt coin on signup. Stay logged in until you logout.</p>
+        <p className="pageSub">Get 1,000 Volt coin on signup. Account is stored on the server — you can login again after reinstall.</p>
         <div className="field">
           <label htmlFor="name">Full name</label>
           <input id="name" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -63,8 +67,8 @@ export default function Register() {
             placeholder="Friend’s code"
           />
         </div>
-        <button className="btn btnGold btnBlock" type="submit">
-          Create account
+        <button className="btn btnGold btnBlock" type="submit" disabled={busy}>
+          {busy ? 'Creating…' : 'Create account'}
         </button>
         {error ? <div className="toast err">{error}</div> : null}
         <p className="authSwitch">

@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
-import { buildTeamStats } from '../lib/storage.js'
 import { formatUsd, formatVolt } from '../lib/format.js'
 
 function startOfDay(ts = Date.now()) {
@@ -15,16 +14,27 @@ function sumPlanProfit(history, since = 0) {
     .reduce((sum, h) => sum + Number(h.amount || 0), 0)
 }
 
+const EMPTY_TEAM = {
+  teamDeposits: 0,
+  teamSize: 0,
+  directCount: 0,
+  rank: { name: 'Scout', tagline: '', yieldBonus: 0 },
+  refPct: 5,
+  yieldBonus: 0,
+  gifts: [],
+}
+
 export default function Dashboard() {
-  const { user } = useAuth()
+  const { user, team: teamRaw } = useAuth()
+  const team = teamRaw || EMPTY_TEAM
   const active = (user?.staked || []).filter((s) => s.status === 'ACTIVE')
   const stakedTotal = active.reduce((sum, s) => sum + Number(s.amount || 0), 0)
   const history = user?.history || []
   const todayProfit = sumPlanProfit(history, startOfDay())
   const totalProfit = sumPlanProfit(history, 0)
   const recentProfit = history.filter((h) => h.type === 'PLAN_PROFIT').slice(0, 6)
-  const team = buildTeamStats(user?.email)
-  const nextGift = team.gifts.find((g) => !g.unlocked) || team.gifts[team.gifts.length - 1]
+  const nextGift = (team.gifts || []).find((g) => !g.unlocked) || (team.gifts || [])[(team.gifts || []).length - 1]
+
 
   return (
     <main className="page dashPage">

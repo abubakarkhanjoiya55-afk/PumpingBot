@@ -15,11 +15,11 @@ export default function Withdraw() {
     .filter((h) => h.type === 'PLAN_PROFIT')
     .reduce((sum, h) => sum + Number(h.amount || 0), 0)
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     setToast({ type: '', text: '' })
     try {
-      withdraw({ amount, networkId, address })
+      await withdraw({ amount, networkId, address })
       setToast({
         type: 'ok',
         text: `Request sent: ${formatUsd(amount)} on ${network?.label}. Admin will pay to your address.`,

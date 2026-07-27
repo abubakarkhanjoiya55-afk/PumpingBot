@@ -16,7 +16,7 @@ export default function Plans() {
     setToast({ type: '', text: '' })
   }
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     setToast({ type: '', text: '' })
     const amt = Number(amount)
@@ -29,7 +29,7 @@ export default function Plans() {
       return
     }
     try {
-      stake(amt, planId)
+      await stake(amt, planId)
       setToast({ type: 'ok', text: `Staked ${formatUsd(amt)} in ${plan.name}` })
     } catch (err) {
       setToast({ type: 'err', text: err?.message || 'Stake failed' })

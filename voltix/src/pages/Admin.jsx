@@ -1,10 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate } from 'react-router-dom'
 import {
   isAdminAuthed,
   adminLogout,
-  platformStats,
-  liveStakesByPlan,
   listAdminUsers,
   getAdminLogs,
   listWithdrawRequests,
@@ -16,6 +14,7 @@ import {
   approveDeposit,
   rejectDeposit,
 } from '../lib/admin.js'
+import { api } from '../lib/api.js'
 import { ADMIN_EMAIL, PLANS } from '../lib/constants.js'
 import { formatUsd, formatVolt, formatDate } from '../lib/format.js'
 
@@ -26,30 +25,68 @@ export default function Admin() {
   const [note, setNote] = useState('')
   const [toast, setToast] = useState({ type: '', text: '' })
   const [tick, setTick] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [stats, setStats] = useState({ users: 0 })
+  const [stakes, setStakes] = useState([])
+  const [users, setUsers] = useState([])
+  const [logs, setLogs] = useState([])
+  const [withdraws, setWithdraws] = useState([])
+  const [gifts, setGifts] = useState([])
+  const [deposits, setDeposits] = useState([])
 
-  const stats = useMemo(() => platformStats(), [tick])
-  const stakes = useMemo(() => liveStakesByPlan(), [tick])
-  const users = useMemo(() => listAdminUsers(), [tick])
-  const logs = useMemo(() => getAdminLogs(), [tick])
-  const withdraws = useMemo(() => listWithdrawRequests(), [tick])
-  const gifts = useMemo(() => listGiftClaims(), [tick])
-  const deposits = useMemo(() => listDepositRequests(), [tick])
+  const authed = isAdminAuthed()
+
+  useEffect(() => {
+    if (!authed) return
+    let cancelled = false
+    ;(async () => {
+      setLoading(true)
+      try {
+        const [overview, usersList, logsList, withdrawsList, giftsList, depositsList] = await Promise.all([
+          api.adminOverview(),
+          listAdminUsers(),
+          getAdminLogs(),
+          listWithdrawRequests(),
+          listGiftClaims(),
+          listDepositRequests(),
+        ])
+        if (cancelled) return
+        setStats(overview?.stats || { users: 0 })
+        setStakes(overview?.liveStakes || overview?.stakes || [])
+        setUsers(Array.isArray(usersList) ? usersList : [])
+        setLogs(Array.isArray(logsList) ? logsList : [])
+        setWithdraws(Array.isArray(withdrawsList) ? withdrawsList : [])
+        setGifts(Array.isArray(giftsList) ? giftsList : [])
+        setDeposits(Array.isArray(depositsList) ? depositsList : [])
+      } catch (err) {
+        if (!cancelled) {
+          setToast({ type: 'err', text: err?.message || 'Failed to load admin data' })
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [tick, authed])
+
+  if (!authed) return <Navigate to="/admin/login" replace />
+
   const pendingGifts = gifts.filter((g) => g.status === 'PENDING').length
   const pendingDeposits = deposits.filter((d) => d.status === 'PENDING').length
   const selectedStake = stakes.find((s) => s.planId === planId)
 
-  if (!isAdminAuthed()) return <Navigate to="/admin/login" replace />
-
-  function onLogout() {
-    adminLogout()
+  async function onLogout() {
+    await adminLogout()
     navigate('/admin/login', { replace: true })
   }
 
-  function onProfit(e) {
+  async function onProfit(e) {
     e.preventDefault()
     setToast({ type: '', text: '' })
     try {
-      const result = payoutPlanProfit(planId, percent, note.trim())
+      const result = await payoutPlanProfit(planId, percent, note.trim())
       setToast({
         type: 'ok',
         text: `Paid ${formatUsd(result.totalPaid)} to ${result.usersHit} users (${result.stakesHit} stakes) on ${result.planName} @ ${result.percent}%`,
@@ -60,35 +97,35 @@ export default function Admin() {
     }
   }
 
-  function onWithdraw(id, status) {
+  async function onWithdraw(id, status) {
     try {
-      updateWithdrawStatus(id, status)
+      await updateWithdrawStatus(id, status)
       setTick((n) => n + 1)
     } catch (err) {
       setToast({ type: 'err', text: err?.message || 'Update failed' })
     }
   }
 
-  function onGift(id, status) {
+  async function onGift(id, status) {
     try {
-      updateGiftClaimStatus(id, status)
+      await updateGiftClaimStatus(id, status)
       setTick((n) => n + 1)
     } catch (err) {
       setToast({ type: 'err', text: err?.message || 'Update failed' })
     }
   }
 
-  function onDeposit(id, action) {
+  async function onDeposit(id, action) {
     setToast({ type: '', text: '' })
     try {
       if (action === 'APPROVE') {
-        const row = approveDeposit(id)
+        const row = await approveDeposit(id)
         setToast({
           type: 'ok',
           text: `Approved ${formatUsd(row.amount)} for ${row.userEmail} — balance + referral commission credited`,
         })
       } else {
-        rejectDeposit(id)
+        await rejectDeposit(id)
         setToast({ type: 'ok', text: 'Deposit request rejected — no balance credited' })
       }
       setTick((n) => n + 1)
@@ -124,6 +161,10 @@ export default function Admin() {
         </div>
         {toast.text ? <div className={`toast ${toast.type}`}>{toast.text}</div> : null}
 
+        {loading ? (
+          <p className="pageSub">Loading…</p>
+        ) : (
+          <>
         <section className="adminStats">
           <article className="card glassCard">
             <div className="statLabel">Users</div>
@@ -457,6 +498,8 @@ export default function Admin() {
             {users.length ? null : <div className="empty">No registered users yet.</div>}
           </div>
         </section>
+          </>
+        )}
       </main>
     </div>
   )
