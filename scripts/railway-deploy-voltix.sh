@@ -4,6 +4,7 @@ set -euo pipefail
 
 PROJECT_ID="${RAILWAY_PROJECT_ID:-c2f246da-a5ec-4432-ad4e-925438b85982}"
 SERVICE_NAME="${VOLTIX_RAILWAY_SERVICE:-voltix}"
+ENVIRONMENT_NAME="${RAILWAY_ENVIRONMENT:-production}"
 
 if [ -z "${RAILWAY_TOKEN:-}" ]; then
   echo "RAILWAY_TOKEN missing"
@@ -15,11 +16,10 @@ cd "$ROOT/voltix"
 export RAILWAY_TOKEN
 
 echo "=== Voltix Railway deploy ==="
-echo "Project: $PROJECT_ID  Service: $SERVICE_NAME"
+echo "Project: $PROJECT_ID  Service: $SERVICE_NAME  Env: $ENVIRONMENT_NAME"
 
 set +e
-railway link --project "$PROJECT_ID" </dev/null
-railway service "$SERVICE_NAME" </dev/null
+railway link --project "$PROJECT_ID" --environment "$ENVIRONMENT_NAME" --service "$SERVICE_NAME" </dev/null
 set -e
 
 echo "Uploading Voltix from $(pwd) ..."
@@ -28,10 +28,14 @@ echo "railway up OK"
 
 echo "Generating / fetching public domain ..."
 set +e
-DOMAIN_OUT="$(railway domain --service "$SERVICE_NAME" --project "$PROJECT_ID" --json 2>&1)"
+DOMAIN_OUT="$(railway domain --service "$SERVICE_NAME" --project "$PROJECT_ID" --environment "$ENVIRONMENT_NAME" --json 2>&1)"
 echo "domain json: $DOMAIN_OUT"
-if [ -z "$DOMAIN_OUT" ] || echo "$DOMAIN_OUT" | grep -qi 'error\|usage\|failed'; then
-  DOMAIN_OUT="$(railway domain --service "$SERVICE_NAME" --project "$PROJECT_ID" 2>&1)"
+if ! printf '%s' "$DOMAIN_OUT" | grep -Eq 'railway\.app|\{'; then
+  DOMAIN_OUT="$(railway domain --service "$SERVICE_NAME" --environment "$ENVIRONMENT_NAME" --json 2>&1)"
+  echo "domain json (linked): $DOMAIN_OUT"
+fi
+if ! printf '%s' "$DOMAIN_OUT" | grep -Eq 'railway\.app|\{'; then
+  DOMAIN_OUT="$(railway domain --service "$SERVICE_NAME" --environment "$ENVIRONMENT_NAME" 2>&1)"
   echo "domain plain: $DOMAIN_OUT"
 fi
 set -e
@@ -49,7 +53,8 @@ except Exception:
   raise SystemExit
 def walk(x):
   if isinstance(x,str):
-    if ".up.railway.app" in x: print(x.replace("https://","").replace("http://","").split("/")[0]); raise SystemExit
+    if ".up.railway.app" in x:
+      print(x.replace("https://","").replace("http://","").split("/")[0]); raise SystemExit
   elif isinstance(x,dict):
     for v in x.values(): walk(v)
   elif isinstance(x,list):
