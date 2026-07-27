@@ -1,0 +1,40 @@
+name: Deploy Voltix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'voltix/**'
+      - 'scripts/railway-deploy-voltix.sh'
+      - '.github/workflows/deploy-voltix.yml'
+  workflow_dispatch:
+
+env:
+  RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
+
+jobs:
+  railway-voltix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+
+      - name: Deploy Voltix to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          VOLTIX_RAILWAY_SERVICE: voltix
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret missing — cannot deploy permanent Voltix URL"
+            exit 1
+          fi
+          chmod +x scripts/railway-deploy-voltix.sh
+          ./scripts/railway-deploy-voltix.sh
+
+      - name: Print next steps
+        run: |
+          echo "After deploy: Railway dashboard → Voltix service → Settings → Networking → Generate domain"
+          echo "Then point voltix.exchange CNAME/DNS to that Railway domain."
