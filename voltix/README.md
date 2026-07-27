@@ -10,3 +10,4 @@ Source for https://voltix.exchange
 4. Add custom domain `voltix.exchange` (+ www)
 
 Admin: `admin@voltix.exchange` / `VoltixAdmin@2026`
+# domain attach 20260727134842

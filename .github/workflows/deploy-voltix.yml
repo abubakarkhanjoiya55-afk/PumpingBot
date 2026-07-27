@@ -26,6 +26,8 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
           VOLTIX_RAILWAY_SERVICE: voltix
+          SPACESHIP_API_KEY: ${{ secrets.SPACESHIP_API_KEY }}
+          SPACESHIP_API_SECRET: ${{ secrets.SPACESHIP_API_SECRET }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "::error::RAILWAY_TOKEN secret missing — cannot deploy permanent Voltix URL"
