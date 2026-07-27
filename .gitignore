@@ -6,3 +6,6 @@ client/node_modules/
 client/dist/
 device_care/data/
 uploads/
+
+voltix/node_modules/
+voltix/dist/
