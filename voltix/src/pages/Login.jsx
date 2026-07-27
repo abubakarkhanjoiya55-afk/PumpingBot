@@ -26,7 +26,7 @@ export default function Login() {
     <main className="page">
       <form className="card authCard" onSubmit={onSubmit}>
         <h1 className="pageTitle">Login</h1>
-        <p className="pageSub">Welcome back to Voltix.</p>
+        <p className="pageSub">Welcome back to Volt.</p>
         <div className="field">
           <label htmlFor="email">Email</label>
           <input

@@ -6,7 +6,8 @@ export default function Home() {
   return (
     <main className="page">
       <section className="heroPublic">
-        <h1>Voltix</h1>
+        <h1>Volt</h1>
+        <p className="heroBelong">A Voltix Exchange project</p>
         <p>
           USDT staking, Volt coin rewards, team ranks, referral earnings, and milestone gifts — Pixel 7,
           Pixel 11, or iPhone 17 Pro (or USDT cash). Register once and stay logged in until you log out.

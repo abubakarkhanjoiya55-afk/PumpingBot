@@ -7,8 +7,9 @@ export default function AppShell() {
     <div className="appShell">
       <header className="topbar">
         <div className="topbarInner">
-          <NavLink to="/app" className="logo" end>
-            Voltix
+          <NavLink to="/app" className="logoBrand" end>
+            <span className="logoMain">Volt</span>
+            <span className="logoSub">A Voltix Exchange project</span>
           </NavLink>
           <div className="topActions">
             <Link className="userChip" to="/app/settings">

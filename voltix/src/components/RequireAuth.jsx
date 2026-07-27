@@ -6,7 +6,7 @@ export default function RequireAuth({ children }) {
   if (!ready) {
     return (
       <div className="bootScreen" aria-busy="true">
-        Loading Voltix…
+        Loading Volt…
       </div>
     )
   }

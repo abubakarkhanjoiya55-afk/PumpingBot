@@ -29,8 +29,9 @@ export default function AdminLogin() {
     <div className="adminShell">
       <header className="topbar">
         <div className="topbarInner">
-          <Link to="/" className="logo">
-            Voltix <span>Admin</span>
+          <Link to="/" className="logoBrand">
+            <span className="logoMain">Volt</span>
+            <span className="logoSub">Voltix Exchange · Admin</span>
           </Link>
         </div>
       </header>

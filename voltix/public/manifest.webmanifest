@@ -1,7 +1,7 @@
 {
-  "name": "Voltix",
-  "short_name": "Voltix",
-  "description": "USDT staking, Volt coin rewards, and Voltix Exchange coming soon.",
+  "name": "Volt",
+  "short_name": "Volt",
+  "description": "A Voltix Exchange project — USDT staking and Volt coin rewards.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#000000",

@@ -6,7 +6,7 @@ export default function PublicShell() {
   if (!ready) {
     return (
       <div className="bootScreen" aria-busy="true">
-        Loading Voltix…
+        Loading Volt…
       </div>
     )
   }
@@ -15,8 +15,9 @@ export default function PublicShell() {
     <div className="publicShell">
       <header className="topbar">
         <div className="topbarInner">
-          <Link to="/" className="logo">
-            Voltix
+          <Link to="/" className="logoBrand">
+            <span className="logoMain">Volt</span>
+            <span className="logoSub">A Voltix Exchange project</span>
           </Link>
           <nav className="publicNav" aria-label="Primary">
             <Link to="/">Home</Link>
