@@ -22,3 +22,4 @@ Live app (Railway): https://voltix-production-ecd8.up.railway.app
 3. Or add GitHub secrets `VERCEL_TOKEN` + `VERCEL_ORG_ID` + `VERCEL_PROJECT_ID` and push
 
 Admin: `admin@voltix.exchange` / `VoltixAdmin@2026`
+# Trigger Vercel deployment
