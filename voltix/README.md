@@ -1,15 +1,24 @@
-# Voltix (Zaar rebrand)
+# Voltix (Voltix Exchange)
 
-Source for https://voltix.exchange
+Branded URL: **https://voltix.exchange**
 
-## Deploy (Vercel)
+Live app (Railway): https://voltix-production-ecd8.up.railway.app
 
-1. Import this repo (or reconnect existing project)
-2. **Root Directory:** `voltix`
-3. Framework: Vite
-4. Add custom domain `voltix.exchange` (+ www)
+## Make voltix.exchange show Volt (pick ONE)
+
+### A) Spaceship DNS → Railway (full stack, best)
+
+1. [Spaceship](https://www.spaceship.com) → Domains → `voltix.exchange` → DNS
+2. Delete Vercel A records (`76.76.21.21`)
+3. Add:
+   - `@` ALIAS/CNAME → `voltix-production-ecd8.up.railway.app`
+   - `www` CNAME → `voltix-production-ecd8.up.railway.app`
+4. Railway → service **voltix** → Networking → Custom Domain → add `voltix.exchange` + `www`
+
+### B) Vercel (DNS already points here)
+
+1. [Vercel](https://vercel.com) → project that owns `voltix.exchange`
+2. Root Directory = `voltix` → Redeploy
+3. Or add GitHub secrets `VERCEL_TOKEN` + `VERCEL_ORG_ID` + `VERCEL_PROJECT_ID` and push
 
 Admin: `admin@voltix.exchange` / `VoltixAdmin@2026`
-# domain attach 20260727134842
-# probe 1785160173
-# trigger deploy 1785160780

@@ -1,0 +1,59 @@
+name: Deploy Voltix to Vercel (voltix.exchange)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'voltix/**'
+      - 'vercel.json'
+      - '.github/workflows/deploy-voltix-vercel.yml'
+  workflow_dispatch:
+
+jobs:
+  vercel-voltix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: voltix/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Deploy Voltix to Vercel (domain voltix.exchange)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: voltix
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "::warning::VERCEL_TOKEN missing — cannot overwrite Zaar on voltix.exchange"
+            echo "Add GitHub secrets VERCEL_TOKEN + VERCEL_ORG_ID + VERCEL_PROJECT_ID"
+            echo "Project must already have custom domain voltix.exchange"
+            exit 0
+          fi
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          URL="$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")"
+          echo "Deployed: $URL"
+          echo "### Voltix Vercel" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Desired branded URL: https://voltix.exchange" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify branded domain
+        run: |
+          sleep 5
+          TITLE="$(curl -sL --max-time 20 https://voltix.exchange | grep -oE '<title>[^<]+</title>' | head -1 || true)"
+          echo "Title: $TITLE"
+          echo "Title: $TITLE" >> "$GITHUB_STEP_SUMMARY"
+          if echo "$TITLE" | grep -qi 'Volt'; then
+            echo "✅ https://voltix.exchange is Volt"
+          else
+            echo "::warning::https://voltix.exchange still not Volt (DNS/Vercel project may differ)"
+          fi

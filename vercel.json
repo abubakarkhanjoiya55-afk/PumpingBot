@@ -3,8 +3,14 @@
   "outputDirectory": "voltix/dist",
   "framework": "vite",
   "installCommand": "cd voltix && npm ci",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
-  "env": {
-    "VITE_API_URL": "https://voltix-production-ecd8.up.railway.app"
-  }
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://voltix-production-ecd8.up.railway.app/api/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
