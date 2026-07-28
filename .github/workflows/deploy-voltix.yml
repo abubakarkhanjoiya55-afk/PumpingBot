@@ -36,13 +36,35 @@ jobs:
           chmod +x scripts/railway-deploy-voltix.sh
           ./scripts/railway-deploy-voltix.sh
 
+      - name: Attach custom domains via GraphQL
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          VOLTIX_RAILWAY_SERVICE: voltix
+          VOLTIX_RAILWAY_SERVICE_ID: ccf2b3d6-82b2-43cc-801a-d573cc76b490
+          RAILWAY_ENVIRONMENT_ID: 48134280-3d02-49de-bd65-d8859a33627c
+        run: |
+          chmod +x scripts/railway-voltix-custom-domain.sh
+          ./scripts/railway-voltix-custom-domain.sh || true
+
       - name: Probe custom domain APIs
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           chmod +x scripts/railway-voltix-domain-probe.sh
           ./scripts/railway-voltix-domain-probe.sh || true
-      - name: Print next steps
+
+      - name: Verify branded domain
         run: |
           echo "Desired: https://voltix.exchange"
           echo "Railway app: https://voltix-production-ecd8.up.railway.app"
+          for i in 1 2 3 4 5; do
+            TITLE="$(curl -sk --max-time 15 --resolve voltix.exchange:443:69.46.46.109 https://voltix.exchange/ | grep -oE '<title>[^<]+</title>' | head -1 || true)"
+            echo "try $i title=$TITLE"
+            if echo "$TITLE" | grep -qi 'Volt'; then
+              echo "✅ voltix.exchange serving Volt"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::voltix.exchange not Volt yet — Railway custom domain + TXT verify may still be needed"
