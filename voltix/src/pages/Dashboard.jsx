@@ -202,7 +202,7 @@ export default function Dashboard() {
                 <small>{h.note}</small>
               </div>
               <strong className="goldText">
-                {String(h.type).includes('VOLT') || String(h.type).includes('ZR')
+                {String(h.type).includes('VOLT')
                   ? formatVolt(h.amount)
                   : formatUsd(h.amount)}
               </strong>

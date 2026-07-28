@@ -114,15 +114,6 @@ export const KEYS = {
   depositRequests: 'voltix_deposit_requests_v1',
 }
 
-export const OLD_KEYS = {
-  users: 'zaar_users_v1',
-  session: 'zaar_session_v1',
-  adminSession: 'zaar_admin_session_v1',
-  adminLogs: 'zaar_admin_logs_v1',
-  withdrawRequests: 'zaar_withdraw_requests_v1',
-  giftClaims: 'zaar_gift_claims_v1',
-  depositRequests: 'zaar_deposit_requests_v1',
-}
 
 export const EVENTS = {
   usersUpdated: 'voltix-users-updated',
