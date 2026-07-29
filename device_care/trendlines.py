@@ -16,17 +16,19 @@ PIVOT_LEFT = int(os.environ.get("DC_PIVOT_LEFT", "2"))
 PIVOT_RIGHT = int(os.environ.get("DC_PIVOT_RIGHT", "2"))
 MIN_PIVOT_SEP = int(os.environ.get("DC_MIN_PIVOT_SEP", "3"))
 # Wick tip precision — exact tips (user: 100% chotiyan)
-TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.07"))
-APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.35"))
-MAX_BREAK_EXT_ATR = float(os.environ.get("DC_TREND_MAX_EXT_ATR", "0.55"))
-MIN_BODY_FRAC_LIVE = float(os.environ.get("DC_TREND_BODY_LIVE", "0.14"))
-MIN_BODY_FRAC_CLOSED = float(os.environ.get("DC_TREND_BODY_CLOSED", "0.20"))
+TOUCH_TOL_ATR = float(os.environ.get("DC_TOUCH_TOL_ATR", "0.10"))
+# Wider approach so Break Setup alerts actually fire on 4H/D1
+APPROACH_ATR = float(os.environ.get("DC_APPROACH_ATR", "0.90"))
+MAX_BREAK_EXT_ATR = float(os.environ.get("DC_TREND_MAX_EXT_ATR", "0.90"))
+MIN_BODY_FRAC_LIVE = float(os.environ.get("DC_TREND_BODY_LIVE", "0.08"))
+MIN_BODY_FRAC_CLOSED = float(os.environ.get("DC_TREND_BODY_CLOSED", "0.14"))
 MIN_TOUCHES = int(os.environ.get("DC_MIN_TOUCHES", "2"))
 PREFER_TOUCHES = int(os.environ.get("DC_PREFER_TOUCHES", "3"))
-# Max body pierces allowed between tip anchors (0 = tip-only clean like MEXC)
-MAX_BODY_PIERCES = int(os.environ.get("DC_MAX_BODY_PIERCES", "0"))
-# User demo: upar+neeche tip triangle required (single-line off by default)
+# Allow 1 soft body nick — pure 0 was killing almost all real alerts
+MAX_BODY_PIERCES = int(os.environ.get("DC_MAX_BODY_PIERCES", "1"))
+# Prefer both tip sides (demo). Soft single-side fallback if triangle missing.
 REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "1") == "1"
+ALLOW_SINGLE_SIDE_FALLBACK = os.environ.get("DC_ALLOW_SINGLE_SIDE", "1") == "1"
 
 
 def _avg_range(ohlc: dict, end: int, look: int = 14) -> float:
@@ -333,6 +335,67 @@ def _line_tip_clean(ohlc: dict, line: dict | None, *, kind: str, end: int, tol: 
     return _body_pierce_count(ohlc, line, kind=kind, end=end, tol=tol) <= MAX_BODY_PIERCES
 
 
+def _fallback_last_tips(
+    pivots: list[tuple[int, float]],
+    *,
+    kind: str,
+) -> dict | None:
+    """Raw last-2/3 swing tips tip-to-tip (chart + detector share this)."""
+    if len(pivots) < 2:
+        return None
+    tips = sorted(pivots, key=lambda p: p[0])[-PREFER_TOUCHES:]
+    if tips[-1][0] <= tips[0][0]:
+        return None
+    slope = (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0])
+    # Soft rank: prefer correct slope, but keep line for chart even if soft
+    if kind == "upper" and slope > 0:
+        # try last descending pair among last-3
+        best = None
+        for a in range(len(tips)):
+            for b in range(a + 1, len(tips)):
+                if tips[b][1] < tips[a][1]:
+                    span = tips[b][0] - tips[a][0]
+                    if span <= 0:
+                        continue
+                    key = (span, -abs(tips[a][1] - tips[b][1]))
+                    if best is None or key > best[0]:
+                        best = (key, [tips[a], tips[b]])
+        if best:
+            tips = best[1]
+            slope = (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0])
+        else:
+            return None
+    if kind == "lower" and slope < 0:
+        best = None
+        for a in range(len(tips)):
+            for b in range(a + 1, len(tips)):
+                if tips[b][1] > tips[a][1]:
+                    span = tips[b][0] - tips[a][0]
+                    if span <= 0:
+                        continue
+                    key = (span, -abs(tips[b][1] - tips[a][1]))
+                    if best is None or key > best[0]:
+                        best = (key, [tips[a], tips[b]])
+        if best:
+            tips = best[1]
+            slope = (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0])
+        else:
+            return None
+    return {
+        "i1": tips[0][0],
+        "p1": tips[0][1],
+        "i2": tips[-1][0],
+        "p2": tips[-1][1],
+        "touches": len(tips),
+        "slope": slope,
+        "points": [{"i": i, "p": p} for i, p in tips],
+        "ai1": tips[0][0],
+        "ap1": tips[0][1],
+        "ai2": tips[-1][0],
+        "ap2": tips[-1][1],
+    }
+
+
 def chart_last3_wick_lines(
     ohlc: dict,
     *,
@@ -365,39 +428,10 @@ def chart_last3_wick_lines(
     upper = _fit_ranked_wick_line(high_pivots, kind="upper", tol=tol)
     lower = _fit_ranked_wick_line(low_pivots, kind="lower", tol=tol)
 
-    # Fallback: raw last-3 swing tips tip-to-tip (even if rank soft)
-    if not upper and len(high_pivots) >= 2:
-        tips = sorted(high_pivots, key=lambda p: p[0])[-3:]
-        if tips[-1][0] > tips[0][0]:
-            upper = {
-                "i1": tips[0][0],
-                "p1": tips[0][1],
-                "i2": tips[-1][0],
-                "p2": tips[-1][1],
-                "touches": len(tips),
-                "slope": (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0]),
-                "points": [{"i": i, "p": p} for i, p in tips],
-                "ai1": tips[0][0],
-                "ap1": tips[0][1],
-                "ai2": tips[-1][0],
-                "ap2": tips[-1][1],
-            }
-    if not lower and len(low_pivots) >= 2:
-        tips = sorted(low_pivots, key=lambda p: p[0])[-3:]
-        if tips[-1][0] > tips[0][0]:
-            lower = {
-                "i1": tips[0][0],
-                "p1": tips[0][1],
-                "i2": tips[-1][0],
-                "p2": tips[-1][1],
-                "touches": len(tips),
-                "slope": (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0]),
-                "points": [{"i": i, "p": p} for i, p in tips],
-                "ai1": tips[0][0],
-                "ap1": tips[0][1],
-                "ai2": tips[-1][0],
-                "ap2": tips[-1][1],
-            }
+    if not upper:
+        upper = _fallback_last_tips(high_pivots, kind="upper")
+    if not lower:
+        lower = _fallback_last_tips(low_pivots, kind="lower")
 
     prefer_upper = direction in ("DOWN", "SELL", "BEARISH")
     if prefer_upper:
@@ -456,19 +490,32 @@ def detect_clean_trendline_breakout(
     if lower and not _line_tip_clean(ohlc, lower, kind="lower", end=hist_end, tol=tol):
         lower = None
 
-    if REQUIRE_BOTH_SIDES:
-        if not upper or not lower:
+    # Same fallback as chart — otherwise alerts die while charts still draw tips
+    if not upper:
+        upper = _fallback_last_tips(high_pivots, kind="upper")
+    if not lower:
+        lower = _fallback_last_tips(low_pivots, kind="lower")
+
+    both_ok = bool(upper and lower)
+    if REQUIRE_BOTH_SIDES and not both_ok:
+        if not ALLOW_SINGLE_SIDE_FALLBACK:
+            return None
+        # soft: continue with whichever side exists (3-touch preferred later)
+        if not upper and not lower:
             return None
     elif not upper and not lower:
         return None
 
     u_n = int(upper["touches"]) if upper else 0
     l_n = int(lower["touches"]) if lower else 0
-    if REQUIRE_BOTH_SIDES:
+    if both_ok:
         if u_n < MIN_TOUCHES or l_n < MIN_TOUCHES:
             return None
     else:
         if max(u_n, l_n) < MIN_TOUCHES:
+            return None
+        # When both-sides preferred but missing, single-side needs 3 tips
+        if REQUIRE_BOTH_SIDES and ALLOW_SINGLE_SIDE_FALLBACK and max(u_n, l_n) < PREFER_TOUCHES:
             return None
 
     upper_now = _project(upper, i) if upper else None
@@ -486,9 +533,7 @@ def detect_clean_trendline_breakout(
     if both:
         us = float(upper["slope"])
         ls = float(lower["slope"])
-        if not (us < 0 and ls > 0):
-            if REQUIRE_BOTH_SIDES:
-                return None
+        # Soft: keep non-perfect slopes as channel (still alert-worthy)
         flat_u = abs(us) <= (avg_rng * 0.002)
         flat_l = abs(ls) <= (avg_rng * 0.002)
         if flat_u and ls > 0:
@@ -498,7 +543,7 @@ def detect_clean_trendline_breakout(
         elif us < 0 and ls > 0:
             shape = "Symmetrical triangle"
         else:
-            shape = "3-touch channel"
+            shape = "Tip channel"
     elif lower is not None:
         shape = "Ascending support"
     elif upper is not None:
@@ -507,13 +552,12 @@ def detect_clean_trendline_breakout(
         shape = "Trendline"
 
     body_frac = MIN_BODY_FRAC_LIVE if live else MIN_BODY_FRAC_CLOSED
-    min_break = max(avg_rng * (0.05 if live else 0.08), abs(c[i]) * 0.0008)
+    min_break = max(avg_rng * (0.04 if live else 0.06), abs(c[i]) * 0.0006)
     detail_live = " (LIVE)" if live else ""
 
     def _hit(direction: str, level: float, line_kind: str, line: dict, stage: str) -> dict:
         side = "BUY" if direction == "UP" else "SELL"
         tn = int(line.get("touches") or 0)
-        # Chart MUST carry both tip lines (upar + neeche) like demo image
         chart_upper = _line_payload(upper) if upper else None
         chart_lower = _line_payload(lower) if lower else None
         tip_txt = (
@@ -525,7 +569,7 @@ def detect_clean_trendline_breakout(
             pattern = "Break Setup"
             advice = (
                 f"Tip triangle · {shape} · {line_kind} · {tip_txt}. "
-                f"{'LONG' if direction == 'UP' else 'SHORT'} setup — break abi hony wala. "
+                f"{'LONG' if direction == 'UP' else 'SHORT'} setup — break zone. "
                 f"Entry + SL/TP alert pe; chase mat karo."
             )
             detail = f"{shape} · tips {tip_txt} · about to break{detail_live}"
@@ -551,7 +595,7 @@ def detect_clean_trendline_breakout(
             "stage": stage,
             "advice": advice,
             "breakChance": chance,
-            "structure": "tip_triangle",
+            "structure": "tip_triangle" if (chart_upper and chart_lower) else "tip_line",
             "chartLines": {
                 "upper": chart_upper,
                 "lower": chart_lower,
@@ -559,68 +603,67 @@ def detect_clean_trendline_breakout(
             },
         }
 
-    # --- Just broke (strict — no false LONG on dirty / early resistance) ---
+    # --- Just broke ---
     if not approaching:
         if not _body_ok(ohlc, i, body_frac):
             return None
 
-        if upper and upper_now is not None and upper_prev is not None:
-            # LONG only on clear close ABOVE clean descending resistance
-            # Prefer 3 tip touches; 2-touch needs stronger close
-            need_clear = min_break if u_n >= PREFER_TOUCHES else min_break * 1.4
-            broke = (
-                c[i] > upper_now + need_clear
-                and c[i - 1] <= upper_prev + tol * 0.5
-                and c[i] > o[i]  # bullish close confirmation
-            )
+        if upper and upper_now is not None:
+            need_clear = min_break if u_n >= PREFER_TOUCHES else min_break * 1.2
+            prev_ok = True if upper_prev is None else (c[i - 1] <= upper_prev + tol)
+            broke = c[i] > upper_now + need_clear and prev_ok and c[i] > o[i]
             if broke:
                 ext = (c[i] - upper_now) / (avg_rng or 1e-12)
                 if ext <= MAX_BREAK_EXT_ATR:
                     return _hit("UP", upper_now, "resistance", upper, "just_broke")
 
-        if lower and lower_now is not None and lower_prev is not None:
-            need_clear = min_break if l_n >= PREFER_TOUCHES else min_break * 1.4
-            broke = (
-                c[i] < lower_now - need_clear
-                and c[i - 1] >= lower_prev - tol * 0.5
-                and c[i] < o[i]
-            )
+        if lower and lower_now is not None:
+            need_clear = min_break if l_n >= PREFER_TOUCHES else min_break * 1.2
+            prev_ok = True if lower_prev is None else (c[i - 1] >= lower_prev - tol)
+            broke = c[i] < lower_now - need_clear and prev_ok and c[i] < o[i]
             if broke:
                 ext = (lower_now - c[i]) / (avg_rng or 1e-12)
                 if ext <= MAX_BREAK_EXT_ATR:
                     return _hit("DOWN", lower_now, "support", lower, "just_broke")
         return None
 
-    # --- About to break / 3rd touch (HANA: resistance touch = SHORT) ---
+    # --- About to break / tip-zone (main alert volume on 4H/D1) ---
     approach = avg_rng * APPROACH_ATR
 
-    def _ready_for_third(tn: int) -> bool:
-        return tn >= MIN_TOUCHES
+    # Inside tip triangle / channel — nearer side decides direction
+    if both and upper_now is not None and lower_now is not None:
+        width = upper_now - lower_now
+        if width > 0 and lower_now < c[i] < upper_now:
+            dist_u = upper_now - c[i]
+            dist_l = c[i] - lower_now
+            near_u = dist_u <= approach
+            near_l = dist_l <= approach
+            wick_u = h[i] >= upper_now - tol
+            wick_l = l[i] <= lower_now + tol
+            # Squeeze / apex — only with a near-side touch zone
+            squeeze = width < avg_rng * 1.5 and (near_u or near_l or wick_u or wick_l)
+            if near_u or wick_u or (squeeze and dist_u <= dist_l):
+                return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
+            if near_l or wick_l or (squeeze and dist_l < dist_u):
+                return _hit("DOWN", lower_now, "support", lower, "about_to_break")
 
-    # Descending resistance: price still BELOW line at 3rd touch → SHORT (not LONG)
-    if upper and upper_now is not None and c[i] < upper_now and _ready_for_third(u_n):
+    # Single-side / remaining tip hug
+    if upper and upper_now is not None and c[i] <= upper_now + tol:
         dist = upper_now - c[i]
-        wick_tag = h[i] >= upper_now - tol and c[i] <= upper_now
-        near = 0 < dist <= approach
+        wick_tag = h[i] >= upper_now - tol
+        near = -tol <= dist <= approach
         if wick_tag or near:
             return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
 
-    # Ascending support: hugging / about to break down → SHORT watch
-    if lower and lower_now is not None and c[i] > lower_now and _ready_for_third(l_n):
+    if lower and lower_now is not None and c[i] >= lower_now - tol:
         dist = c[i] - lower_now
-        wick_tag = l[i] <= lower_now + tol and c[i] >= lower_now
-        near = 0 < dist <= approach
+        wick_tag = l[i] <= lower_now + tol
+        near = -tol <= dist <= approach
         if wick_tag or near:
-            return _hit("DOWN", lower_now, "support", lower, "about_to_break")
-
-    # Apex squeeze — nearer side wins; resistance side = SHORT, support = SHORT break watch
-    if both and upper_now is not None and lower_now is not None:
-        width = upper_now - lower_now
-        if 0 < width < avg_rng * 1.6 and lower_now < c[i] < upper_now:
-            if (upper_now - c[i]) <= approach or (c[i] - lower_now) <= approach:
-                if (upper_now - c[i]) <= (c[i] - lower_now):
-                    return _hit("DOWN", upper_now, "resistance", upper, "about_to_break")
+            # Near support from above — break watch SHORT (structure) OR bounce LONG if strong tip count
+            if both:
                 return _hit("DOWN", lower_now, "support", lower, "about_to_break")
+            return _hit("UP", lower_now, "support", lower, "about_to_break")
 
     return None
 

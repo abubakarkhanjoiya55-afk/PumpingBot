@@ -1540,19 +1540,19 @@ def scan_ohlc(
     seen_dirs: set[str] = set()
 
     if run_triangle:
-        # Prefer 3rd-touch / about-to first
+        # Prefer about-to / tip-zone first (main alert volume)
         setup = detect_clean_trendline_breakout(
             ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
         )
         if setup and setup["direction"] not in seen_dirs:
-            # Must look like demo: both tip sides on chart
             lines = setup.get("chartLines") or {}
-            if lines.get("upper") and lines.get("lower"):
+            # Prefer both tips; allow one side if chart can still fill
+            if lines.get("upper") or lines.get("lower"):
                 seen_dirs.add(setup["direction"])
                 plan = enrich_trade_plan(ohlc, setup)
                 attach_chart(ohlc, plan)
                 hits.append(plan)
-        # Confirmed clean tip break
+        # Confirmed tip break
         for live in (True, False):
             clean = detect_clean_trendline_breakout(
                 ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
@@ -1562,7 +1562,7 @@ def scan_ohlc(
             if clean["direction"] in seen_dirs:
                 continue
             lines = clean.get("chartLines") or {}
-            if not (lines.get("upper") and lines.get("lower")):
+            if not (lines.get("upper") or lines.get("lower")):
                 continue
             seen_dirs.add(clean["direction"])
             plan = enrich_trade_plan(ohlc, clean)
