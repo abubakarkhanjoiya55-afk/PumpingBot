@@ -1,4 +1,4 @@
-"""Mini OHLC chart — clean white MEXC style, orange wick-tip / S/R lines."""
+"""Mini OHLC chart — white MEXC style, ONE orange last-3 wick-tip line only."""
 from __future__ import annotations
 
 import base64
@@ -17,6 +17,8 @@ def render_breakout_chart_b64(
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
         return None
+
+    from device_care.trendlines import chart_last3_wick_lines
 
     highs = ohlc.get("highs") or []
     lows = ohlc.get("lows") or []
@@ -39,9 +41,39 @@ def render_breakout_chart_b64(
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
 
-    tip_prices: list[float] = []
+    direction = hit.get("direction") or ""
+    # Always build last-3 wick tip line from OHLC (user rule). Prefer hit.chartLines if tip points exist.
+    auto = chart_last3_wick_lines(ohlc, direction=direction, window=candles)
     lines = hit.get("chartLines") or {}
-    primary = (lines.get("break") or hit.get("chartPrimary") or "").lower()
+    has_tips = False
+    for key in ("upper", "lower"):
+        ln = lines.get(key) or {}
+        pts = ln.get("points") or []
+        if len(pts) >= 2 and ln.get("i1") is not None:
+            has_tips = True
+            break
+    if not has_tips:
+        lines = auto
+    else:
+        # Keep signal side only — never draw both + never horizontal level
+        brk = (lines.get("break") or auto.get("break") or "").lower()
+        if brk == "resistance":
+            lines = {
+                "upper": lines.get("upper") or auto.get("upper"),
+                "lower": None,
+                "break": "resistance",
+            }
+        elif brk == "support":
+            lines = {
+                "upper": None,
+                "lower": lines.get("lower") or auto.get("lower"),
+                "break": "support",
+            }
+        else:
+            lines = auto
+
+    primary = (lines.get("break") or "").lower()
+    tip_prices: list[float] = []
     for key in ("upper", "lower"):
         ln = lines.get(key) or {}
         for pt in (ln.get("points") or [])[-3:]:
@@ -50,13 +82,6 @@ def render_breakout_chart_b64(
             tip_prices.append(float(ln["p1"]))
         if ln.get("p2") is not None:
             tip_prices.append(float(ln["p2"]))
-
-    level = hit.get("level")
-    if level is not None:
-        try:
-            tip_prices.append(float(level))
-        except (TypeError, ValueError):
-            level = None
 
     ymin = min(min(ls), min(tip_prices) if tip_prices else min(ls))
     ymax = max(max(hs), max(tip_prices) if tip_prices else max(hs))
@@ -72,15 +97,12 @@ def render_breakout_chart_b64(
     def xx(i_local: float) -> float:
         return pad_l + (i_local + 0.5) / m * plot_w
 
-    # Clean white MEXC-like palette
     bg = (255, 255, 255)
     up_c = (14, 203, 129)
     dn_c = (246, 70, 93)
     grid = (235, 238, 242)
     axis = (210, 214, 220)
     line_orange = (255, 140, 0)
-    line_soft = (255, 180, 80)
-    level_blue = (37, 99, 235)
     dot_fill = (255, 140, 0)
     title_c = (30, 34, 42)
 
@@ -88,20 +110,17 @@ def render_breakout_chart_b64(
     draw = ImageDraw.Draw(img)
 
     stage = hit.get("stage") or ""
-    direction = hit.get("direction") or ""
-    pattern = hit.get("pattern") or ""
     side = "LONG" if direction == "UP" else "SHORT"
-    has_trend = bool(lines.get("upper") or lines.get("lower"))
-    if has_trend and stage == "about_to_break":
+    tip_n = 0
+    for key in ("upper", "lower"):
+        ln = lines.get(key) or {}
+        tip_n = max(tip_n, len(ln.get("points") or []), int(ln.get("touches") or 0))
+    if stage == "about_to_break":
         title = f"{side} · last-3 wick tips · 3rd touch"
-    elif has_trend:
-        title = f"{side} · last-3 wick tips · clean break"
-    elif pattern == "S/R Breakout":
-        title = f"{side} · S/R level break"
-    elif pattern:
-        title = f"{side} · {pattern}"
+    elif tip_n >= 2:
+        title = f"{side} · last-3 wick tips"
     else:
-        title = f"{side} · price chart"
+        title = f"{side} · last-3 wick tips"
     try:
         font = ImageFont.load_default()
     except Exception:
@@ -132,13 +151,13 @@ def render_breakout_chart_b64(
             outline=color,
         )
 
-    def _draw_line(ln: dict, *, bold: bool):
+    def _draw_line(ln: dict):
         if not ln:
-            return
+            return False
         points = list(ln.get("points") or [])[-3:]
         if "i1" not in ln or "p1" not in ln or "i2" not in ln or "p2" not in ln:
             if len(points) < 2:
-                return
+                return False
         i1 = int(ln.get("i1", points[0]["i"] if points else 0))
         p1 = float(ln.get("p1", points[0]["p"] if points else 0))
         i2 = int(ln.get("i2", points[-1]["i"] if points else 1))
@@ -149,7 +168,7 @@ def render_breakout_chart_b64(
             i2 = int(points[-1]["i"])
             p2 = float(points[-1]["p"])
         if i2 == i1:
-            return
+            return False
         slope = (p2 - p1) / (i2 - i1)
         abs_end = n - 1
         abs_start = max(start, min(i1, i2) - 2)
@@ -157,9 +176,7 @@ def render_breakout_chart_b64(
         p_end = p1 + slope * (abs_end - i1)
         x0 = xx(max(0, abs_start - start))
         x1 = xx(m - 1)
-        color = line_orange if bold else line_soft
-        width_px = 3 if bold else 1
-        draw.line([(x0, yx(p_start)), (x1, yx(p_end))], fill=color, width=width_px)
+        draw.line([(x0, yx(p_start)), (x1, yx(p_end))], fill=line_orange, width=3)
 
         tips = points if points else [{"i": i1, "p": p1}, {"i": i2, "p": p2}]
         for pt in tips[-3:]:
@@ -168,48 +185,19 @@ def render_breakout_chart_b64(
                 continue
             loc = abs_i - start
             px, py = xx(loc), yx(float(pt["p"]))
-            r = 4 if bold else 3
-            draw.ellipse(
-                [px - r, py - r, px + r, py + r],
-                outline=dot_fill,
-                width=2,
-            )
-            draw.ellipse(
-                [px - 1, py - 1, px + 1, py + 1],
-                fill=dot_fill,
-            )
+            r = 4
+            draw.ellipse([px - r, py - r, px + r, py + r], outline=dot_fill, width=2)
+            draw.ellipse([px - 1, py - 1, px + 1, py + 1], fill=dot_fill)
+        return True
 
-    upper = lines.get("upper") or {}
-    lower = lines.get("lower") or {}
-    drew_trend = False
-    if primary == "resistance" and upper:
-        _draw_line(upper, bold=True)
-        drew_trend = True
-        if lower and lower.get("points"):
-            _draw_line(lower, bold=False)
-    elif primary == "support" and lower:
-        _draw_line(lower, bold=True)
-        drew_trend = True
-        if upper and upper.get("points"):
-            _draw_line(upper, bold=False)
+    # ONE line only — top wicks OR bottom wicks (never horizontal S/R)
+    if primary == "resistance":
+        _draw_line(lines.get("upper") or {})
+    elif primary == "support":
+        _draw_line(lines.get("lower") or {})
     else:
-        if lower:
-            _draw_line(lower, bold=True)
-            drew_trend = True
-        if upper:
-            _draw_line(upper, bold=bool(not lower))
-            drew_trend = True
-
-    # S/R or pattern alerts: orange/blue horizontal level so chart never empty of setup
-    if not drew_trend and level is not None:
-        try:
-            lv = float(level)
-            y = yx(lv)
-            draw.line([(pad_l, y), (width - pad_r, y)], fill=line_orange, width=2)
-            # end marker
-            draw.ellipse([width - pad_r - 5, y - 5, width - pad_r + 1, y + 1], fill=level_blue)
-        except (TypeError, ValueError):
-            pass
+        if not _draw_line(lines.get("lower") or {}):
+            _draw_line(lines.get("upper") or {})
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -217,8 +205,17 @@ def render_breakout_chart_b64(
 
 
 def attach_chart(ohlc: dict, hit: dict) -> dict:
-    """Always try to attach a white mini-chart (trendline or S/R/pattern level)."""
+    """Attach white mini-chart with last-3 wick-tip orange line."""
     try:
+        from device_care.trendlines import chart_last3_wick_lines
+
+        # Ensure hit carries tip lines for consistency / debugging
+        if not (hit.get("chartLines") or {}).get("upper") and not (hit.get("chartLines") or {}).get(
+            "lower"
+        ):
+            hit["chartLines"] = chart_last3_wick_lines(
+                ohlc, direction=hit.get("direction") or "UP"
+            )
         b64 = render_breakout_chart_b64(ohlc, hit)
         if b64:
             hit["chartImage"] = b64

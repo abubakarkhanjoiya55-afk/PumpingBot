@@ -333,6 +333,85 @@ def _line_tip_clean(ohlc: dict, line: dict | None, *, kind: str, end: int, tol: 
     return _body_pierce_count(ohlc, line, kind=kind, end=end, tol=tol) <= MAX_BODY_PIERCES
 
 
+def chart_last3_wick_lines(
+    ohlc: dict,
+    *,
+    direction: str = "UP",
+    window: int = TRENDLINE_WINDOW,
+) -> dict:
+    """
+    For mini-charts: ONE orange tip-to-tip line on the latest 2–3 wick tips.
+    SHORT → prefer descending resistance (top wicks)
+    LONG  → prefer ascending support (bottom wicks)
+    Falls back to the other side if preferred side missing.
+    No body-pierce gate — chart should still show the tip line.
+    """
+    h = ohlc["highs"]
+    l = ohlc["lows"]
+    c = ohlc["closes"]
+    n = len(c)
+    if n < 10:
+        return {"upper": None, "lower": None, "break": None}
+
+    end = n - 1
+    start = max(0, end - window)
+    avg_rng = _avg_range(ohlc, end) or abs(c[end]) * 0.01
+    # Slightly looser tol for chart drawing so last-3 tips usually appear
+    tol = max(avg_rng * max(TOUCH_TOL_ATR, 0.12), abs(c[end]) * 0.0012)
+
+    high_pivots = _swing_pivots(h, kind="high", start=start, end=end)
+    low_pivots = _swing_pivots(l, kind="low", start=start, end=end)
+    upper = _fit_ranked_wick_line(high_pivots, kind="upper", tol=tol)
+    lower = _fit_ranked_wick_line(low_pivots, kind="lower", tol=tol)
+
+    # Fallback: raw last-3 swing tips tip-to-tip (even if rank soft)
+    if not upper and len(high_pivots) >= 2:
+        tips = sorted(high_pivots, key=lambda p: p[0])[-3:]
+        if tips[-1][0] > tips[0][0]:
+            upper = {
+                "i1": tips[0][0],
+                "p1": tips[0][1],
+                "i2": tips[-1][0],
+                "p2": tips[-1][1],
+                "touches": len(tips),
+                "slope": (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0]),
+                "points": [{"i": i, "p": p} for i, p in tips],
+                "ai1": tips[0][0],
+                "ap1": tips[0][1],
+                "ai2": tips[-1][0],
+                "ap2": tips[-1][1],
+            }
+    if not lower and len(low_pivots) >= 2:
+        tips = sorted(low_pivots, key=lambda p: p[0])[-3:]
+        if tips[-1][0] > tips[0][0]:
+            lower = {
+                "i1": tips[0][0],
+                "p1": tips[0][1],
+                "i2": tips[-1][0],
+                "p2": tips[-1][1],
+                "touches": len(tips),
+                "slope": (tips[-1][1] - tips[0][1]) / (tips[-1][0] - tips[0][0]),
+                "points": [{"i": i, "p": p} for i, p in tips],
+                "ai1": tips[0][0],
+                "ap1": tips[0][1],
+                "ai2": tips[-1][0],
+                "ap2": tips[-1][1],
+            }
+
+    prefer_upper = direction in ("DOWN", "SELL", "BEARISH")
+    if prefer_upper:
+        if upper:
+            return {"upper": _line_payload(upper), "lower": None, "break": "resistance"}
+        if lower:
+            return {"upper": None, "lower": _line_payload(lower), "break": "support"}
+    else:
+        if lower:
+            return {"upper": None, "lower": _line_payload(lower), "break": "support"}
+        if upper:
+            return {"upper": _line_payload(upper), "lower": None, "break": "resistance"}
+    return {"upper": None, "lower": None, "break": None}
+
+
 def detect_clean_trendline_breakout(
     ohlc: dict,
     window: int = TRENDLINE_WINDOW,
