@@ -484,7 +484,7 @@
   <div class="header">
     <div class="logo">⚙️</div>
     <h1>My Signals</h1>
-    <p class="sub">MEXC Futures · last-3 wick-tip charts only · multi-TF · min ~3/hour</p>
+    <p class="sub">MEXC Futures · 4H/1D last-3 wick tips (upar+neeche) · Entry/SL/TP</p>
   </div>
   <div class="trial-banner hidden" id="trialBanner">
     🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
@@ -509,14 +509,14 @@
 
   <section class="tf-section" aria-label="Timeframe toggles">
     <div class="section-title" style="margin-bottom:10px;">Signal timeframes</div>
-    <p class="tf-note">S/R signal tabhi aata hai jab level <b>4H + 1D + 1W</b> pe align ho. Har TF on/off kar sakte ho.</p>
+    <p class="tf-note">Default focus: <b>4H + 1D</b> last-3 wick tips (upar orange + neeche blue). S/R secondary jab level 4H+1D+1W align ho.</p>
     <div class="tf-toggle-row" id="tfToggleRow">
       <button type="button" class="tf-toggle" data-tf="5m">5m</button>
       <button type="button" class="tf-toggle" data-tf="15m">15m</button>
       <button type="button" class="tf-toggle" data-tf="1h">1H</button>
       <button type="button" class="tf-toggle on" data-tf="4H">4H</button>
       <button type="button" class="tf-toggle on" data-tf="D1">1D</button>
-      <button type="button" class="tf-toggle on" data-tf="1W">1W</button>
+      <button type="button" class="tf-toggle" data-tf="1W">1W</button>
     </div>
   </section>
 
@@ -542,9 +542,9 @@
       <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
       <div class="scan-detail" id="scanDetail">Loading...</div>
       <div class="tf-pills">
-        <span class="tf-pill">4H+1D+1W</span>
-        <span class="tf-pill">HTF S/R</span>
-        <span class="tf-pill">Prior SL</span>
+        <span class="tf-pill">4H + 1D</span>
+        <span class="tf-pill">Tips up+down</span>
+        <span class="tf-pill">Entry/SL/TP</span>
         <span class="tf-pill">90+ push</span>
       </div>
     </div>
@@ -574,7 +574,7 @@
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi alert nahi — scan chal raha hai<br>
-      <span style="font-size:0.75rem;color:#3a3a50">HTF 4H+1D+1W S/R · prior-area SL · score 90+ phone push</span>
+      <span style="font-size:0.75rem;color:#3a3a50">4H/1D last-3 tips up+down · Entry/SL/TP · score 90+ phone push</span>
     </div>
   </div>
 
@@ -1513,6 +1513,7 @@
         ? `<div class="score-row">
              <span class="score-badge${scoreClass}">Score ${score}/100</span>
              ${a.riskReward != null ? `<span class="rr">RR 1:${a.riskReward}</span>` : ''}
+             ${a.riskPct != null ? `<span class="rr">Risk ${a.riskPct}%</span>` : ''}
            </div>`
         : '';
       const levelsHtml = (a.entry != null || a.sl != null || a.tp != null)

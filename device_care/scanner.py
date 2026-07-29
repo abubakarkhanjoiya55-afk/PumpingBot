@@ -3,14 +3,21 @@ My Signals — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
 Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
-Strategy:
-  - Clean 2-touch trendline / triangle breakouts (LONG+SHORT) on 1h/4H/D1/1W
-  - Signal at break moment (LIVE) — late chase reject
-  - Optional Break Setup (~70%) when price hugs the line
+
+Clear rules (default focus: 4H + 1D):
+  Chart
+  - Mini chart shows last-3 wick tip lines UP (orange) + DOWN (blue)
+  - Tip-to-tip only — no horizontal S/R lines on chart
+  Alerts
+  - Clean Breakout: body close just beyond last-3 tip line (LIVE preferred)
+  - Break Setup: 3rd tip / about-to-break hug (watch, not chase)
   - S/R Breakout only with HTF 4H+1D+1W confluence (secondary)
-  - Diversify: ~3 distinct coins/hour, ~1 alert/coin/day
-  - Mini chart PNG on clean breakouts when Pillow available
-Score >= 90 → ntfy push (app band ho tab bhi phone par alert).
+  - Late chase (far from line) rejected
+  Risk
+  - Every alert has Entry + SL + TP + RR
+  - SL from recent swing / prior area; risk capped (~ATR / ~6% price)
+  - Score >= 90 → ntfy phone push
+  Diversify: ~3+ setups/hour target; cooldowns per pattern
 """
 import asyncio
 import json
@@ -120,7 +127,7 @@ _api_symbols_cache: set[str] | None = None
 _symbol_meta_cache: dict[str, dict] | None = None
 _symbol_cache_at: float = 0
 
-# Default: 1h + 4H + D1 + 1W (user requested HTF clean breakouts)
+# Default focus: 4H + 1D (user: last-3 wicks upar + neeche). Other TFs optional.
 TIMEFRAMES = [
     ("Min5", "5m", 80),
     ("Min15", "15m", 80),
@@ -141,10 +148,10 @@ TF_BUTTONS = [
 enabled_tfs: dict[str, bool] = {
     "5m": False,
     "15m": False,
-    "1h": True,
+    "1h": False,
     "4H": True,
     "D1": True,
-    "1W": True,
+    "1W": False,
 }
 
 router = APIRouter(prefix=APP_PREFIX, tags=["my-signals"])
@@ -182,10 +189,17 @@ scan_stats = {
     "strategy": {
         "5m": "S/R LIVE (user toggle)",
         "15m": "S/R LIVE (user toggle)",
-        "1h": "Clean 2-touch trendline LIVE + S/R",
-        "4H": "Clean 2-touch trendline LIVE + S/R",
-        "D1": "Clean 2-touch trendline LIVE + S/R + Doji/Hammer",
-        "1W": "Clean 2-touch trendline LIVE + S/R",
+        "1h": "Last-3 wick tips LIVE + S/R (optional)",
+        "4H": "Primary · last-3 tips up+down · LIVE break + SL/TP",
+        "D1": "Primary · last-3 tips up+down · LIVE break + Doji/Hammer",
+        "1W": "Last-3 wick tips LIVE + S/R (optional)",
+    },
+    "chartStyle": "last-3 wick tips upper (orange) + lower (blue)",
+    "riskRules": {
+        "sl": "recent swing / prior break area",
+        "tp": "RR scales with score (~1.2–3.0)",
+        "maxRiskPct": 6.0,
+        "noChase": True,
     },
     "hourlyMinTarget": HOURLY_MIN_TARGET,
     "hourlySymbolCap": HOURLY_MIN_TARGET,  # legacy field name
@@ -358,6 +372,7 @@ def _normalize_alert(alert: dict) -> dict:
         "sl": alert.get("sl"),
         "tp": alert.get("tp"),
         "riskReward": alert.get("riskReward"),
+        "riskPct": alert.get("riskPct"),
         "advice": alert.get("advice"),
         "stage": alert.get("stage"),
         "breakChance": alert.get("breakChance"),
@@ -987,23 +1002,30 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 4
         sl = min(pattern_low, conf_low) - buffer
 
+    # Both-side last-3 tip channel (upar+neeche) = cleaner structure
+    lines = hit.get("chartLines") or {}
+    if lines.get("upper") and lines.get("lower"):
+        score += 5
+
     score = max(1, min(100, int(score)))
 
     # RR scales with score: 1.5 @50 → ~3.0 @100
     rr = round(1.2 + (score / 100.0) * 2.0, 2)
-    sl, tp, _risk = _clamp_sl_tp(
+    sl, tp, risk = _clamp_sl_tp(
         direction=direction,
         entry=entry,
         sl=sl,
         rr=rr,
         avg_rng=avg_rng,
     )
+    risk_pct = round((risk / abs(entry)) * 100.0, 2) if entry else 0.0
 
     hit["score"] = score
     hit["entry"] = _round_price(entry)
     hit["sl"] = _round_price(sl)
     hit["tp"] = _round_price(tp)
     hit["riskReward"] = rr
+    hit["riskPct"] = risk_pct
     hit["close"] = _round_price(close)
     if hit.get("level") is not None:
         hit["level"] = _round_price(float(hit["level"]))
@@ -1692,8 +1714,8 @@ async def fetch_klines(
 
 async def scan_loop():
     print(
-        "[My Signals] Strategy: wick-tip 3-touch LIVE (1h/4H/D1/1W) · "
-        f"min ~{HOURLY_MIN_TARGET}/hour (multi-TF OK) · max {MAX_ALERTS_PER_HOUR}/hour · ntfy"
+        "[My Signals] Strategy: 4H/1D last-3 wick tips (upar+neeche) · "
+        f"min ~{HOURLY_MIN_TARGET}/hour · max {MAX_ALERTS_PER_HOUR}/hour · Entry/SL/TP · ntfy"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         while True:

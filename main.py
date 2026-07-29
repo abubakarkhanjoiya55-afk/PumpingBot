@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.21.4"   # Charts: only last-3 wick tip line (no horizontal S/R)
+API_VERSION = "3.22.0"   # Charts: last-3 wick tips upar+neeche (4H/1D focus)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

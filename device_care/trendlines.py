@@ -340,11 +340,12 @@ def chart_last3_wick_lines(
     window: int = TRENDLINE_WINDOW,
 ) -> dict:
     """
-    For mini-charts: ONE orange tip-to-tip line on the latest 2–3 wick tips.
-    SHORT → prefer descending resistance (top wicks)
-    LONG  → prefer ascending support (bottom wicks)
-    Falls back to the other side if preferred side missing.
-    No body-pierce gate — chart should still show the tip line.
+    For mini-charts: last-3 wick tip lines from ABOVE and BELOW when available.
+
+    - Upper = last 2–3 top wick tips (descending resistance preferred)
+    - Lower = last 2–3 bottom wick tips (ascending support preferred)
+    - `break` marks which side the signal prefers (for title / highlight)
+    No body-pierce gate — chart should still show the tip lines.
     """
     h = ohlc["highs"]
     l = ohlc["lows"]
@@ -400,16 +401,15 @@ def chart_last3_wick_lines(
 
     prefer_upper = direction in ("DOWN", "SELL", "BEARISH")
     if prefer_upper:
-        if upper:
-            return {"upper": _line_payload(upper), "lower": None, "break": "resistance"}
-        if lower:
-            return {"upper": None, "lower": _line_payload(lower), "break": "support"}
+        brk = "resistance" if upper else ("support" if lower else None)
     else:
-        if lower:
-            return {"upper": None, "lower": _line_payload(lower), "break": "support"}
-        if upper:
-            return {"upper": _line_payload(upper), "lower": None, "break": "resistance"}
-    return {"upper": None, "lower": None, "break": None}
+        brk = "support" if lower else ("resistance" if upper else None)
+
+    return {
+        "upper": _line_payload(upper) if upper else None,
+        "lower": _line_payload(lower) if lower else None,
+        "break": brk,
+    }
 
 
 def detect_clean_trendline_breakout(
@@ -505,14 +505,16 @@ def detect_clean_trendline_breakout(
     def _hit(direction: str, level: float, line_kind: str, line: dict, stage: str) -> dict:
         side = "BUY" if direction == "UP" else "SELL"
         tn = int(line.get("touches") or 0)
-        # Chart: break-side line only (HANA/ENA clean single orange line)
-        chart_upper = _line_payload(upper) if upper and line_kind == "resistance" else None
-        chart_lower = _line_payload(lower) if lower and line_kind == "support" else None
+        # Chart: both last-3 tip lines (upar + neeche) when clean; break marks signal side
+        chart_upper = _line_payload(upper) if upper else None
+        chart_lower = _line_payload(lower) if lower else None
+        both_txt = " · up+down tips" if (chart_upper and chart_lower) else ""
         if stage == "about_to_break":
             pattern = "Break Setup"
             advice = (
-                f"Last-3 wick tip setup · {shape} · {line_kind} ({tn} tips). "
-                f"{'LONG' if direction == 'UP' else 'SHORT'} — teesra touch / break abi hony wala (~70%)."
+                f"Last-3 wick tip setup · {shape} · {line_kind} ({tn} tips){both_txt}. "
+                f"{'LONG' if direction == 'UP' else 'SHORT'} — teesra touch / break abi hony wala. "
+                f"Entry plan + SL/TP alert pe; chase mat karo."
             )
             detail = f"{shape} · 3rd touch / about to break{detail_live}"
             chance = 72
@@ -520,8 +522,9 @@ def detect_clean_trendline_breakout(
             pattern = "Clean Breakout"
             advice = (
                 f"Clean wick-tip break abi abi · {shape} · {line_kind} "
-                f"({tn} wick tips). "
-                f"{'LONG' if direction == 'UP' else 'SHORT'} — entry abhi, chase mat karo."
+                f"({tn} wick tips){both_txt}. "
+                f"{'LONG' if direction == 'UP' else 'SHORT'} — entry abhi near level, "
+                f"SL plan follow karo, late chase mat karo."
             )
             detail = f"{shape} · just broke{detail_live}"
             chance = 90

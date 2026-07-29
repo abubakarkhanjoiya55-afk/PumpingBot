@@ -166,11 +166,42 @@ class WickTipLineTests(unittest.TestCase):
             detect_clean_trendline_breakout(ohlc, live=False, approaching=False)
         )
 
-    def test_scan_1h(self):
+    def test_chart_shows_both_upper_and_lower_tips(self):
+        """User rule: chart last-3 tips upar + neeche (when both fit)."""
+        from device_care.trendlines import chart_last3_wick_lines
+
         ohlc = _build_sol_style_triangle()
-        hits = sc.scan_ohlc(ohlc, timeframe="1h")
-        clean = [h for h in hits if h["pattern"] in ("Clean Breakout", "Break Setup")]
-        self.assertTrue(clean)
+        lines = chart_last3_wick_lines(ohlc, direction="DOWN")
+        self.assertIsNotNone(lines.get("upper"), "expected upper last-3 tips")
+        self.assertIsNotNone(lines.get("lower"), "expected lower last-3 tips")
+        self.assertGreaterEqual(len((lines["upper"].get("points") or [])), 2)
+        self.assertGreaterEqual(len((lines["lower"].get("points") or [])), 2)
+        hit = detect_clean_trendline_breakout(ohlc, live=False, approaching=False)
+        self.assertIsNotNone(hit)
+        # Signal payload keeps both sides for chart
+        cl = hit.get("chartLines") or {}
+        self.assertTrue(cl.get("upper") or cl.get("lower"))
+        b64 = render_breakout_chart_b64(ohlc, hit)
+        self.assertIsNotNone(b64)
+        self.assertGreater(len(b64), 200)
+
+    def test_scan_4h_and_d1(self):
+        ohlc = _build_sol_style_triangle()
+        for tf in ("4H", "D1"):
+            hits = sc.scan_ohlc(ohlc, timeframe=tf)
+            clean = [h for h in hits if h["pattern"] in ("Clean Breakout", "Break Setup")]
+            self.assertTrue(clean, f"expected clean hit on {tf}")
+            plan = clean[0]
+            self.assertIsNotNone(plan.get("entry"))
+            self.assertIsNotNone(plan.get("sl"))
+            self.assertIsNotNone(plan.get("tp"))
+            self.assertIsNotNone(plan.get("riskPct"))
+
+    def test_default_tfs_focus_4h_d1(self):
+        self.assertTrue(sc.enabled_tfs.get("4H"))
+        self.assertTrue(sc.enabled_tfs.get("D1"))
+        self.assertFalse(sc.enabled_tfs.get("1h"))
+        self.assertFalse(sc.enabled_tfs.get("1W"))
 
     def test_last_three_tips_only(self):
         """Older 4th tip is dropped — line uses last 3 chronological tips."""
