@@ -356,6 +356,42 @@ class HtfConfluenceAndSlTests(unittest.TestCase):
         self.assertGreater(plan["sl"], 88.0)
         self.assertLess(plan["sl"], plan["entry"])
 
+    def test_short_sl_tp_sane_not_history_max(self):
+        """LIVE short must not use whole-history max high as SL (DEXE bug)."""
+        size = 80
+        highs = [3.0] * size
+        lows = [2.5] * size
+        opens = [2.7] * size
+        closes = [2.75] * size
+        # Ancient spike — must NOT become SL
+        highs[5] = 42.0
+        lows[5] = 2.0
+        # Recent ascending support break
+        for i in range(60, 78):
+            highs[i] = 2.9
+            lows[i] = 2.7
+            opens[i] = 2.8
+            closes[i] = 2.82
+        highs[-1], lows[-1], opens[-1], closes[-1] = 2.85, 2.70, 2.82, 2.794
+        ohlc = _ohlc(highs, lows, opens, closes)
+        hit = {
+            "direction": "DOWN",
+            "pattern": "Clean Breakout",
+            "patternDetail": "Ascending support · just broke (LIVE)",
+            "level": 2.8286,
+            "close": 2.794,
+            "live": True,
+            "stage": "just_broke",
+            "chartLines": {"lower": {"touches": 2}, "break": "support"},
+        }
+        plan = enrich_trade_plan(ohlc, hit)
+        self.assertEqual("DOWN", plan["direction"])
+        self.assertGreater(plan["sl"], plan["entry"])
+        self.assertLess(plan["tp"], plan["entry"])
+        self.assertGreater(plan["tp"], 0)
+        # SL must stay near price — not the ancient 42 spike
+        self.assertLess(plan["sl"], plan["entry"] * 1.12)
+        self.assertLess(abs(plan["sl"] - plan["entry"]) / plan["entry"], 0.07)
 
 class RetestAlertTests(unittest.TestCase):
     def test_retest_wait_uses_level_as_limit_with_sl_tp(self):

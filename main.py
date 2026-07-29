@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.21.2"   # Charts on all alerts (S/R + patterns); white mini-chart always
+API_VERSION = "3.21.3"   # Fix insane SL/TP (negative TP / history-max SL)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

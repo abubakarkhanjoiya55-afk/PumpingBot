@@ -771,16 +771,73 @@ def _body_strength(ohlc: dict, idx: int = -2) -> float:
     return body / avg
 
 
+def _abs_bar_index(n: int, i: int) -> int:
+    """Convert -1/-2 style index to absolute bar index."""
+    if i < 0:
+        return n + i
+    return i
+
+
+def _clamp_sl_tp(
+    *,
+    direction: str,
+    entry: float,
+    sl: float,
+    rr: float,
+    avg_rng: float,
+) -> tuple[float, float, float]:
+    """
+    Keep SL/TP tradeable:
+    - LONG: sl < entry < tp, all > 0
+    - SHORT: tp < entry < sl, tp > 0
+    - Risk capped (~2.2 ATR or 3% of price) so TP never goes nonsense/negative
+    """
+    entry = float(entry)
+    if entry <= 0:
+        entry = abs(entry) or 1e-8
+    min_risk = max(avg_rng * 0.35, abs(entry) * 0.003, 1e-12)
+    # Hard-cap risk so ancient spikes / fat ATR never make SL/TP nonsense
+    max_risk = min(max(avg_rng * 1.8, abs(entry) * 0.006), abs(entry) * 0.06)
+    max_risk = max(max_risk, min_risk)
+    risk = abs(entry - float(sl))
+    if risk <= 0:
+        risk = min_risk
+    risk = max(min_risk, min(risk, max_risk))
+    rr = max(1.2, float(rr))
+
+    if direction == "UP":
+        sl = entry - risk
+        tp = entry + risk * rr
+    else:
+        sl = entry + risk
+        tp = entry - risk * rr
+        # Never allow non-positive TP on crypto
+        if tp <= 0:
+            risk = min(risk, entry * 0.45)
+            risk = max(min_risk, risk)
+            sl = entry + risk
+            tp = entry - risk * rr
+            if tp <= 0:
+                tp = max(entry * 0.15, entry - max_risk * rr)
+                risk = abs(entry - sl)
+    return float(sl), float(tp), float(risk)
+
+
 def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     """
     Attach score (0–100), entry, SL, TP.
     Stronger / cleaner signal → higher score → wider RR target.
     """
-    i = -1 if hit.get("live") else -2
     h = ohlc["highs"]
     l = ohlc["lows"]
     c = ohlc["closes"]
     o = ohlc["opens"]
+    n = len(c)
+    # Absolute index — never slice with negative i (that scanned ALL history → insane SL)
+    idx = (n - 1) if hit.get("live") else (n - 2)
+    idx = max(0, min(idx, n - 1))
+    i = idx  # local absolute index for the rest of this function
+
     direction = hit.get("direction", "UP")
     pattern = hit.get("pattern", "")
     detail = hit.get("patternDetail", "")
@@ -790,11 +847,15 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     candle_low = float(l[i])
     candle_high = float(h[i])
     avg_rng = _avg_range(ohlc) or abs(close) * 0.01
-    body_str = _body_strength(ohlc, i)
+    body_str = _body_strength(ohlc, i - n)
 
     score = 50
     sl = candle_low
     buffer = max(avg_rng * 0.15, abs(close) * 0.001)
+    look = 8
+    seg_start = max(0, i - look)
+    recent_lows = l[seg_start:i] or [candle_low]
+    recent_highs = h[seg_start:i] or [candle_high]
 
     if pattern in ("Clean Breakout", "Break Setup", "Triangle Breakout"):
         # 2-touch trendline / triangle — early near-line break scores higher
@@ -812,12 +873,13 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 4
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
-            sl = min(l[max(0, i - 8):i] or [candle_low]) - buffer
+            sl = min(recent_lows) - buffer
             if sl >= entry:
                 sl = min(candle_low, level) - buffer
         else:
             dist = (level - close) / (avg_rng or 0.0001)
-            sl = max(h[max(0, i - 8):i] or [candle_high]) + buffer
+            # SHORT SL = recent swing high / break level — NOT whole-history max
+            sl = max(max(recent_highs), candle_high, level) + buffer
             if sl <= entry:
                 sl = max(candle_high, level) + buffer
         # Near break = better (not already pumped)
@@ -846,14 +908,13 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
         prior_sl = _prior_breakout_sl(ohlc, direction, level, i, buffer)
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
-            # Prefer prior-area SL (slightly above last swing zone); fallback candle
             sl = prior_sl if prior_sl is not None else (candle_low - buffer)
-            if prior_sl is not None and prior_sl >= entry:
+            if sl >= entry:
                 sl = min(candle_low, level) - buffer
         else:
             dist = (level - close) / (avg_rng or 0.0001)
             sl = prior_sl if prior_sl is not None else (candle_high + buffer)
-            if prior_sl is not None and prior_sl <= entry:
+            if sl <= entry:
                 sl = max(candle_high, level) + buffer
         # Near-level early break = better; late chase (far from level) = worse
         if dist <= 0.55:
@@ -892,7 +953,6 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             sl = prior_sl if prior_sl is not None else (entry + buffer * 2)
             if sl <= entry:
                 sl = entry + max(buffer * 2, abs(entry) * 0.004)
-        # Slightly tighter RR for wait; stronger for complete
         if pattern == "Retest Complete":
             score += 4
 
@@ -931,18 +991,13 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
 
     # RR scales with score: 1.5 @50 → ~3.0 @100
     rr = round(1.2 + (score / 100.0) * 2.0, 2)
-    risk = abs(entry - sl)
-    if risk <= 0:
-        risk = avg_rng * 0.5 or abs(entry) * 0.01
-        if direction == "UP":
-            sl = entry - risk
-        else:
-            sl = entry + risk
-
-    if direction == "UP":
-        tp = entry + risk * rr
-    else:
-        tp = entry - risk * rr
+    sl, tp, _risk = _clamp_sl_tp(
+        direction=direction,
+        entry=entry,
+        sl=sl,
+        rr=rr,
+        avg_rng=avg_rng,
+    )
 
     hit["score"] = score
     hit["entry"] = _round_price(entry)
@@ -1079,15 +1134,15 @@ def _prior_breakout_sl(
     ohlc: dict, direction: str, level: float, i: int, buffer: float
 ) -> float | None:
     """
-    Resistance break (LONG): pehle dekho last time price kahan tak gaya (swing low
-    area), phir us area se zara sa UPAR SL — fake break pe jaldi nikalne ke liye.
-    Support break (SHORT): last swing high area se zara sa NEECHE SL.
+    Resistance break (LONG): recent swing-low area, SL slightly below.
+    Support break (SHORT): recent swing-high area, SL slightly above.
+    Only last ~16 bars — never whole-history extremes (DEXE SL=42 bug).
     """
     h, l, c = ohlc["highs"], ohlc["lows"], ohlc["closes"]
-    end = len(c) + i if i < 0 else i  # positive index of signal candle
+    end = _abs_bar_index(len(c), i)
     if end < 6:
         return None
-    start = max(0, end - LOOKBACK * 4)
+    start = max(0, end - 16)
     hist_l = l[start:end]
     hist_h = h[start:end]
     if len(hist_l) < 5:
@@ -1099,15 +1154,16 @@ def _prior_breakout_sl(
             if hist_l[j] <= hist_l[j - 1] and hist_l[j] <= hist_l[j + 1] and hist_l[j] < level:
                 swing_lows.append(hist_l[j])
         zone = swing_lows[-1] if swing_lows else min(hist_l[-8:])
-        # Last-time area se zara sa upar
+        # LONG SL: slightly above prior swing-low area (tight, not below whole range)
         return float(zone) + max(buffer * 0.4, abs(level) * 0.0008)
+
     swing_highs: list[float] = []
     for j in range(1, len(hist_h) - 1):
         if hist_h[j] >= hist_h[j - 1] and hist_h[j] >= hist_h[j + 1] and hist_h[j] > level:
             swing_highs.append(hist_h[j])
     zone = swing_highs[-1] if swing_highs else max(hist_h[-8:])
-    # Last-time area se zara sa neeche
-    return float(zone) - max(buffer * 0.4, abs(level) * 0.0008)
+    # SHORT SL: slightly above recent swing-high / break area
+    return float(zone) + max(buffer * 0.4, abs(level) * 0.0008)
 
 
 def extract_sr_levels(ohlc: dict, lookback: int = LOOKBACK) -> tuple[float | None, float | None]:
