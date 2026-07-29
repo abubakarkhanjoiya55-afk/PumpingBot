@@ -5,16 +5,15 @@ Mount: /my-signals  (legacy alias: /device-care)
 Sirf USDT-M futures (spot nahi).
 
 Clear rules (default focus: 4H + 1D):
-  Chart
-  - Mini chart shows last-3 wick tip lines UP (orange) + DOWN (blue)
-  - Tip-to-tip only — no horizontal S/R lines on chart
+  Chart / Structure (demo image)
+  - ONLY tip-triangle: last-3 tips UP (orange) + DOWN (blue)
+  - Signal jab ye structure mile + break / about-to-break
   Alerts
-  - Clean Breakout: body close just beyond last-3 tip line (LIVE preferred)
-  - Break Setup: 3rd tip / about-to-break hug (watch, not chase)
-  - S/R Breakout only with HTF 4H+1D+1W confluence (secondary)
+  - Clean Breakout / Break Setup from tip triangle → Entry + SL + TP
+  - Doji / Hammer / S/R default OFF (noise — env se on ho sakte hain)
   - Late chase (far from line) rejected
   Risk
-  - Every alert has Entry + SL + TP + RR
+  - Every alert has Entry + SL + TP + RR + Risk%
   - SL from recent swing / prior area; risk capped (~ATR / ~6% price)
   - Score >= 90 → ntfy phone push
   Diversify: ~3+ setups/hour target; cooldowns per pattern
@@ -102,11 +101,16 @@ CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
 CLEAN_PATTERNS = frozenset({"Clean Breakout", "Break Setup", "Triangle Breakout"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
+# User demo = tip triangle only. Doji/S/R off by default (env se on).
+ENABLE_CANDLE_PATTERNS = os.environ.get("DC_ENABLE_CANDLE_PATTERNS", "0") == "1"
+ENABLE_SR_BREAKOUTS = os.environ.get("DC_ENABLE_SR", "0") == "1"
 # User kisi bhi TF ko on/off kar sakta hai
 BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
-TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})  # clean trendline TFs
+TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})  # tip-triangle TFs
 CANDLE_TFS = frozenset({"D1"})
 SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
+# Primary scan TFs for tip-triangle (user: 4H + 1D)
+PRIMARY_TIP_TFS = frozenset({"4H", "D1"})
 # S/R must align on these higher timeframes (fake breakout filter)
 CONFLUENCE_TFS = ("4H", "D1", "1W")
 CONFLUENCE_FETCH = [
@@ -178,29 +182,26 @@ scan_stats = {
     "patterns": [
         "Clean Breakout",
         "Break Setup",
-        "S/R Breakout",
-        "Retest Wait",
-        "Retest Complete",
         "Triangle Breakout",
-        "Dragonfly Doji",
-        "Hammer",
-        "Doji + Green",
     ],
     "strategy": {
-        "5m": "S/R LIVE (user toggle)",
-        "15m": "S/R LIVE (user toggle)",
-        "1h": "Last-3 wick tips LIVE + S/R (optional)",
-        "4H": "Primary · last-3 tips up+down · LIVE break + SL/TP",
-        "D1": "Primary · last-3 tips up+down · LIVE break + Doji/Hammer",
-        "1W": "Last-3 wick tips LIVE + S/R (optional)",
+        "5m": "Off by default",
+        "15m": "Off by default",
+        "1h": "Tip triangle optional",
+        "4H": "Primary · tip triangle up+down · break + Entry/SL/TP",
+        "D1": "Primary · tip triangle up+down · break + Entry/SL/TP",
+        "1W": "Off by default",
     },
-    "chartStyle": "last-3 wick tips upper (orange) + lower (blue)",
+    "chartStyle": "last-3 tips up (orange) + down (blue) — demo triangle only",
     "riskRules": {
-        "sl": "recent swing / prior break area",
+        "sl": "recent swing / opposite tip side",
         "tp": "RR scales with score (~1.2–3.0)",
         "maxRiskPct": 6.0,
         "noChase": True,
     },
+    "enableCandlePatterns": ENABLE_CANDLE_PATTERNS,
+    "enableSrBreakouts": ENABLE_SR_BREAKOUTS,
+    "requireBothTipSides": True,
     "hourlyMinTarget": HOURLY_MIN_TARGET,
     "hourlySymbolCap": HOURLY_MIN_TARGET,  # legacy field name
     "maxAlertsPerHour": MAX_ALERTS_PER_HOUR,
@@ -212,7 +213,7 @@ scan_stats = {
     "nextScanInSec": 0,
     "scannedCoins": [],
     "morningWindow": False,
-    "d1PatternsEnabled": True,
+    "d1PatternsEnabled": ENABLE_CANDLE_PATTERNS,
     "breakoutAlertTtlSec": BREAKOUT_ALERT_TTL_SEC,
     "d1AlertTtlSec": D1_PATTERN_ALERT_TTL_SEC,
     "strongScore": STRONG_SCORE,
@@ -873,28 +874,39 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
     recent_highs = h[seg_start:i] or [candle_high]
 
     if pattern in ("Clean Breakout", "Break Setup", "Triangle Breakout"):
-        # 2-touch trendline / triangle — early near-line break scores higher
+        # Tip-triangle break — early near-line break scores higher
         if pattern == "Clean Breakout":
-            score = 82
+            score = 86
         elif pattern == "Break Setup":
-            score = 68
-        elif "Ascending" in detail or "Descending" in detail:
-            score = 74
-        else:
             score = 70
+        elif "Ascending" in detail or "Descending" in detail:
+            score = 78
+        else:
+            score = 74
         if hit.get("live") and pattern == "Clean Breakout":
-            score += 5
+            score += 4
         if hit.get("stage") == "just_broke":
             score += 4
+        lines = hit.get("chartLines") or {}
+        upper_ln = lines.get("upper") or {}
+        lower_ln = lines.get("lower") or {}
+        # SL from opposite tip side (demo triangle risk)
         if direction == "UP":
             dist = (close - level) / (avg_rng or 0.0001)
-            sl = min(recent_lows) - buffer
+            opp = float(lower_ln.get("p2") or lower_ln.get("ap2") or 0) if lower_ln else 0.0
+            if opp > 0:
+                sl = min(opp, candle_low, min(recent_lows)) - buffer
+            else:
+                sl = min(recent_lows) - buffer
             if sl >= entry:
                 sl = min(candle_low, level) - buffer
         else:
             dist = (level - close) / (avg_rng or 0.0001)
-            # SHORT SL = recent swing high / break level — NOT whole-history max
-            sl = max(max(recent_highs), candle_high, level) + buffer
+            opp = float(upper_ln.get("p2") or upper_ln.get("ap2") or 0) if upper_ln else 0.0
+            if opp > 0:
+                sl = max(opp, candle_high, max(recent_highs), level) + buffer
+            else:
+                sl = max(max(recent_highs), candle_high, level) + buffer
             if sl <= entry:
                 sl = max(candle_high, level) + buffer
         # Near break = better (not already pumped)
@@ -904,7 +916,6 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score -= min(20, int((dist - 0.55) * 16))
         score += min(10, int(body_str * 6))
         touches = 0
-        lines = hit.get("chartLines") or {}
         for k in ("upper", "lower"):
             ln = lines.get(k) or {}
             touches = max(touches, int(ln.get("touches") or 0))
@@ -912,6 +923,8 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 6
         if touches >= 3:
             score += 4
+        if upper_ln and lower_ln:
+            score += 6  # demo structure present
 
     elif pattern == "S/R Breakout":
         # Stronger baseline — fake breaks filtered via HTF confluence in scan_loop
@@ -1001,11 +1014,6 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
         if (close - conf_low) / (rng_g or 0.0001) > 0.7:
             score += 4
         sl = min(pattern_low, conf_low) - buffer
-
-    # Both-side last-3 tip channel (upar+neeche) = cleaner structure
-    lines = hit.get("chartLines") or {}
-    if lines.get("upper") and lines.get("lower"):
-        score += 5
 
     score = max(1, min(100, int(score)))
 
@@ -1513,31 +1521,38 @@ def scan_ohlc(
     htf_confluence: bool = False,
 ) -> list[dict]:
     """
-    TF-gated strategy:
-      Clean TFs (1h/4H/D1/1W) → 2-touch trendline LIVE-first + about-to-break
-      Breakout TFs → S/R LIVE (secondary)
-      D1 → also Dragonfly/Hammer/Doji + green close
+    Tip-triangle only (default):
+      4H/D1 (and optional 1h/1W) → both-side last-3 tip structure + break
+      Doji / S/R only if ENABLE_* env flags on
     """
     hits: list[dict] = []
     tf = timeframe or ""
 
-    run_breakouts = tf in BREAKOUT_TFS or (not tf and not include_d1_patterns)
     run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
-    run_candles = tf in CANDLE_TFS or include_d1_patterns
+    run_breakouts = (
+        ENABLE_SR_BREAKOUTS
+        and (tf in BREAKOUT_TFS or (not tf and not include_d1_patterns))
+    )
+    run_candles = ENABLE_CANDLE_PATTERNS and (
+        tf in CANDLE_TFS or include_d1_patterns
+    )
 
     seen_dirs: set[str] = set()
 
     if run_triangle:
-        # Prefer 3rd-touch / about-to first (HANA: resistance touch = SHORT)
+        # Prefer 3rd-touch / about-to first
         setup = detect_clean_trendline_breakout(
             ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
         )
         if setup and setup["direction"] not in seen_dirs:
-            seen_dirs.add(setup["direction"])
-            plan = enrich_trade_plan(ohlc, setup)
-            attach_chart(ohlc, plan)
-            hits.append(plan)
-        # Confirmed clean tip break (strict) — only if that direction not already live
+            # Must look like demo: both tip sides on chart
+            lines = setup.get("chartLines") or {}
+            if lines.get("upper") and lines.get("lower"):
+                seen_dirs.add(setup["direction"])
+                plan = enrich_trade_plan(ohlc, setup)
+                attach_chart(ohlc, plan)
+                hits.append(plan)
+        # Confirmed clean tip break
         for live in (True, False):
             clean = detect_clean_trendline_breakout(
                 ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
@@ -1545,6 +1560,9 @@ def scan_ohlc(
             if not clean:
                 continue
             if clean["direction"] in seen_dirs:
+                continue
+            lines = clean.get("chartLines") or {}
+            if not (lines.get("upper") and lines.get("lower")):
                 continue
             seen_dirs.add(clean["direction"])
             plan = enrich_trade_plan(ohlc, clean)
@@ -1570,7 +1588,7 @@ def scan_ohlc(
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
             plan = enrich_trade_plan(ohlc, hit)
-            attach_chart(ohlc, plan)
+            # No fake tip chart on Doji — only tip-triangle alerts get tip charts
             hits.append(plan)
     return hits
 
@@ -1714,15 +1732,18 @@ async def fetch_klines(
 
 async def scan_loop():
     print(
-        "[My Signals] Strategy: 4H/1D last-3 wick tips (upar+neeche) · "
-        f"min ~{HOURLY_MIN_TARGET}/hour · max {MAX_ALERTS_PER_HOUR}/hour · Entry/SL/TP · ntfy"
+        "[My Signals] Strategy: 4H/1D tip-triangle ONLY (upar+neeche tips) · "
+        f"Doji/SR={'on' if ENABLE_CANDLE_PATTERNS or ENABLE_SR_BREAKOUTS else 'off'} · "
+        f"min ~{HOURLY_MIN_TARGET}/hour · Entry/SL/TP · ntfy"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
             started = time.time()
             morning = in_morning_window()
             scan_stats["morningWindow"] = morning
-            scan_stats["d1PatternsEnabled"] = True
+            scan_stats["d1PatternsEnabled"] = ENABLE_CANDLE_PATTERNS
+            scan_stats["enableCandlePatterns"] = ENABLE_CANDLE_PATTERNS
+            scan_stats["enableSrBreakouts"] = ENABLE_SR_BREAKOUTS
             scan_stats["enabledTfs"] = dict(enabled_tfs)
             scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)
             scan_stats["hourlyMinTarget"] = HOURLY_MIN_TARGET

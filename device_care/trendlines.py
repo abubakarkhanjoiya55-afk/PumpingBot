@@ -25,8 +25,8 @@ MIN_TOUCHES = int(os.environ.get("DC_MIN_TOUCHES", "2"))
 PREFER_TOUCHES = int(os.environ.get("DC_PREFER_TOUCHES", "3"))
 # Max body pierces allowed between tip anchors (0 = tip-only clean like MEXC)
 MAX_BODY_PIERCES = int(os.environ.get("DC_MAX_BODY_PIERCES", "0"))
-# ENA-style single ascending/descending line allowed (not only triangles)
-REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "0") == "1"
+# User demo: upar+neeche tip triangle required (single-line off by default)
+REQUIRE_BOTH_SIDES = os.environ.get("DC_REQUIRE_BOTH_SIDES", "1") == "1"
 
 
 def _avg_range(ohlc: dict, end: int, look: int = 14) -> float:
@@ -420,8 +420,11 @@ def detect_clean_trendline_breakout(
     approaching: bool = False,
 ) -> dict | None:
     """
-    Clean wick-tip line(s): last-3 tip touches, single-line OK (ENA) or triangle.
-    Signal on just-broke or about-to-break at 3rd touch zone.
+    Demo-style tip triangle:
+      - Upper = last 2–3 descending top wick tips (orange)
+      - Lower = last 2–3 ascending bottom wick tips (blue)
+      - Default: BOTH sides required (upar + neeche)
+      - Signal on just-broke or about-to-break near apex / 3rd tip
     """
     h = ohlc["highs"]
     l = ohlc["lows"]
@@ -479,10 +482,13 @@ def detect_clean_trendline_breakout(
             return None
 
     both = upper is not None and lower is not None
-    shape = "Trendline"
+    # Demo structure = converging tip triangle (desc resistance + asc support)
     if both:
         us = float(upper["slope"])
         ls = float(lower["slope"])
+        if not (us < 0 and ls > 0):
+            if REQUIRE_BOTH_SIDES:
+                return None
         flat_u = abs(us) <= (avg_rng * 0.002)
         flat_l = abs(ls) <= (avg_rng * 0.002)
         if flat_u and ls > 0:
@@ -497,6 +503,8 @@ def detect_clean_trendline_breakout(
         shape = "Ascending support"
     elif upper is not None:
         shape = "Descending resistance"
+    else:
+        shape = "Trendline"
 
     body_frac = MIN_BODY_FRAC_LIVE if live else MIN_BODY_FRAC_CLOSED
     min_break = max(avg_rng * (0.05 if live else 0.08), abs(c[i]) * 0.0008)
@@ -505,28 +513,31 @@ def detect_clean_trendline_breakout(
     def _hit(direction: str, level: float, line_kind: str, line: dict, stage: str) -> dict:
         side = "BUY" if direction == "UP" else "SELL"
         tn = int(line.get("touches") or 0)
-        # Chart: both last-3 tip lines (upar + neeche) when clean; break marks signal side
+        # Chart MUST carry both tip lines (upar + neeche) like demo image
         chart_upper = _line_payload(upper) if upper else None
         chart_lower = _line_payload(lower) if lower else None
-        both_txt = " · up+down tips" if (chart_upper and chart_lower) else ""
+        tip_txt = (
+            f"up ({u_n}) + down ({l_n})"
+            if (chart_upper and chart_lower)
+            else f"{tn} tips"
+        )
         if stage == "about_to_break":
             pattern = "Break Setup"
             advice = (
-                f"Last-3 wick tip setup · {shape} · {line_kind} ({tn} tips){both_txt}. "
-                f"{'LONG' if direction == 'UP' else 'SHORT'} — teesra touch / break abi hony wala. "
-                f"Entry plan + SL/TP alert pe; chase mat karo."
+                f"Tip triangle · {shape} · {line_kind} · {tip_txt}. "
+                f"{'LONG' if direction == 'UP' else 'SHORT'} setup — break abi hony wala. "
+                f"Entry + SL/TP alert pe; chase mat karo."
             )
-            detail = f"{shape} · 3rd touch / about to break{detail_live}"
+            detail = f"{shape} · tips {tip_txt} · about to break{detail_live}"
             chance = 72
         else:
             pattern = "Clean Breakout"
             advice = (
-                f"Clean wick-tip break abi abi · {shape} · {line_kind} "
-                f"({tn} wick tips){both_txt}. "
-                f"{'LONG' if direction == 'UP' else 'SHORT'} — entry abhi near level, "
-                f"SL plan follow karo, late chase mat karo."
+                f"Tip triangle break · {shape} · {line_kind} · {tip_txt}. "
+                f"{'LONG' if direction == 'UP' else 'SHORT'} — entry near level, "
+                f"SL/TP follow karo, late chase mat karo."
             )
-            detail = f"{shape} · just broke{detail_live}"
+            detail = f"{shape} · tips {tip_txt} · just broke{detail_live}"
             chance = 90
         return {
             "side": side,
@@ -540,6 +551,7 @@ def detect_clean_trendline_breakout(
             "stage": stage,
             "advice": advice,
             "breakChance": chance,
+            "structure": "tip_triangle",
             "chartLines": {
                 "upper": chart_upper,
                 "lower": chart_lower,

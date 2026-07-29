@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.22.0"   # Charts: last-3 wick tips upar+neeche (4H/1D focus)
+API_VERSION = "3.23.0"   # Tip-triangle only: upar+neeche tips → trade + SL/TP (no Doji noise)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

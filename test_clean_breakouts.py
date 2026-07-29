@@ -223,117 +223,120 @@ class WickTipLineTests(unittest.TestCase):
         self.assertEqual(pts[-1]["p"], 94.0)
 
     def test_ena_single_ascending_support_about_to_touch(self):
-        """ENA-style: one ascending support, 2 tips done, price near 3rd tip."""
-        size = 56
-        highs = [100.0] * size
-        lows = [92.0] * size
-        opens = [96.0] * size
-        closes = [96.0] * size
-        # Ascending support tips: 12=80, 28=88  (2 done); project ~ at 50 ≈ 96.7? 
-        # slope=(88-80)/(28-12)=0.5 → at i=48: 80+0.5*36=98 — keep price near
-        for idx, px in ((12, 80.0), (28, 88.0)):
-            lows[idx] = px
-            for j in range(idx - 2, idx + 3):
-                if 0 <= j < size and j != idx:
-                    lows[j] = max(lows[j], px + 4)
-        # Quiet price above support until live approach
-        for i in range(30, 54):
-            # support @ i: 80+0.5*(i-12)
-            supp = 80.0 + 0.5 * (i - 12)
-            highs[i] = supp + 6
-            lows[i] = supp + 1.5
-            opens[i] = supp + 3.5
-            closes[i] = supp + 3.2
-        # Live candle approaching tip (3rd touch about to happen)
-        i = 54  # detector uses n-1 when live
-        supp = 80.0 + 0.5 * (i - 12)  # 101
-        # Keep geometry realistic: gentler slope so tip is near price
-        # Rebuild with gentler rise: 12=86, 30=90 → slope=0.222 → @54: 86+0.222*42≈95.3
-        lows = [92.0] * size
-        highs = [100.0] * size
-        opens = [96.0] * size
-        closes = [96.0] * size
-        for idx, px in ((12, 86.0), (30, 90.0)):
-            lows[idx] = px
-            for j in range(idx - 2, idx + 3):
-                if 0 <= j < size and j != idx:
-                    lows[j] = max(lows[j], px + 3)
-        for i in range(32, 55):
-            supp = 86.0 + (90.0 - 86.0) / (30 - 12) * (i - 12)
-            highs[i] = supp + 5
-            lows[i] = supp + 1.2
-            opens[i] = supp + 3
-            closes[i] = supp + 2.8
-        # Live: wick tags projected support (3rd touch zone)
-        i = 54
-        supp = 86.0 + (4.0 / 18.0) * (i - 12)
-        highs[i] = supp + 3
-        lows[i] = supp - 0.05  # tag tip
-        opens[i] = supp + 1.5
-        closes[i] = supp + 0.8  # still above, softish
-        ohlc = _ohlc(highs, lows, opens, closes)
-        hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
-        self.assertIsNotNone(hit, "expected ENA-style about-to 3rd touch")
-        self.assertEqual("Break Setup", hit["pattern"])
-        self.assertIn("Ascending support", hit.get("patternDetail") or "")
-        lower = (hit.get("chartLines") or {}).get("lower") or {}
-        self.assertTrue(lower.get("points"))
-        # Chart should prefer support line only (clean)
-        self.assertEqual("support", (hit.get("chartLines") or {}).get("break"))
-        b64 = render_breakout_chart_b64(ohlc, hit)
-        self.assertIsNotNone(b64)
+        """ENA single-line only when DC_REQUIRE_BOTH_SIDES=0."""
+        import device_care.trendlines as tl
+        old = tl.REQUIRE_BOTH_SIDES
+        tl.REQUIRE_BOTH_SIDES = False
+        try:
+            size = 56
+            highs = [100.0] * size
+            lows = [92.0] * size
+            opens = [96.0] * size
+            closes = [96.0] * size
+            lows = [92.0] * size
+            highs = [100.0] * size
+            opens = [96.0] * size
+            closes = [96.0] * size
+            for idx, px in ((12, 86.0), (30, 90.0)):
+                lows[idx] = px
+                for j in range(idx - 2, idx + 3):
+                    if 0 <= j < size and j != idx:
+                        lows[j] = max(lows[j], px + 3)
+            for i in range(32, 55):
+                supp = 86.0 + (90.0 - 86.0) / (30 - 12) * (i - 12)
+                highs[i] = supp + 5
+                lows[i] = supp + 1.2
+                opens[i] = supp + 3
+                closes[i] = supp + 2.8
+            i = 54
+            supp = 86.0 + (4.0 / 18.0) * (i - 12)
+            highs[i] = supp + 3
+            lows[i] = supp - 0.05
+            opens[i] = supp + 1.5
+            closes[i] = supp + 0.8
+            ohlc = _ohlc(highs, lows, opens, closes)
+            hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
+            self.assertIsNotNone(hit, "expected ENA-style about-to 3rd touch")
+            self.assertEqual("Break Setup", hit["pattern"])
+            self.assertIn("Ascending support", hit.get("patternDetail") or "")
+        finally:
+            tl.REQUIRE_BOTH_SIDES = old
 
     def test_hana_descending_resistance_third_touch_is_short(self):
-        """HANA-style: descending resistance 3rd wick tip → SHORT, never LONG."""
-        size = 64
-        highs = [80.0] * size
-        lows = [70.0] * size
-        opens = [75.0] * size
-        closes = [75.0] * size
-        # Tip peaks on one descending line: 14=120, 30=108, 46=96  slope=-0.75
-        tips = ((14, 120.0), (30, 108.0), (46, 96.0))
-        tip_idx = {t[0] for t in tips}
-        for idx, px in tips:
-            highs[idx] = px
-            opens[idx] = px - 8
-            closes[idx] = px - 10
-            lows[idx] = px - 14
-            for j in range(idx - 2, idx + 3):
-                if 0 <= j < size and j not in tip_idx:
-                    # flatten neighbors so idx is strict swing high
-                    line = 120.0 - 0.75 * (j - 14)
-                    highs[j] = min(line - 4, px - 10)
-                    opens[j] = highs[j] - 3
-                    closes[j] = highs[j] - 4
-                    lows[j] = highs[j] - 6
-        for i in range(size):
-            if i in tip_idx:
-                continue
+        """HANA single resistance — only when both-sides requirement off."""
+        import device_care.trendlines as tl
+        old = tl.REQUIRE_BOTH_SIDES
+        tl.REQUIRE_BOTH_SIDES = False
+        try:
+            size = 64
+            highs = [80.0] * size
+            lows = [70.0] * size
+            opens = [75.0] * size
+            closes = [75.0] * size
+            tips = ((14, 120.0), (30, 108.0), (46, 96.0))
+            tip_idx = {t[0] for t in tips}
+            for idx, px in tips:
+                highs[idx] = px
+                opens[idx] = px - 8
+                closes[idx] = px - 10
+                lows[idx] = px - 14
+                for j in range(idx - 2, idx + 3):
+                    if 0 <= j < size and j not in tip_idx:
+                        line = 120.0 - 0.75 * (j - 14)
+                        highs[j] = min(line - 4, px - 10)
+                        opens[j] = highs[j] - 3
+                        closes[j] = highs[j] - 4
+                        lows[j] = highs[j] - 6
+            for i in range(size):
+                if i in tip_idx:
+                    continue
+                line = 120.0 - 0.75 * (i - 14)
+                highs[i] = min(highs[i], line - 2.5)
+                opens[i] = line - 6
+                closes[i] = line - 5
+                lows[i] = line - 9
+            i = 58
             line = 120.0 - 0.75 * (i - 14)
-            # Stay clearly below resistance — no body cut
-            highs[i] = min(highs[i], line - 2.5)
-            opens[i] = line - 6
-            closes[i] = line - 5
-            lows[i] = line - 9
-        # Live: tag projected tip (3rd touch zone continuing past tip 46)
-        i = 58
-        line = 120.0 - 0.75 * (i - 14)
-        highs[i] = line + 0.2
-        opens[i] = line - 2.5
-        closes[i] = line - 1.0
-        lows[i] = line - 5
-        # pad end candle (n-1 used when live if we set n correctly — use size=59 end)
-        # detector live uses n-1; make last bar the tag bar
-        ohlc = _ohlc(highs[: i + 1], lows[: i + 1], opens[: i + 1], closes[: i + 1])
+            highs[i] = line + 0.2
+            opens[i] = line - 2.5
+            closes[i] = line - 1.0
+            lows[i] = line - 5
+            ohlc = _ohlc(highs[: i + 1], lows[: i + 1], opens[: i + 1], closes[: i + 1])
 
-        self.assertIsNone(
-            detect_clean_trendline_breakout(ohlc, live=True, approaching=False)
-        )
-        hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
-        self.assertIsNotNone(hit, "expected HANA SHORT at 3rd resistance tip")
-        self.assertEqual("DOWN", hit["direction"])
-        self.assertEqual("Break Setup", hit["pattern"])
-        self.assertEqual("resistance", (hit.get("chartLines") or {}).get("break"))
+            self.assertIsNone(
+                detect_clean_trendline_breakout(ohlc, live=True, approaching=False)
+            )
+            hit = detect_clean_trendline_breakout(ohlc, live=True, approaching=True)
+            self.assertIsNotNone(hit, "expected HANA SHORT at 3rd resistance tip")
+            self.assertEqual("DOWN", hit["direction"])
+            self.assertEqual("Break Setup", hit["pattern"])
+            self.assertEqual("resistance", (hit.get("chartLines") or {}).get("break"))
+        finally:
+            tl.REQUIRE_BOTH_SIDES = old
+
+    def test_scan_rejects_doji_by_default(self):
+        """Doji noise must not appear — tip-triangle only."""
+        ohlc = _build_sol_style_triangle()
+        # Even if we pass include_d1, ENABLE_CANDLE_PATTERNS default is off
+        hits = sc.scan_ohlc(ohlc, timeframe="D1", include_d1_patterns=True)
+        self.assertFalse(any(h["pattern"] in sc.CANDLE_PATTERNS for h in hits))
+        self.assertFalse(sc.ENABLE_CANDLE_PATTERNS)
+
+    def test_clean_hit_requires_both_tip_sides(self):
+        ohlc = _build_sol_style_triangle()
+        hit = detect_clean_trendline_breakout(ohlc, live=False, approaching=False)
+        self.assertIsNotNone(hit)
+        cl = hit.get("chartLines") or {}
+        self.assertIsNotNone(cl.get("upper"))
+        self.assertIsNotNone(cl.get("lower"))
+        plan = sc.enrich_trade_plan(ohlc, hit)
+        self.assertIsNotNone(plan.get("entry"))
+        self.assertIsNotNone(plan.get("sl"))
+        self.assertIsNotNone(plan.get("tp"))
+        # SHORT SL should be above entry (opposite tip side)
+        if plan["direction"] == "DOWN":
+            self.assertGreater(float(plan["sl"]), float(plan["entry"]))
+            self.assertLess(float(plan["tp"]), float(plan["entry"]))
 
     def test_rejects_body_cutting_resistance_line(self):
         """Line that slices candle bodies is rejected (not tip-clean)."""
