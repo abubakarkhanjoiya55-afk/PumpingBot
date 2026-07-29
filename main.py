@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.21.3"   # Fix insane SL/TP (negative TP / history-max SL)
+API_VERSION = "3.21.4"   # Charts: only last-3 wick tip line (no horizontal S/R)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
