@@ -1,4 +1,4 @@
-"""Mini OHLC chart — white MEXC style, last-3 wick tips UP + DOWN."""
+"""Mini OHLC chart — simple candles only (no tip/trendline drawing)."""
 from __future__ import annotations
 
 import base64
@@ -17,8 +17,6 @@ def render_breakout_chart_b64(
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
         return None
-
-    from device_care.trendlines import chart_last3_wick_lines
 
     highs = ohlc.get("highs") or []
     lows = ohlc.get("lows") or []
@@ -42,34 +40,12 @@ def render_breakout_chart_b64(
     plot_h = height - pad_t - pad_b
 
     direction = hit.get("direction") or ""
-    # Always build last-3 wick tip lines from OHLC (user rule: upar + neeche).
-    auto = chart_last3_wick_lines(ohlc, direction=direction, window=candles)
-    hit_lines = hit.get("chartLines") or {}
-    brk = (hit_lines.get("break") or auto.get("break") or "").lower()
+    side = "LONG" if direction == "UP" else "SHORT"
+    pattern = (hit.get("pattern") or "Trade").strip()
+    title = f"{side} · {pattern}"
 
-    lines = {
-        "upper": hit_lines.get("upper") or auto.get("upper"),
-        "lower": hit_lines.get("lower") or auto.get("lower"),
-        "break": brk or None,
-    }
-    # Fill any missing side from auto so chart shows both when possible
-    if not lines.get("upper"):
-        lines["upper"] = auto.get("upper")
-    if not lines.get("lower"):
-        lines["lower"] = auto.get("lower")
-
-    tip_prices: list[float] = []
-    for key in ("upper", "lower"):
-        ln = lines.get(key) or {}
-        for pt in (ln.get("points") or [])[-3:]:
-            tip_prices.append(float(pt["p"]))
-        if ln.get("p1") is not None:
-            tip_prices.append(float(ln["p1"]))
-        if ln.get("p2") is not None:
-            tip_prices.append(float(ln["p2"]))
-
-    ymin = min(min(ls), min(tip_prices) if tip_prices else min(ls))
-    ymax = max(max(hs), max(tip_prices) if tip_prices else max(hs))
+    ymin = min(ls)
+    ymax = max(hs)
     if ymax <= ymin:
         ymax = ymin + 1e-9
     span = ymax - ymin
@@ -87,29 +63,10 @@ def render_breakout_chart_b64(
     dn_c = (246, 70, 93)
     grid = (235, 238, 242)
     axis = (210, 214, 220)
-    # Upper (top wicks) = orange · Lower (bottom wicks) = blue
-    line_upper = (255, 140, 0)
-    line_lower = (37, 99, 235)
     title_c = (30, 34, 42)
 
     img = Image.new("RGB", (width, height), bg)
     draw = ImageDraw.Draw(img)
-
-    stage = hit.get("stage") or ""
-    side = "LONG" if direction == "UP" else "SHORT"
-    u_n = len((lines.get("upper") or {}).get("points") or []) or int(
-        (lines.get("upper") or {}).get("touches") or 0
-    )
-    l_n = len((lines.get("lower") or {}).get("points") or []) or int(
-        (lines.get("lower") or {}).get("touches") or 0
-    )
-    both = bool(lines.get("upper")) and bool(lines.get("lower"))
-    if stage == "about_to_break":
-        title = f"{side} · last-3 tips up+down · 3rd touch" if both else f"{side} · last-3 wick tips · 3rd touch"
-    elif both:
-        title = f"{side} · last-3 tips up ({u_n}) + down ({l_n})"
-    else:
-        title = f"{side} · last-3 wick tips"
     try:
         font = ImageFont.load_default()
     except Exception:
@@ -140,59 +97,14 @@ def render_breakout_chart_b64(
             outline=color,
         )
 
-    def _draw_line(ln: dict, color: tuple[int, int, int], *, bold: bool = False) -> bool:
-        if not ln:
-            return False
-        points = list(ln.get("points") or [])[-3:]
-        if "i1" not in ln or "p1" not in ln or "i2" not in ln or "p2" not in ln:
-            if len(points) < 2:
-                return False
-        i1 = int(ln.get("i1", points[0]["i"] if points else 0))
-        p1 = float(ln.get("p1", points[0]["p"] if points else 0))
-        i2 = int(ln.get("i2", points[-1]["i"] if points else 1))
-        p2 = float(ln.get("p2", points[-1]["p"] if points else 0))
-        if points and len(points) >= 2:
-            i1 = int(points[0]["i"])
-            p1 = float(points[0]["p"])
-            i2 = int(points[-1]["i"])
-            p2 = float(points[-1]["p"])
-        if i2 == i1:
-            return False
-        slope = (p2 - p1) / (i2 - i1)
-        abs_end = n - 1
-        abs_start = max(start, min(i1, i2) - 2)
-        p_start = p1 + slope * (abs_start - i1)
-        p_end = p1 + slope * (abs_end - i1)
-        x0 = xx(max(0, abs_start - start))
-        x1 = xx(m - 1)
-        width_px = 3 if bold else 2
-        draw.line([(x0, yx(p_start)), (x1, yx(p_end))], fill=color, width=width_px)
-
-        tips = points if points else [{"i": i1, "p": p1}, {"i": i2, "p": p2}]
-        for pt in tips[-3:]:
-            abs_i = int(pt["i"])
-            if abs_i < start or abs_i >= n:
-                continue
-            loc = abs_i - start
-            px, py = xx(loc), yx(float(pt["p"]))
-            r = 4 if bold else 3
-            draw.ellipse([px - r, py - r, px + r, py + r], outline=color, width=2)
-            draw.ellipse([px - 1, py - 1, px + 1, py + 1], fill=color)
-        return True
-
-    # Draw BOTH last-3 tip lines when present (upar + neeche).
-    # Signal break-side is slightly bolder.
-    primary = (lines.get("break") or "").lower()
-    _draw_line(
-        lines.get("upper") or {},
-        line_upper,
-        bold=(primary == "resistance"),
-    )
-    _draw_line(
-        lines.get("lower") or {},
-        line_lower,
-        bold=(primary == "support"),
-    )
+    # Optional entry marker (horizontal dashed feel — short ticks only, no trend draw)
+    entry = hit.get("entry") or hit.get("close")
+    if entry is not None:
+        try:
+            ey = yx(float(entry))
+            draw.line([(pad_l, ey), (width - pad_r, ey)], fill=(160, 160, 170), width=1)
+        except Exception:
+            pass
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -200,17 +112,9 @@ def render_breakout_chart_b64(
 
 
 def attach_chart(ohlc: dict, hit: dict) -> dict:
-    """Attach white mini-chart with last-3 wick tips (upper + lower)."""
+    """Attach simple candle mini-chart (no tip/trendline drawing)."""
     try:
-        from device_care.trendlines import chart_last3_wick_lines
-
-        auto = chart_last3_wick_lines(ohlc, direction=hit.get("direction") or "UP")
-        existing = hit.get("chartLines") or {}
-        hit["chartLines"] = {
-            "upper": existing.get("upper") or auto.get("upper"),
-            "lower": existing.get("lower") or auto.get("lower"),
-            "break": existing.get("break") or auto.get("break"),
-        }
+        hit.pop("chartLines", None)  # never draw tip lines
         b64 = render_breakout_chart_b64(ohlc, hit)
         if b64:
             hit["chartImage"] = b64

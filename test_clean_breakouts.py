@@ -189,19 +189,28 @@ class WickTipLineTests(unittest.TestCase):
         ohlc = _build_sol_style_triangle()
         for tf in ("4H", "D1"):
             hits = sc.scan_ohlc(ohlc, timeframe=tf)
-            clean = [h for h in hits if h["pattern"] in ("Clean Breakout", "Break Setup")]
-            self.assertTrue(clean, f"expected clean hit on {tf}")
-            plan = clean[0]
+            tri = [h for h in hits if h["pattern"] in ("Triangle Breakout", "Clean Breakout")]
+            self.assertTrue(tri, f"expected triangle break on {tf}")
+            plan = tri[0]
             self.assertIsNotNone(plan.get("entry"))
             self.assertIsNotNone(plan.get("sl"))
             self.assertIsNotNone(plan.get("tp"))
-            self.assertIsNotNone(plan.get("riskPct"))
+            self.assertTrue(plan.get("chartImage"))
+            self.assertNotIn("chartLines", plan)
 
     def test_default_tfs_focus_4h_d1(self):
         self.assertTrue(sc.enabled_tfs.get("4H"))
         self.assertTrue(sc.enabled_tfs.get("D1"))
         self.assertFalse(sc.enabled_tfs.get("1h"))
         self.assertFalse(sc.enabled_tfs.get("1W"))
+        self.assertTrue(sc.ENABLE_CANDLE_PATTERNS)
+        self.assertTrue(sc.ENABLE_SR_BREAKOUTS)
+        self.assertTrue(sc.ENABLE_TRIANGLE_BREAK)
+
+    def test_scan_no_break_setup_noise(self):
+        ohlc = _build_sol_style_triangle()
+        hits = sc.scan_ohlc(ohlc, timeframe="4H")
+        self.assertFalse(any(h["pattern"] == "Break Setup" for h in hits))
 
     def test_last_three_tips_only(self):
         """Older 4th tip is dropped — line uses last 3 chronological tips."""
@@ -314,26 +323,20 @@ class WickTipLineTests(unittest.TestCase):
         finally:
             tl.REQUIRE_BOTH_SIDES = old
 
-    def test_scan_rejects_doji_by_default(self):
-        """Doji noise must not appear — tip-triangle only."""
-        ohlc = _build_sol_style_triangle()
-        # Even if we pass include_d1, ENABLE_CANDLE_PATTERNS default is off
-        hits = sc.scan_ohlc(ohlc, timeframe="D1", include_d1_patterns=True)
-        self.assertFalse(any(h["pattern"] in sc.CANDLE_PATTERNS for h in hits))
-        self.assertFalse(sc.ENABLE_CANDLE_PATTERNS)
+    def test_strategy_flags_classic_signals(self):
+        """Doji@support + S/R retest + triangle break enabled."""
+        self.assertTrue(sc.ENABLE_CANDLE_PATTERNS)
+        self.assertTrue(sc.ENABLE_SR_BREAKOUTS)
+        self.assertTrue(sc.ENABLE_TRIANGLE_BREAK)
 
-    def test_clean_hit_requires_both_tip_sides(self):
+    def test_clean_hit_has_trade_plan(self):
         ohlc = _build_sol_style_triangle()
         hit = detect_clean_trendline_breakout(ohlc, live=False, approaching=False)
         self.assertIsNotNone(hit)
-        cl = hit.get("chartLines") or {}
-        self.assertIsNotNone(cl.get("upper"))
-        self.assertIsNotNone(cl.get("lower"))
         plan = sc.enrich_trade_plan(ohlc, hit)
         self.assertIsNotNone(plan.get("entry"))
         self.assertIsNotNone(plan.get("sl"))
         self.assertIsNotNone(plan.get("tp"))
-        # SHORT SL should be above entry (opposite tip side)
         if plan["direction"] == "DOWN":
             self.assertGreater(float(plan["sl"]), float(plan["entry"]))
             self.assertLess(float(plan["tp"]), float(plan["entry"]))

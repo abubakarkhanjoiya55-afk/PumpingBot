@@ -5,18 +5,15 @@ Mount: /my-signals  (legacy alias: /device-care)
 Sirf USDT-M futures (spot nahi).
 
 Clear rules (default focus: 4H + 1D):
-  Chart / Structure (demo image)
-  - ONLY tip-triangle: last-3 tips UP (orange) + DOWN (blue)
-  - Signal jab ye structure mile + break / about-to-break
-  Alerts
-  - Clean Breakout / Break Setup from tip triangle → Entry + SL + TP
-  - Doji / Hammer / S/R default OFF (noise — env se on ho sakte hain)
-  - Late chase (far from line) rejected
+  Chart
+  - Simple candles only — koi tip/trendline draw nahi
+  Alerts (sirf ye 3)
+  1) 1D: Support pe Doji / Hammer + green close → LONG
+  2) S/R break → pending; Retest Complete pe trade (Entry/SL/TP)
+  3) Triangle break up / break down → trade
   Risk
-  - Every alert has Entry + SL + TP + RR + Risk%
-  - SL from recent swing / prior area; risk capped (~ATR / ~6% price)
+  - Har alert: Entry + SL + TP + RR + Risk%
   - Score >= 90 → ntfy phone push
-  Diversify: ~3+ setups/hour target; cooldowns per pattern
 """
 import asyncio
 import json
@@ -98,19 +95,21 @@ NTFY_TITLE = os.environ.get("NTFY_TITLE", "My Signals")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
-CLEAN_PATTERNS = frozenset({"Clean Breakout", "Break Setup", "Triangle Breakout"})
+CLEAN_PATTERNS = frozenset({"Clean Breakout", "Triangle Breakout"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
-# User demo = tip triangle only. Doji/S/R off by default (env se on).
-ENABLE_CANDLE_PATTERNS = os.environ.get("DC_ENABLE_CANDLE_PATTERNS", "0") == "1"
-ENABLE_SR_BREAKOUTS = os.environ.get("DC_ENABLE_SR", "0") == "1"
+# User strategy ON by default
+ENABLE_CANDLE_PATTERNS = os.environ.get("DC_ENABLE_CANDLE_PATTERNS", "1") == "1"
+ENABLE_SR_BREAKOUTS = os.environ.get("DC_ENABLE_SR", "1") == "1"
+ENABLE_TRIANGLE_BREAK = os.environ.get("DC_ENABLE_TRIANGLE", "1") == "1"
 # User kisi bhi TF ko on/off kar sakta hai
 BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
-TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})  # tip-triangle TFs
+TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})
 CANDLE_TFS = frozenset({"D1"})
 SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
-# Primary scan TFs for tip-triangle (user: 4H + 1D)
 PRIMARY_TIP_TFS = frozenset({"4H", "D1"})
+# Doji/Hammer must print near support (ATR fraction)
+SUPPORT_NEAR_ATR = float(os.environ.get("DC_SUPPORT_NEAR_ATR", "0.55"))
 # S/R must align on these higher timeframes (fake breakout filter)
 CONFLUENCE_TFS = ("4H", "D1", "1W")
 CONFLUENCE_FETCH = [
@@ -180,28 +179,31 @@ scan_stats = {
     "tfButtons": TF_BUTTONS,
     "enabledTfs": dict(enabled_tfs),
     "patterns": [
-        "Clean Breakout",
-        "Break Setup",
         "Triangle Breakout",
+        "Retest Complete",
+        "Dragonfly Doji",
+        "Hammer",
+        "Doji + Green",
     ],
     "strategy": {
         "5m": "Off by default",
         "15m": "Off by default",
-        "1h": "Tip triangle optional",
-        "4H": "Primary · tip triangle up+down · break + Entry/SL/TP",
-        "D1": "Primary · tip triangle up+down · break + Entry/SL/TP",
+        "1h": "Triangle break / S/R→retest (optional)",
+        "4H": "Triangle break up/down · S/R break → retest trade",
+        "D1": "Support Doji/Hammer+green · Triangle · S/R→retest",
         "1W": "Off by default",
     },
-    "chartStyle": "last-3 tips up (orange) + down (blue) — demo triangle only",
+    "chartStyle": "simple candles only (no tip/trendline draw)",
     "riskRules": {
-        "sl": "recent swing / opposite tip side",
+        "sl": "recent swing / prior break area",
         "tp": "RR scales with score (~1.2–3.0)",
         "maxRiskPct": 6.0,
         "noChase": True,
     },
     "enableCandlePatterns": ENABLE_CANDLE_PATTERNS,
     "enableSrBreakouts": ENABLE_SR_BREAKOUTS,
-    "requireBothTipSides": True,
+    "enableTriangleBreak": ENABLE_TRIANGLE_BREAK,
+    "requireBothTipSides": False,
     "hourlyMinTarget": HOURLY_MIN_TARGET,
     "hourlySymbolCap": HOURLY_MIN_TARGET,  # legacy field name
     "maxAlertsPerHour": MAX_ALERTS_PER_HOUR,
@@ -642,15 +644,15 @@ def mark_diversified_emit(sym: str, tf: str = "", now: float | None = None):
 def pattern_priority(hit: dict) -> int:
     """Higher = emit first when ranking candidates."""
     p = hit.get("pattern") or ""
-    if p == "Clean Breakout":
-        return 100 + int(hit.get("score") or 0)
-    if p == "Break Setup":
-        return 70 + int(hit.get("score") or 0)
-    if p == "Triangle Breakout":
-        return 85 + int(hit.get("score") or 0)
-    if p == "S/R Breakout":
-        return 50 + int(hit.get("score") or 0)
     if p == "Retest Complete":
+        return 110 + int(hit.get("score") or 0)
+    if p == "Triangle Breakout":
+        return 100 + int(hit.get("score") or 0)
+    if p in CANDLE_PATTERNS:
+        return 90 + int(hit.get("score") or 0)
+    if p == "Clean Breakout":
+        return 80 + int(hit.get("score") or 0)
+    if p == "S/R Breakout":
         return 40 + int(hit.get("score") or 0)
     return int(hit.get("score") or 0)
 
@@ -1415,40 +1417,68 @@ def _hammer_shape_at(ohlc: dict, idx: int) -> dict | None:
     }
 
 
+def _near_support(ohlc: dict, pattern_idx: int = -3) -> bool:
+    """
+    Pattern candle low should be near recent support (lookback swing/min).
+    User: Doji/Hammer support pe mile tab hi trade.
+    """
+    lows = ohlc.get("lows") or []
+    closes = ohlc.get("closes") or []
+    n = len(closes)
+    if n < 4:
+        return False
+    idx = pattern_idx if pattern_idx >= 0 else n + pattern_idx
+    if idx < 1 or idx >= n:
+        return False
+    look = min(LOOKBACK, max(3, idx))
+    start = max(0, idx - look)
+    hist = lows[start:idx]  # bars before pattern
+    if not hist:
+        return True
+    support = min(hist)
+    avg_rng = _avg_range(ohlc) or abs(closes[idx]) * 0.01
+    tol = max(avg_rng * SUPPORT_NEAR_ATR, abs(closes[idx]) * 0.004)
+    pl = float(lows[idx])
+    # New low / wick into support zone
+    return pl <= float(support) + tol
+
+
 def detect_dragonfly_doji(ohlc: dict) -> dict | None:
     """
-    Dragonfly Doji on candle -3, then last closed candle (-2) green close.
-    User rule: pattern ke BAAD last 1D candle green close hui ho.
+    Dragonfly Doji on candle -3 near support, then last closed (-2) green close.
     """
     if len(ohlc["closes"]) < 4:
         return None
     shape = _dragonfly_shape_at(ohlc, -3)
     if not shape:
         return None
+    if not _near_support(ohlc, -3):
+        return None
     if not _is_green_confirmation(ohlc, shape["_pattern_close"], -2):
         return None
-    # Alert timestamps / levels follow confirmation candle (entry at green close)
     o_g, _, l_g, c_g, _, _, _, _ = _candle_parts(ohlc, -2)
     return {
         "side": "BUY",
         "direction": "UP",
         "pattern": "Dragonfly Doji",
-        "patternDetail": "Dragonfly doji + green close",
+        "patternDetail": "Support · Dragonfly doji + green close",
         "level": min(float(shape["level"]), l_g),
         "close": c_g,
         "candleTime": ohlc["times"][-2],
+        "advice": "1D support pe Dragonfly + green close — LONG Entry/SL/TP dekho.",
     }
 
 
 def detect_hammer(ohlc: dict) -> dict | None:
     """
-    Hammer on candle -3, then last closed candle (-2) green close.
-    User rule: pattern ke BAAD last 1D candle green close hui ho.
+    Hammer on candle -3 near support, then last closed (-2) green close.
     """
     if len(ohlc["closes"]) < 4:
         return None
     shape = _hammer_shape_at(ohlc, -3)
     if not shape:
+        return None
+    if not _near_support(ohlc, -3):
         return None
     if not _is_green_confirmation(ohlc, shape["_pattern_close"], -2):
         return None
@@ -1457,19 +1487,17 @@ def detect_hammer(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Hammer",
-        "patternDetail": "Hammer + green close",
+        "patternDetail": "Support · Hammer + green close",
         "level": min(float(shape["level"]), l_g),
         "close": c_g,
         "candleTime": ohlc["times"][-2],
+        "advice": "1D support pe Hammer + green close — LONG Entry/SL/TP dekho.",
     }
 
 
 def detect_doji_then_green(ohlc: dict) -> dict | None:
     """
-    Two-candle sequence on closed candles:
-    - Candle -3: plain doji (not already classified as dragonfly)
-    - Candle -2: green candle that closed above doji close (confirmation)
-    Same green-close rule as Dragonfly/Hammer.
+    Doji near support (-3) + green confirmation (-2).
     """
     if len(ohlc["closes"]) < 4:
         return None
@@ -1479,8 +1507,9 @@ def detect_doji_then_green(ohlc: dict) -> dict | None:
 
     if not _is_doji(body_d, rng_d):
         return None
-    # Dragonfly is handled by detect_dragonfly_doji — avoid double alert
     if _dragonfly_shape_at(ohlc, doji_i):
+        return None
+    if not _near_support(ohlc, doji_i):
         return None
     if not _is_green_confirmation(ohlc, c_doji, green_i):
         return None
@@ -1489,17 +1518,17 @@ def detect_doji_then_green(ohlc: dict) -> dict | None:
         "side": "BUY",
         "direction": "UP",
         "pattern": "Doji + Green",
-        "patternDetail": "Doji then green close",
+        "patternDetail": "Support · Doji then green close",
         "level": l_g,
         "close": c_g,
         "candleTime": ohlc["times"][green_i],
+        "advice": "1D support pe Doji + green close — LONG Entry/SL/TP dekho.",
     }
 
 
 def scan_candle_patterns(ohlc: dict) -> list[dict]:
     """
-    D1/1W bullish candle patterns — har pattern ke baad last closed candle
-    green close confirmation zaroori. One hit per pattern type max.
+    D1 bullish candle patterns at support — green close confirmation zaroori.
     """
     hits = []
     for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
@@ -1521,17 +1550,20 @@ def scan_ohlc(
     htf_confluence: bool = False,
 ) -> list[dict]:
     """
-    Tip-triangle only (default):
-      4H/D1 (and optional 1h/1W) → both-side last-3 tip structure + break
-      Doji / S/R only if ENABLE_* env flags on
+    User strategy:
+      1) Triangle break up/down (confirmed break only)
+      2) S/R break (scan_loop registers retest; trade on Retest Complete)
+      3) D1 Doji/Hammer near support + green close
+    Charts = simple candles (attach_chart).
     """
     hits: list[dict] = []
     tf = timeframe or ""
 
-    run_triangle = tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
-    run_breakouts = (
-        ENABLE_SR_BREAKOUTS
-        and (tf in BREAKOUT_TFS or (not tf and not include_d1_patterns))
+    run_triangle = ENABLE_TRIANGLE_BREAK and (
+        tf in TRIANGLE_TFS or (not tf and not include_d1_patterns)
+    )
+    run_breakouts = ENABLE_SR_BREAKOUTS and (
+        tf in BREAKOUT_TFS or (not tf and not include_d1_patterns)
     )
     run_candles = ENABLE_CANDLE_PATTERNS and (
         tf in CANDLE_TFS or include_d1_patterns
@@ -1540,19 +1572,7 @@ def scan_ohlc(
     seen_dirs: set[str] = set()
 
     if run_triangle:
-        # Prefer about-to / tip-zone first (main alert volume)
-        setup = detect_clean_trendline_breakout(
-            ohlc, window=TRIANGLE_WINDOW, live=True, approaching=True
-        )
-        if setup and setup["direction"] not in seen_dirs:
-            lines = setup.get("chartLines") or {}
-            # Prefer both tips; allow one side if chart can still fill
-            if lines.get("upper") or lines.get("lower"):
-                seen_dirs.add(setup["direction"])
-                plan = enrich_trade_plan(ohlc, setup)
-                attach_chart(ohlc, plan)
-                hits.append(plan)
-        # Confirmed tip break
+        # Only confirmed break up / break down — no tip-zone "Break Setup"
         for live in (True, False):
             clean = detect_clean_trendline_breakout(
                 ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
@@ -1561,16 +1581,23 @@ def scan_ohlc(
                 continue
             if clean["direction"] in seen_dirs:
                 continue
-            lines = clean.get("chartLines") or {}
-            if not (lines.get("upper") or lines.get("lower")):
-                continue
+            # Normalize name to Triangle Breakout
+            tri = detect_triangle_breakout(ohlc, window=TRIANGLE_WINDOW) if not live else None
+            if tri and not live:
+                clean = tri
+            else:
+                clean["pattern"] = "Triangle Breakout"
+                detail = clean.get("patternDetail") or ""
+                side = "UP" if clean["direction"] == "UP" else "DOWN"
+                if "triangle" not in detail.lower():
+                    clean["patternDetail"] = f"Triangle break {side}{ ' (LIVE)' if live else ''}"
             seen_dirs.add(clean["direction"])
             plan = enrich_trade_plan(ohlc, clean)
             attach_chart(ohlc, plan)
             hits.append(plan)
 
     if run_breakouts:
-        for live in (True, False):
+        for live in (False, True):  # prefer closed break for retest quality
             sr = detect_sr_breakout(ohlc, live=live)
             if not sr:
                 continue
@@ -1582,13 +1609,18 @@ def scan_ohlc(
                 sr["patternDetail"] = (
                     f"{sr.get('patternDetail', 'S/R')} · HTF 4H+1D+1W"
                 )
+            # Mark for scan_loop: register pending retest, don't treat as final trade
+            sr["stage"] = "await_retest"
+            sr["_register_retest"] = True
             plan = enrich_trade_plan(ohlc, sr)
-            attach_chart(ohlc, plan)
+            # No chart/alert for raw break — wait for retest complete
             hits.append(plan)
+            break
+
     if run_candles:
         for hit in scan_candle_patterns(ohlc):
             plan = enrich_trade_plan(ohlc, hit)
-            # No fake tip chart on Doji — only tip-triangle alerts get tip charts
+            attach_chart(ohlc, plan)
             hits.append(plan)
     return hits
 
@@ -1732,9 +1764,8 @@ async def fetch_klines(
 
 async def scan_loop():
     print(
-        "[My Signals] Strategy: 4H/1D tip-triangle ONLY (upar+neeche tips) · "
-        f"Doji/SR={'on' if ENABLE_CANDLE_PATTERNS or ENABLE_SR_BREAKOUTS else 'off'} · "
-        f"min ~{HOURLY_MIN_TARGET}/hour · Entry/SL/TP · ntfy"
+        "[My Signals] Strategy: 1D support Doji/Hammer+green · "
+        "S/R→retest trade · Triangle break up/down · simple candle charts"
     )
     async with httpx.AsyncClient(timeout=30) as client:
         while True:
@@ -1744,6 +1775,7 @@ async def scan_loop():
             scan_stats["d1PatternsEnabled"] = ENABLE_CANDLE_PATTERNS
             scan_stats["enableCandlePatterns"] = ENABLE_CANDLE_PATTERNS
             scan_stats["enableSrBreakouts"] = ENABLE_SR_BREAKOUTS
+            scan_stats["enableTriangleBreak"] = ENABLE_TRIANGLE_BREAK
             scan_stats["enabledTfs"] = dict(enabled_tfs)
             scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)
             scan_stats["hourlyMinTarget"] = HOURLY_MIN_TARGET
@@ -1831,14 +1863,12 @@ async def scan_loop():
                                 detail = hit.get("patternDetail") or "S/R Breakout"
                                 if "HTF 4H+1D+1W" not in detail:
                                     hit["patternDetail"] = f"{detail} · HTF 4H+1D+1W"
-                                hit = enrich_trade_plan(ohlc, hit)
-                                if not hit.get("chartImage"):
-                                    attach_chart(ohlc, hit)
-                                if not hit.get("advice"):
-                                    hit["advice"] = (
-                                        "S/R HTF break — early entry; late chase mat karo."
-                                    )
-                                hit["stage"] = hit.get("stage") or "breakout"
+                                # User: trade AFTER retest — register pending, don't emit break
+                                register_pending_retest(sym, tf_label, hit)
+                                if EMIT_RETEST_WAIT:
+                                    wait = build_retest_wait_hit(ohlc, hit)
+                                    filtered.append(wait)
+                                continue
                             filtered.append(hit)
                         for rk, pending in list(pending_retests.items()):
                             if pending.get("symbol") != sym or pending.get("tf") != tf_label:
@@ -1859,7 +1889,9 @@ async def scan_loop():
 
                         filtered.sort(
                             key=lambda h: (
-                                0 if h.get("pattern") in CLEAN_PATTERNS else 1,
+                                0 if h.get("pattern") in (
+                                    "Retest Complete", "Triangle Breakout", *CANDLE_PATTERNS
+                                ) else 1,
                                 0 if h.get("live") else 1,
                                 -pattern_priority(h),
                             )

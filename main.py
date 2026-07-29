@@ -87,7 +87,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.23.1"   # Tip-triangle alerts loosened — setups fire again on 4H/D1
+API_VERSION = "3.24.0"   # Simple candle charts; Doji@support / S/R retest / triangle break
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
