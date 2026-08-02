@@ -98,6 +98,40 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(settings["preset"], "veryfast")
 
 
+class SceneClusteringTests(unittest.TestCase):
+    def test_cluster_by_gap_and_merge_short(self):
+        from scene_clustering import cluster_movie_scenes, merge_short_scenes
+
+        entries = [
+            {"text": "A one", "start": 0.0, "end": 1.0},
+            {"text": "A two", "start": 1.5, "end": 2.5},  # gap 0.5 -> same
+            {"text": "Tiny", "start": 10.0, "end": 10.5},  # gap 7.5 -> new
+            {"text": "B one", "start": 12.0, "end": 14.0},  # gap 1.5 -> same as tiny after merge path
+        ]
+        scenes = cluster_movie_scenes(entries, gap_threshold=6.0)
+        # First block (0-2.5), second starts at 10.0, third? 
+        # Tiny end 10.5 to B start 12.0 gap=1.5 < 6 => same scene
+        self.assertEqual(len(scenes), 2)
+        self.assertEqual(scenes[0]["subtitle_count"], 2)
+        self.assertIn("A one", scenes[0]["combined_text"])
+        self.assertEqual(scenes[1]["subtitle_count"], 2)
+
+        # Make an isolated tiny scene then merge forward
+        entries2 = [
+            {"text": "Long enough scene text", "start": 0.0, "end": 3.0},
+            {"text": "Hi", "start": 10.0, "end": 10.4},  # short alone
+            {"text": "Next scene continues", "start": 20.0, "end": 23.0},
+        ]
+        raw = cluster_movie_scenes(entries2, gap_threshold=6.0)
+        self.assertEqual(len(raw), 3)
+        cleaned = merge_short_scenes(raw, min_duration=2.0)
+        # short middle merges into NEXT => 2 scenes
+        self.assertEqual(len(cleaned), 2)
+        self.assertIn("Hi", cleaned[1]["combined_text"])
+        self.assertEqual(cleaned[0]["scene_id"], 1)
+        self.assertEqual(cleaned[1]["scene_id"], 2)
+
+
 class ConfigTests(unittest.TestCase):
     def test_load_and_normalize(self):
         from config import load_config, save_config
