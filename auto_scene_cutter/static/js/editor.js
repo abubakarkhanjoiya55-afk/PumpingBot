@@ -819,6 +819,18 @@ function wireControls() {
   });
 }
 
+async function quitDesktop() {
+  try {
+    await fetch("/api/shutdown", { method: "POST" });
+    showOk("Closing SceneCut Pro+…");
+    setTimeout(() => {
+      window.close();
+    }, 400);
+  } catch (err) {
+    showError(err.message || String(err));
+  }
+}
+
 async function boot() {
   try {
     const res = await fetch("/api/settings");
@@ -827,6 +839,22 @@ async function boot() {
   } catch (_) {
     writeSettingsToUi(state.settings);
   }
+
+  // Show Quit when launched as desktop app
+  try {
+    const desk = await fetch("/api/desktop").then((r) => r.json());
+    const q = new URLSearchParams(location.search).get("desktop");
+    if ((desk && desk.desktop) || q === "1") {
+      const btn = $("btnQuitDesktop");
+      if (btn) {
+        btn.hidden = false;
+        btn.addEventListener("click", quitDesktop);
+      }
+    }
+  } catch (_) {
+    /* browser-only mode */
+  }
+
   wireControls();
   renderTimeline();
 }

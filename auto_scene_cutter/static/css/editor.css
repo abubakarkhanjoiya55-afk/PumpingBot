@@ -97,6 +97,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   box-shadow: 0 8px 20px rgba(124, 108, 255, 0.28);
 }
 .btn-primary:hover { filter: brightness(1.05); }
+.btn-danger {
+  background: linear-gradient(180deg, #ff8a96, #e25563);
+  border-color: transparent;
+  color: #fff;
+}
+.btn-danger:hover { filter: brightness(1.05); }
 .btn-block { width: 100%; padding: 12px 14px; margin-top: 12px; }
 .btn-icon { min-width: 52px; }
 .btn-row {

@@ -11,6 +11,8 @@ Open: http://127.0.0.1:5000
 from __future__ import annotations
 
 import copy
+import os
+import sys
 import threading
 from pathlib import Path
 
@@ -34,15 +36,36 @@ from pro_plus import (
 from srt_parser import parse_narration_srt
 from video_cutter import create_sample_video
 
-BASE_DIR = Path(__file__).resolve().parent
+
+def _resource_dir() -> Path:
+    """Templates/static/samples — PyInstaller extract dir when frozen."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent
+
+
+def _data_dir() -> Path:
+    """Writable app data (uploads/output/projects)."""
+    if getattr(sys, "frozen", False):
+        # Prefer install folder next to the .exe; fallback to LocalAppData
+        exe_dir = Path(sys.executable).resolve().parent
+        if os.access(exe_dir, os.W_OK):
+            return exe_dir
+        local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / ".local" / "share"))
+        return local / "SceneCutProPlus"
+    return Path(__file__).resolve().parent
+
+
+RESOURCE_DIR = _resource_dir()
+BASE_DIR = _data_dir()
 UPLOAD_DIR = BASE_DIR / "_uploads"
 OUTPUT_DIR = BASE_DIR / "output"
 PROJECTS_DIR = BASE_DIR / "projects"
 
 app = Flask(
     __name__,
-    template_folder=str(BASE_DIR / "templates"),
-    static_folder=str(BASE_DIR / "static"),
+    template_folder=str(RESOURCE_DIR / "templates"),
+    static_folder=str(RESOURCE_DIR / "static"),
 )
 
 SESSION = {
@@ -146,10 +169,14 @@ def _load_sample_into_session() -> dict:
     sample_video = BASE_DIR / "sample_movie.mp4"
     create_sample_video(sample_video, duration_seconds=60.0)
 
-    movie_srt = BASE_DIR / "sample_movie_cluster.srt"
+    movie_srt = RESOURCE_DIR / "sample_movie_cluster.srt"
     if not movie_srt.exists():
-        movie_srt = BASE_DIR / "sample_movie.srt"
-    narration_srt = BASE_DIR / "sample_narration.srt"
+        movie_srt = RESOURCE_DIR / "sample_movie.srt"
+    if not movie_srt.exists():
+        movie_srt = BASE_DIR / "sample_movie_cluster.srt"
+    narration_srt = RESOURCE_DIR / "sample_narration.srt"
+    if not narration_srt.exists():
+        narration_srt = BASE_DIR / "sample_narration.srt"
     narration_audio = BASE_DIR / "sample_narration.m4a"
 
     try:
@@ -748,6 +775,7 @@ def health():
             "app": "SceneCut Pro+",
             "engine": "stages-1-to-5",
             "pro_plus": True,
+            "desktop": os.environ.get("SCENECUT_DESKTOP") == "1",
         }
     )
 
