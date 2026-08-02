@@ -204,6 +204,27 @@ def cmd_serve(_args: list[str]) -> int:
     return subprocess.call([sys.executable, str(app_path)])
 
 
+def cmd_engine_sample(_args: list[str]) -> int:
+    """Spec backend Stages 1→4 on bundled sample files."""
+    base = Path(__file__).resolve().parent
+    video = base / "sample_movie.mp4"
+    print("Sample movie (60s)...")
+    create_sample_video(video, duration_seconds=60.0)
+    output = base / "output" / "stage4_sample_cut.mp4"
+    result = run_stage1_to_stage4(
+        video_path=video,
+        movie_srt_path=str(base / "sample_movie_cluster.srt"),
+        narration_srt_path=str(base / "sample_narration.srt"),
+        output_path=output,
+        max_clip_duration=5.0,
+        quality="fast",
+    )
+    print(f"Scenes: {len(result['scenes'])}")
+    print(f"Matched: {result['stats']['matched']}/{result['stats']['total_narration_lines']}")
+    print(f"Output: {result['output_video']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in {"-h", "--help", "help"}:
@@ -216,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if cmd == "sample":
             return cmd_sample()
+        if cmd == "engine-sample":
+            return cmd_engine_sample(args)
         if cmd == "create":
             return cmd_create(args)
         if cmd == "render":
