@@ -27,6 +27,7 @@ from final_render import (
     render_from_cut_plan,
     sync_cut_plan_to_narration,
 )
+from config import TRANSITION_OPTIONS, load_config
 from presets import DEFAULT_QUALITY, QUALITY_PRESETS
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
@@ -45,11 +46,22 @@ def build_project(
     sync_to_narration: bool = True,
     burn_subs: bool = True,
     quality: str = DEFAULT_QUALITY,
+    transition: str = "fade",
+    transition_duration: float = 0.35,
 ) -> dict[str, Any]:
     """Create an in-memory project dictionary."""
     quality_key = (quality or DEFAULT_QUALITY).strip().lower()
     if quality_key not in QUALITY_PRESETS:
         quality_key = DEFAULT_QUALITY
+
+    transition_key = (transition or "fade").strip().lower()
+    if transition_key not in TRANSITION_OPTIONS:
+        transition_key = "fade"
+    try:
+        tdur = float(transition_duration)
+    except (TypeError, ValueError):
+        tdur = 0.35
+    tdur = max(0.05, min(tdur, 1.5))
 
     return {
         "version": PROJECT_VERSION,
@@ -69,6 +81,8 @@ def build_project(
             "sync_to_narration": bool(sync_to_narration),
             "burn_subs": bool(burn_subs),
             "quality": quality_key,
+            "transition": transition_key,
+            "transition_duration": tdur,
         },
         "cut_plan": cut_plan,
         "stats": summarize_cut_plan(cut_plan),
@@ -108,15 +122,22 @@ def load_project(project_path: str | Path) -> dict[str, Any]:
 
     data.setdefault("version", PROJECT_VERSION)
     data.setdefault("name", project_path.stem)
+    defaults = load_config()
     data.setdefault(
         "settings",
         {
-            "sync_to_narration": True,
-            "burn_subs": True,
-            "quality": DEFAULT_QUALITY,
+            "sync_to_narration": defaults["sync_to_narration"],
+            "burn_subs": defaults["burn_subs"],
+            "quality": defaults["quality"],
+            "transition": defaults["transition"],
+            "transition_duration": defaults["transition_duration"],
         },
     )
-    data["settings"].setdefault("quality", DEFAULT_QUALITY)
+    data["settings"].setdefault("quality", defaults["quality"])
+    data["settings"].setdefault("transition", defaults["transition"])
+    data["settings"].setdefault(
+        "transition_duration", defaults["transition_duration"]
+    )
     data["stats"] = summarize_cut_plan(data["cut_plan"])
     return data
 
@@ -246,14 +267,31 @@ def create_project_from_sources(
     movie_srt_path: str | Path,
     narration_srt_path: str | Path,
     narration_audio_path: str | Path | None = None,
-    sync_to_narration: bool = True,
-    burn_subs: bool = True,
-    quality: str = DEFAULT_QUALITY,
+    sync_to_narration: bool | None = None,
+    burn_subs: bool | None = None,
+    quality: str | None = None,
+    transition: str | None = None,
+    transition_duration: float | None = None,
 ) -> dict[str, Any]:
     """
     Stage 1+2 (+ optional sync) chala ke naya project banao.
     Video abhi cut nahi hoti — sirf plan save hota hai.
+
+    None values config.json defaults se bhar jaate hain.
     """
+    cfg = load_config()
+    sync_to_narration = (
+        cfg["sync_to_narration"] if sync_to_narration is None else sync_to_narration
+    )
+    burn_subs = cfg["burn_subs"] if burn_subs is None else burn_subs
+    quality = cfg["quality"] if quality is None else quality
+    transition = cfg["transition"] if transition is None else transition
+    transition_duration = (
+        cfg["transition_duration"]
+        if transition_duration is None
+        else transition_duration
+    )
+
     movie_entries = parse_srt(str(movie_srt_path))
     narration_entries = parse_narration_srt(str(narration_srt_path))
     cut_plan = match_scenes(movie_entries, narration_entries)
@@ -270,6 +308,8 @@ def create_project_from_sources(
         sync_to_narration=sync_to_narration,
         burn_subs=burn_subs,
         quality=quality,
+        transition=transition,
+        transition_duration=transition_duration,
     )
 
 
@@ -282,9 +322,14 @@ def render_project(
     """
     paths = project["paths"]
     settings = project.get("settings", {})
+    cfg = load_config()
     video = paths.get("video")
     audio = paths.get("narration_audio")
-    quality = settings.get("quality", DEFAULT_QUALITY)
+    quality = settings.get("quality", cfg["quality"])
+    transition = settings.get("transition", cfg["transition"])
+    transition_duration = float(
+        settings.get("transition_duration", cfg["transition_duration"])
+    )
 
     if not video or not Path(video).exists():
         raise FileNotFoundError(f"Project video missing/not found: {video}")
@@ -298,12 +343,17 @@ def render_project(
         cut_plan=project["cut_plan"],
         output_path=output_path,
         narration_audio_path=audio,
-        burn_subs=bool(settings.get("burn_subs", True)),
+        burn_subs=bool(settings.get("burn_subs", cfg["burn_subs"])),
         quality=quality,
+        transition=transition,
+        transition_duration=transition_duration,
     )
     info["project_name"] = project.get("name")
-    info["sync_to_narration"] = bool(settings.get("sync_to_narration", True))
+    info["sync_to_narration"] = bool(
+        settings.get("sync_to_narration", cfg["sync_to_narration"])
+    )
     info["quality"] = quality
+    info["transition"] = transition
     return result, info
 
 

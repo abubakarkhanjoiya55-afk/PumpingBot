@@ -98,6 +98,43 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(settings["preset"], "veryfast")
 
 
+class ConfigTests(unittest.TestCase):
+    def test_load_and_normalize(self):
+        from config import load_config, save_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cfg.json"
+            save_config(
+                {
+                    "quality": "nope",
+                    "transition": "fade",
+                    "transition_duration": 9,
+                    "sync_to_narration": 1,
+                    "burn_subs": 0,
+                },
+                path,
+            )
+            cfg = load_config(path)
+            self.assertEqual(cfg["quality"], "balanced")  # invalid -> default
+            self.assertEqual(cfg["transition"], "fade")
+            self.assertLessEqual(cfg["transition_duration"], 1.5)
+            self.assertTrue(cfg["sync_to_narration"])
+            self.assertFalse(cfg["burn_subs"])
+
+    def test_progress_logger_counts(self):
+        from progress import ProgressLogger
+
+        logs: list[str] = []
+        p = ProgressLogger(
+            total=2,
+            callback=lambda msg, cur, tot: logs.append(f"{cur}/{tot}:{msg}"),
+        )
+        p.step("one")
+        p.step("two")
+        self.assertEqual(p.current, 2)
+        self.assertEqual(len(logs), 2)
+
+
 class ReportTests(unittest.TestCase):
     def test_html_report_without_video_still_works(self):
         from report import generate_html_report

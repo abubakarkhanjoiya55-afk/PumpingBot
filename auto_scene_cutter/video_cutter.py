@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from presets import DEFAULT_QUALITY, get_quality_settings
+from progress import ProgressLogger
 from scene_matcher import match_scenes
 from srt_parser import parse_narration_srt, parse_srt
 
@@ -104,6 +105,9 @@ def cut_video_from_plan(
     output_path: str | Path,
     work_dir: str | Path | None = None,
     quality: str = DEFAULT_QUALITY,
+    transition: str = "none",
+    transition_duration: float = 0.35,
+    progress: ProgressLogger | None = None,
 ) -> Path:
     """
     Cut matched scenes from a video and join them into one file.
@@ -115,12 +119,16 @@ def cut_video_from_plan(
         work_dir: optional temp folder for middle clips
                   (if None, a temporary folder is created and cleaned up)
         quality: Stage 6 preset name — fast / balanced / high
+        transition: Stage 8 — "none" (hard cut) or "fade" (in/out)
+        transition_duration: fade length in seconds
+        progress: optional ProgressLogger for step messages
 
     Returns:
         Path to the finished output video.
     """
     ffmpeg = ensure_ffmpeg()
     quality_settings = get_quality_settings(quality)
+    transition = (transition or "none").strip().lower()
     video_path = Path(video_path)
     output_path = Path(output_path)
 
@@ -151,6 +159,9 @@ def cut_video_from_plan(
 
     segment_paths: list[Path] = []
     concat_list_path = base_work / "concat_list.txt"
+    total_steps = len(matched) + 1
+    logger = progress or ProgressLogger(total=total_steps, label="Cut")
+    # If caller gave a logger with different total, keep using it as-is.
 
     try:
         for i, item in enumerate(matched, start=1):
@@ -159,6 +170,11 @@ def cut_video_from_plan(
             duration = end - start
             segment_path = base_work / f"segment_{i:03d}.mp4"
             segment_paths.append(segment_path)
+
+            logger.step(
+                f"Segment {i}/{len(matched)} cut "
+                f"({start:.2f}s -> {end:.2f}s, transition={transition})"
+            )
 
             # Accurate cut: seek after opening input, then re-encode
             cmd = [
@@ -170,6 +186,26 @@ def cut_video_from_plan(
                 str(video_path),
                 "-t",
                 f"{duration:.3f}",
+            ]
+
+            # Stage 8 fade: soft in/out so joins softer lagte hain
+            if transition == "fade" and duration > 0.2:
+                fade_d = min(float(transition_duration), duration / 3.0)
+                fade_out_start = max(0.0, duration - fade_d)
+                cmd += [
+                    "-vf",
+                    (
+                        f"fade=t=in:st=0:d={fade_d:.3f},"
+                        f"fade=t=out:st={fade_out_start:.3f}:d={fade_d:.3f}"
+                    ),
+                    "-af",
+                    (
+                        f"afade=t=in:st=0:d={fade_d:.3f},"
+                        f"afade=t=out:st={fade_out_start:.3f}:d={fade_d:.3f}"
+                    ),
+                ]
+
+            cmd += [
                 "-c:v",
                 "libx264",
                 "-preset",
@@ -189,6 +225,8 @@ def cut_video_from_plan(
                     f"({start:.2f}s -> {end:.2f}s)."
                 ),
             )
+
+        logger.step("Segments join (concat)")
 
         # ffmpeg concat demuxer needs a text file listing the clips
         concat_lines = []

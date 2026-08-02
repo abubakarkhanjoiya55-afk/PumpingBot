@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from presets import DEFAULT_QUALITY
+from progress import ProgressLogger
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
 from video_cutter import (
@@ -307,6 +308,9 @@ def render_from_cut_plan(
     narration_audio_path: str | Path | None = None,
     burn_subs: bool = True,
     quality: str = DEFAULT_QUALITY,
+    transition: str = "none",
+    transition_duration: float = 0.35,
+    progress: ProgressLogger | None = None,
 ) -> tuple[Path, dict]:
     """
     Stage 3+4 render using an already-built/edited cut plan.
@@ -317,6 +321,11 @@ def render_from_cut_plan(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    matched_count = sum(1 for item in cut_plan if item.get("matched"))
+    # cut segments + concat + optional mix + optional subs
+    total_steps = matched_count + 1 + (1 if narration_audio_path else 0) + (1 if burn_subs else 0)
+    logger = progress or ProgressLogger(total=total_steps, label="Render")
+
     with tempfile.TemporaryDirectory(prefix="asc_final_") as tmp:
         tmp_dir = Path(tmp)
         cut_path = tmp_dir / "cut.mp4"
@@ -326,16 +335,21 @@ def render_from_cut_plan(
             cut_path,
             work_dir=tmp_dir / "clips",
             quality=quality,
+            transition=transition,
+            transition_duration=transition_duration,
+            progress=logger,
         )
 
         current = cut_path
 
         if narration_audio_path:
+            logger.step("Narration audio mix")
             mixed = tmp_dir / "mixed.mp4"
             mix_narration_audio(current, narration_audio_path, mixed)
             current = mixed
 
         if burn_subs:
+            logger.step("Subtitle burn-in")
             synced_srt = tmp_dir / "burn.srt"
             _rewrite_narration_srt_for_synced_video(cut_plan, synced_srt)
             burned = tmp_dir / "burned.mp4"
@@ -348,6 +362,9 @@ def render_from_cut_plan(
         "burn_subs": burn_subs,
         "narration_audio": bool(narration_audio_path),
         "quality": quality,
+        "transition": transition,
+        "transition_duration": transition_duration,
+        "progress_steps": list(logger.history),
         **summarize_cut_plan(cut_plan),
     }
     return output_path, info
@@ -362,6 +379,8 @@ def render_final(
     sync_to_narration: bool = True,
     burn_subs: bool = True,
     quality: str = DEFAULT_QUALITY,
+    transition: str = "none",
+    transition_duration: float = 0.35,
 ) -> tuple[Path, list[dict], dict]:
     """
     Full Stage 1→4 pipeline.
@@ -383,6 +402,8 @@ def render_final(
         narration_audio_path=narration_audio_path,
         burn_subs=burn_subs,
         quality=quality,
+        transition=transition,
+        transition_duration=transition_duration,
     )
     info["sync_to_narration"] = sync_to_narration
     return result, cut_plan, info

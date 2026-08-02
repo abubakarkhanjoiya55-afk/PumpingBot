@@ -1,0 +1,7 @@
+{
+  "quality": "balanced",
+  "transition": "fade",
+  "transition_duration": 0.35,
+  "sync_to_narration": true,
+  "burn_subs": true
+}

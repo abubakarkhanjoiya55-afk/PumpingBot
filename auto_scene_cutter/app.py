@@ -1,5 +1,5 @@
 """
-Local test page for Stage 1 → Stage 7.
+Local test page for Stage 1 → Stage 8.
 
 Open in browser:
     http://localhost:5000
@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask, render_template_string, request, send_file
 
 from batch_render import batch_render
+from config import TRANSITION_OPTIONS, load_config, save_config
 from final_render import create_sample_narration_audio
 from presets import DEFAULT_QUALITY, QUALITY_PRESETS
 from project import (
@@ -40,7 +41,7 @@ PAGE = """
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto Scene Cutter — Stage 7</title>
+  <title>Auto Scene Cutter — Stage 8</title>
   <style>
     :root {
       --bg: #0f1419; --panel: #1a222c; --text: #e8eef4; --muted: #9aa8b5;
@@ -113,7 +114,7 @@ PAGE = """
 <body>
   <div class="wrap">
     <h1>Auto Scene Cutter</h1>
-    <p class="sub">Stage 7 — thumbnails + HTML report + unified CLI (`python main.py`).</p>
+    <p class="sub">Stage 8 — fade transitions, config.json defaults, render progress.</p>
 
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
@@ -124,6 +125,7 @@ PAGE = """
           {% if info %}
             | matched={{ info.matched }}/{{ info.total_narration_lines }}
             | quality={{ info.quality }}
+            | transition={{ info.transition }}
           {% endif %}
         </span>
         <a class="btn" href="{{ url_for('download_output', filename=output_name) }}">Download video</a>
@@ -168,20 +170,32 @@ PAGE = """
       <label>Quality
         <select name="quality">
           {% for key, meta in qualities.items() %}
-            <option value="{{ key }}" {% if key == default_quality %}selected{% endif %}>
+            <option value="{{ key }}" {% if key == cfg.quality %}selected{% endif %}>
               {{ meta.label }} — {{ meta.description }}
             </option>
           {% endfor %}
         </select>
       </label>
+      <label>Transition
+        <select name="transition">
+          {% for t in transitions %}
+            <option value="{{ t }}" {% if t == cfg.transition %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Transition duration (seconds)
+        <input type="number" step="0.05" min="0.05" max="1.5" name="transition_duration"
+          value="{{ cfg.transition_duration }}" />
+      </label>
       <div class="checks">
-        <label class="check"><input type="checkbox" name="sync_to_narration" value="1" checked />Sync to narration</label>
-        <label class="check"><input type="checkbox" name="burn_subs" value="1" checked />Burn subtitles</label>
+        <label class="check"><input type="checkbox" name="sync_to_narration" value="1" {% if cfg.sync_to_narration %}checked{% endif %} />Sync to narration</label>
+        <label class="check"><input type="checkbox" name="burn_subs" value="1" {% if cfg.burn_subs %}checked{% endif %} />Burn subtitles</label>
         <label class="check"><input type="checkbox" name="render_now" value="1" checked />Render now</label>
+        <label class="check"><input type="checkbox" name="save_as_defaults" value="1" />In settings ko config.json default bana do</label>
       </div>
       <div class="actions">
         <button type="submit" name="action" value="create">Create project + run</button>
-        <button class="secondary" type="submit" name="action" value="sample">Sample Stage 7 test</button>
+        <button class="secondary" type="submit" name="action" value="sample">Sample Stage 8 test</button>
       </div>
     </form>
 
@@ -225,6 +239,7 @@ PAGE = """
         Matched: {{ project.stats.matched }} /
         {{ project.stats.total_narration_lines }}
         | quality={{ project.settings.quality }}
+        | transition={{ project.settings.transition }}
       </div>
       <p class="tiny">
         Rematch dropdown se movie dialogue manually choose karo.
@@ -238,6 +253,17 @@ PAGE = """
             </option>
           {% endfor %}
         </select>
+      </label>
+      <label>Transition
+        <select name="transition">
+          {% for t in transitions %}
+            <option value="{{ t }}" {% if t == project.settings.transition %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Transition duration
+        <input type="number" step="0.05" min="0.05" max="1.5" name="transition_duration"
+          value="{{ project.settings.transition_duration }}" />
       </label>
       <table>
         <thead>
@@ -403,6 +429,8 @@ def index():
                     sync_to_narration=True,
                     burn_subs=True,
                     quality="fast",
+                    transition="fade",
+                    transition_duration=0.35,
                 )
                 _persist_project(project)
                 save_project(project, BATCH_DIR / "sample_project.json")
@@ -417,6 +445,21 @@ def index():
                 burn = request.form.get("burn_subs") == "1"
                 do_render = request.form.get("render_now") == "1"
                 quality = request.form.get("quality") or DEFAULT_QUALITY
+                transition = request.form.get("transition") or "fade"
+                transition_duration = float(
+                    request.form.get("transition_duration") or 0.35
+                )
+
+                if request.form.get("save_as_defaults") == "1":
+                    save_config(
+                        {
+                            "quality": quality,
+                            "transition": transition,
+                            "transition_duration": transition_duration,
+                            "sync_to_narration": sync,
+                            "burn_subs": burn,
+                        }
+                    )
 
                 movie_file = request.files.get("movie_srt")
                 narration_file = request.files.get("narration_srt")
@@ -446,6 +489,8 @@ def index():
                     sync_to_narration=sync,
                     burn_subs=burn,
                     quality=quality,
+                    transition=transition,
+                    transition_duration=transition_duration,
                 )
                 _persist_project(project)
                 save_project(project, BATCH_DIR / "upload_project.json")
@@ -508,6 +553,12 @@ def index():
                 project["settings"]["quality"] = (
                     request.form.get("quality") or DEFAULT_QUALITY
                 )
+                project["settings"]["transition"] = (
+                    request.form.get("transition") or "fade"
+                )
+                project["settings"]["transition_duration"] = float(
+                    request.form.get("transition_duration") or 0.35
+                )
                 _persist_project(project)
                 save_project(
                     project, BATCH_DIR / f"{project.get('name', 'project')}.json"
@@ -550,6 +601,8 @@ def index():
         report_name=report_name,
         qualities=QUALITY_PRESETS,
         default_quality=DEFAULT_QUALITY,
+        transitions=TRANSITION_OPTIONS,
+        cfg=load_config(),
     )
 
 

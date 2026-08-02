@@ -1,10 +1,11 @@
 """
-Unified CLI for Auto Scene Cutter (Stage 7)
+Unified CLI for Auto Scene Cutter (Stage 7/8)
 
 Ek hi entry point se common commands chalayein:
 
   python main.py sample
-  python main.py create <video> <movie.srt> <narration.srt> <project.json> [--audio file] [--quality fast]
+  python main.py create <video> <movie.srt> <narration.srt> <project.json>
+                 [--audio file] [--quality fast] [--transition fade] [--fade-dur 0.35]
   python main.py render <project.json> [output.mp4]
   python main.py report <project.json> [report.html]
   python main.py batch <projects_folder> [output_folder] [--quality fast|balanced|high]
@@ -18,8 +19,9 @@ import sys
 from pathlib import Path
 
 from batch_render import batch_render
+from config import TRANSITION_OPTIONS, load_config
 from final_render import create_sample_narration_audio
-from presets import DEFAULT_QUALITY, list_qualities
+from presets import list_qualities
 from project import create_project_from_sources, load_project, render_project, save_project
 from report import generate_project_report
 from srt_parser import parse_narration_srt
@@ -31,12 +33,14 @@ def _print_help() -> None:
         "Auto Scene Cutter — unified CLI\n\n"
         "Commands:\n"
         "  sample\n"
-        "  create <video> <movie.srt> <narration.srt> <project.json> [--audio file] [--quality NAME]\n"
+        "  create <video> <movie.srt> <narration.srt> <project.json>\n"
+        "         [--audio file] [--quality NAME] [--transition none|fade] [--fade-dur 0.35]\n"
         "  render <project.json> [output.mp4]\n"
         "  report <project.json> [report.html]\n"
         "  batch <projects_folder> [output_folder] [--quality NAME]\n"
         "  serve\n\n"
-        f"Quality options: {', '.join(list_qualities())}"
+        f"Quality options: {', '.join(list_qualities())}\n"
+        f"Transitions: {', '.join(TRANSITION_OPTIONS)}"
     )
 
 
@@ -55,6 +59,7 @@ def cmd_sample() -> int:
     create_sample_narration_audio(parse_narration_srt(str(narration_srt)), audio)
 
     print("2) Project create...")
+    cfg = load_config()
     project = create_project_from_sources(
         name="sample_project",
         video_path=video,
@@ -64,6 +69,8 @@ def cmd_sample() -> int:
         sync_to_narration=True,
         burn_subs=True,
         quality="fast",
+        transition=cfg.get("transition", "fade"),
+        transition_duration=float(cfg.get("transition_duration", 0.35)),
     )
     save_project(project, project_path)
 
@@ -92,7 +99,9 @@ def cmd_create(args: list[str]) -> int:
 
     video, movie_srt, narration_srt, project_path = args[:4]
     audio = None
-    quality = DEFAULT_QUALITY
+    quality = None
+    transition = None
+    fade_dur = None
     rest = args[4:]
     i = 0
     while i < len(rest):
@@ -101,6 +110,12 @@ def cmd_create(args: list[str]) -> int:
             i += 2
         elif rest[i] == "--quality" and i + 1 < len(rest):
             quality = rest[i + 1]
+            i += 2
+        elif rest[i] == "--transition" and i + 1 < len(rest):
+            transition = rest[i + 1]
+            i += 2
+        elif rest[i] == "--fade-dur" and i + 1 < len(rest):
+            fade_dur = float(rest[i + 1])
             i += 2
         else:
             print(f"Unknown arg: {rest[i]}")
@@ -113,6 +128,8 @@ def cmd_create(args: list[str]) -> int:
         narration_srt_path=narration_srt,
         narration_audio_path=audio,
         quality=quality,
+        transition=transition,
+        transition_duration=fade_dur,
     )
     save_project(project, project_path)
     print(f"Project saved: {project_path}")
