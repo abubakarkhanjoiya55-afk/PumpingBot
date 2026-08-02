@@ -1,5 +1,5 @@
 """
-Local test page for Stage 1 → Stage 6.
+Local test page for Stage 1 → Stage 7.
 
 Open in browser:
     http://localhost:5000
@@ -21,6 +21,7 @@ from project import (
     render_project,
     save_project,
 )
+from report import generate_html_report
 from scene_matcher import summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
 from video_cutter import create_sample_video
@@ -39,7 +40,7 @@ PAGE = """
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto Scene Cutter — Stage 6</title>
+  <title>Auto Scene Cutter — Stage 7</title>
   <style>
     :root {
       --bg: #0f1419; --panel: #1a222c; --text: #e8eef4; --muted: #9aa8b5;
@@ -112,7 +113,7 @@ PAGE = """
 <body>
   <div class="wrap">
     <h1>Auto Scene Cutter</h1>
-    <p class="sub">Stage 6 — quality presets, manual rematch, batch render.</p>
+    <p class="sub">Stage 7 — thumbnails + HTML report + unified CLI (`python main.py`).</p>
 
     {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
@@ -128,6 +129,11 @@ PAGE = """
         <a class="btn" href="{{ url_for('download_output', filename=output_name) }}">Download video</a>
         {% if project %}
           <a class="btn secondary" href="{{ url_for('download_project') }}">Download project JSON</a>
+        {% endif %}
+        {% if report_name %}
+          <a class="btn secondary" href="{{ url_for('view_report', subpath=report_name) }}" target="_blank">
+            Open HTML report
+          </a>
         {% endif %}
       </div>
       <section>
@@ -175,7 +181,7 @@ PAGE = """
       </div>
       <div class="actions">
         <button type="submit" name="action" value="create">Create project + run</button>
-        <button class="secondary" type="submit" name="action" value="sample">Sample Stage 6 test</button>
+        <button class="secondary" type="submit" name="action" value="sample">Sample Stage 7 test</button>
       </div>
     </form>
 
@@ -290,6 +296,9 @@ PAGE = """
       <div class="actions">
         <button type="submit" name="action" value="save_edits">Save edits</button>
         <button type="submit" name="action" value="render_edits">Save + render</button>
+        <button class="secondary" type="submit" name="action" value="make_report">
+          Thumbnails + HTML report
+        </button>
         <a class="btn secondary" href="{{ url_for('download_project') }}">Download JSON</a>
       </div>
     </form>
@@ -310,6 +319,20 @@ def _save_upload(file_storage, filename: str) -> Path:
 def _persist_project(project: dict) -> Path:
     OUTPUT_DIR.mkdir(exist_ok=True)
     return save_project(project, LAST_PROJECT)
+
+
+def _make_report(project: dict, final_video_path: Path | None = None) -> str:
+    """Generate HTML report + thumbs; return report filename."""
+    name = project.get("name", "project")
+    report_path = OUTPUT_DIR / f"{name}_report.html"
+    thumbs_dir = OUTPUT_DIR / f"{name}_report_thumbs"
+    generate_html_report(
+        project,
+        output_html=report_path,
+        thumbs_dir=thumbs_dir,
+        final_video_path=final_video_path,
+    )
+    return report_path.name
 
 
 def _movie_entries_for_project(project: dict | None) -> list[dict]:
@@ -347,6 +370,7 @@ def index():
     info = None
     project = None
     batch_results = None
+    report_name = None
 
     if LAST_PROJECT.exists():
         try:
@@ -386,6 +410,7 @@ def index():
                     project, OUTPUT_DIR / "sample_project_final.mp4"
                 )
                 output_name = result.name
+                report_name = _make_report(project, final_video_path=result)
 
             elif action == "create":
                 sync = request.form.get("sync_to_narration") == "1"
@@ -430,6 +455,7 @@ def index():
                         project, OUTPUT_DIR / "upload_project_final.mp4"
                     )
                     output_name = result.name
+                    report_name = _make_report(project, final_video_path=result)
 
             elif action == "load_project":
                 project_file = request.files.get("project_file")
@@ -443,6 +469,7 @@ def index():
                         project, OUTPUT_DIR / "loaded_project_final.mp4"
                     )
                     output_name = result.name
+                    report_name = _make_report(project, final_video_path=result)
 
             elif action == "copy_to_batch":
                 if not LAST_PROJECT.exists():
@@ -491,6 +518,13 @@ def index():
                         project, OUTPUT_DIR / "edited_project_final.mp4"
                     )
                     output_name = result.name
+                    report_name = _make_report(project, final_video_path=result)
+
+            elif action == "make_report":
+                if not LAST_PROJECT.exists():
+                    raise ValueError("Pehle project create/load karo.")
+                project = load_project(LAST_PROJECT)
+                report_name = _make_report(project)
 
             else:
                 raise ValueError(f"Unknown action: {action}")
@@ -513,6 +547,7 @@ def index():
         project=project,
         movie_entries=movie_entries,
         batch_results=batch_results,
+        report_name=report_name,
         qualities=QUALITY_PRESETS,
         default_quality=DEFAULT_QUALITY,
     )
@@ -540,6 +575,24 @@ def download_project():
         as_attachment=True,
         download_name="auto_scene_cutter_project.json",
     )
+
+
+@app.route("/report/<path:subpath>")
+def view_report(subpath: str):
+    """
+    Serve report HTML and its thumbnail folder.
+
+    Example:
+      /report/sample_project_report.html
+      /report/sample_project_report_thumbs/narration_001.jpg
+    """
+    root = OUTPUT_DIR.resolve()
+    path = (OUTPUT_DIR / subpath).resolve()
+    if root not in path.parents and path != root:
+        return "Invalid path.", 400
+    if not path.exists() or not path.is_file():
+        return "File nahi mili.", 404
+    return send_file(path)
 
 
 if __name__ == "__main__":
