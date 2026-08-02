@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./backend:/app
+      - db_data:/app/data
+    environment:
+      - DATABASE_URL=sqlite:///./data/youtube_tracker.db
+    command: uvicorn main:app --host 0.0.0.0 --port 8001 --reload
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5174:5174"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://localhost:8001
+
+volumes:
+  db_data:
