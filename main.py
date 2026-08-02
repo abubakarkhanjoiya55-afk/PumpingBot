@@ -24,6 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
 from agent_hub import agent_hub, AgentSession
+from vps_auth import require_vps_secret
 from copy_trading import (
     copy_trade_to_followers,
     start_copy_watcher,
@@ -100,7 +101,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.25.0"   # Local MT5 agent hub (no MetaAPI) + M1 copy trading
+API_VERSION = "3.26.0"   # VPS-hosted agents: mobile MT5 login → auto copy (no MetaAPI)
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -296,6 +297,13 @@ class User(Base):
     # Referral credit: $3 per referred sub — accrue then withdraw (admin pays BEP20)
     referral_balance        = Column(Float, default=0.0)
     referral_wallet         = Column(String, nullable=True)  # user USDT BEP20
+    # Hosted on admin Windows VPS (users only login from mobile)
+    vps_desired         = Column(Boolean, default=False)
+    vps_status          = Column(String, default="stopped")  # stopped/starting/running/error
+    vps_ready           = Column(Boolean, default=False)
+    vps_balance         = Column(Float, default=0.0)
+    vps_last_error      = Column(String, nullable=True)
+    vps_last_seen       = Column(DateTime, nullable=True)
     created_at          = Column(DateTime, default=datetime.utcnow)
 
 class ReferralWithdraw(Base):
@@ -2229,25 +2237,34 @@ async def connect_mt5(creds: MT5Credentials,
         current_user.bot_active = False
         print(f"[CONNECT] Switching account {current_user.mt5_login} → {creds.mt5_login}")
 
-    # ── Preferred path: local agent (no MetaAPI cost) ─────────────────
+    # ── Preferred path: VPS-hosted agents (mobile login only) ─────────
     if agent_mode_enabled() and not USE_METAAPI:
         current_user.mt5_login = creds.mt5_login
         current_user.mt5_password = creds.mt5_password
         current_user.mt5_server = creds.mt5_server
-        # Keep any old metaapi id but unused
+        # Queue for Windows VPS supervisor — user PC agent NOT required
+        current_user.vps_desired = True
+        current_user.vps_status = "starting"
+        current_user.vps_ready = False
+        current_user.vps_last_error = None
         db.commit()
         role = "master" if is_master_user(current_user) else "follower"
-        online = any(a["user_id"] == current_user.id for a in agent_hub.list_agents())
+        online = (
+            bool(current_user.vps_ready)
+            or any(a["user_id"] == current_user.id and a.get("ready")
+                   for a in agent_hub.list_agents())
+        )
         return {
             "message": (
-                f"Credentials saved for local agent ({role}). "
-                "Windows pe local_agent/agent.py chalao — MetaAPI ki zarurat nahi."
+                "MT5 account saved. Trading aapke VPS pe auto start hogi — "
+                "mobile se bas login kaafi hai. PC pe kuch install/chalane ki zarurat nahi."
             ),
-            "balance": 0,
+            "balance": float(current_user.vps_balance or 0),
             "mt5_ready": online,
             "role": role,
-            "trading_backend": "agent",
+            "trading_backend": "vps_agent",
             "agent_online": online,
+            "vps_status": current_user.vps_status,
         }
 
     if is_master_user(current_user):
@@ -2329,6 +2346,9 @@ def disconnect_mt5(current_user: User = Depends(get_current_user),
 
     active_bots[current_user.id] = False
     current_user.bot_active = False
+    current_user.vps_desired = False
+    current_user.vps_status = "stopped"
+    current_user.vps_ready = False
 
     if is_master_user(current_user):
         metaapi_ready_event.clear()
@@ -2367,35 +2387,35 @@ def start_bot(current_user: User = Depends(get_current_user),
 
     active_bots[current_user.id] = True
     current_user.bot_active = True
+    current_user.vps_desired = True
+    if not current_user.vps_ready:
+        current_user.vps_status = current_user.vps_status or "starting"
     db.commit()
 
-    # Agent mode: strategy runs on Windows master agent; server only fans out
+    # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
-        online = any(a["user_id"] == current_user.id and a.get("ready")
-                     for a in agent_hub.list_agents())
+        online = bool(current_user.vps_ready) or any(
+            a["user_id"] == current_user.id and a.get("ready")
+            for a in agent_hub.list_agents()
+        )
         if is_master_user(current_user):
-            if not online:
-                return {
-                    "message": (
-                        "Bot armed. Windows pe MASTER local_agent chalao "
-                        "(AGENT_ROLE=master) — wahi M1 trades karega aur "
-                        "followers ko instant copy bhejega. MetaAPI nahi chahiye."
-                    ),
-                    "trading_backend": "agent",
-                    "agent_online": False,
-                }
             return {
-                "message": "Master agent online — local M1 bot + fast copy fan-out active!",
-                "trading_backend": "agent",
-                "agent_online": True,
+                "message": (
+                    "Master bot ON. VPS pe master agent auto chalega — "
+                    "group users sirf mobile se MT5 login karein, trades copy ho jayengi."
+                ),
+                "trading_backend": "vps_agent",
+                "agent_online": online,
+                "vps_status": current_user.vps_status,
             }
         return {
             "message": (
-                "Copy trading armed. Apna FOLLOWER local_agent Windows pe "
-                "chalao — master trades local MT5 pe mirror hongi."
+                "Copy trading ON. Aapka account VPS pe connect ho raha hai — "
+                "mobile se bas itna kaafi. Jab status ready ho, master trades mirror hongi."
             ),
-            "trading_backend": "agent",
+            "trading_backend": "vps_agent",
             "agent_online": online,
+            "vps_status": current_user.vps_status,
         }
 
     if is_master_user(current_user):
@@ -2422,8 +2442,11 @@ def stop_bot(current_user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     active_bots[current_user.id] = False
     current_user.bot_active = False
+    current_user.vps_desired = False
+    current_user.vps_status = "stopped"
+    current_user.vps_ready = False
     db.commit()
-    return {"message": "Bot stopped"}
+    return {"message": "Bot stopped — VPS agent bhi band ho jayega"}
 
 @app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
@@ -2836,6 +2859,131 @@ def list_agents(current_user: User = Depends(get_current_user)):
         "use_metaapi": USE_METAAPI,
         "agents": agents,
         "online_count": len(agents),
+    }
+
+
+# ─── Windows VPS supervisor APIs (mobile users → hosted agents) ───────────────
+
+class VpsAgentReport(BaseModel):
+    user_id: int
+    status: str = "running"  # starting/running/error/stopped
+    ready: bool = False
+    balance: float = 0.0
+    equity: float = 0.0
+    error: Optional[str] = None
+    pid: Optional[int] = None
+
+
+class VpsReportIn(BaseModel):
+    host: Optional[str] = None
+    agents: list[VpsAgentReport] = []
+
+
+@app.get("/admin/vps/roster")
+def vps_roster(_: bool = Depends(require_vps_secret), db: Session = Depends(get_db)):
+    """
+    Windows VPS supervisor polls this — returns every user that should have
+    a hosted MT5 agent (credentials included; protect with VPS_SECRET).
+    """
+    users = db.query(User).filter(
+        User.vps_desired == True,
+        User.mt5_login != None,
+        User.mt5_password != None,
+        User.mt5_server != None,
+    ).all()
+    out = []
+    for u in users:
+        if not is_master_user(u) and not has_active_subscription(u):
+            # Don't host expired followers
+            if u.vps_desired:
+                u.vps_desired = False
+                u.bot_active = False
+                u.vps_status = "stopped"
+            continue
+        role = "master" if is_master_user(u) else "follower"
+        out.append({
+            "user_id": u.id,
+            "username": u.username,
+            "role": role,
+            "mt5_login": u.mt5_login,
+            "mt5_password": u.mt5_password,
+            "mt5_server": u.mt5_server,
+            "bot_active": bool(u.bot_active),
+            "vps_status": u.vps_status,
+        })
+    db.commit()
+    return {
+        "ok": True,
+        "count": len(out),
+        "users": out,
+        "trading_backend": TRADING_BACKEND,
+    }
+
+
+@app.post("/admin/vps/agent-token/{user_id}")
+def vps_agent_token(
+    user_id: int,
+    _: bool = Depends(require_vps_secret),
+    db: Session = Depends(get_db),
+):
+    """Issue a JWT so the hosted agent can connect to /ws/agent as that user."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    token = create_access_token({"sub": user.username})
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "role": "master" if is_master_user(user) else "follower",
+    }
+
+
+@app.post("/admin/vps/report")
+def vps_report(
+    body: VpsReportIn,
+    _: bool = Depends(require_vps_secret),
+    db: Session = Depends(get_db),
+):
+    """Supervisor heartbeat — updates per-user VPS agent status for the dashboard."""
+    now = datetime.utcnow()
+    updated = 0
+    for item in body.agents:
+        user = db.query(User).filter(User.id == item.user_id).first()
+        if not user:
+            continue
+        user.vps_status = item.status
+        user.vps_ready = bool(item.ready)
+        user.vps_balance = float(item.balance or 0)
+        user.vps_last_error = item.error
+        user.vps_last_seen = now
+        updated += 1
+    db.commit()
+    return {"ok": True, "updated": updated, "host": body.host}
+
+
+@app.get("/me/vps-status")
+def my_vps_status(current_user: User = Depends(get_current_user)):
+    """Mobile dashboard: is my hosted agent ready?"""
+    hub_online = any(
+        a["user_id"] == current_user.id and a.get("ready")
+        for a in agent_hub.list_agents()
+    )
+    return {
+        "vps_desired": bool(current_user.vps_desired),
+        "vps_status": current_user.vps_status or "stopped",
+        "vps_ready": bool(current_user.vps_ready) or hub_online,
+        "vps_balance": float(current_user.vps_balance or 0),
+        "vps_last_error": current_user.vps_last_error,
+        "vps_last_seen": (
+            current_user.vps_last_seen.isoformat()
+            if current_user.vps_last_seen else None
+        ),
+        "mt5_login": current_user.mt5_login,
+        "mt5_server": current_user.mt5_server,
+        "bot_active": bool(current_user.bot_active),
+        "trading_backend": "vps_agent" if not USE_METAAPI else "metaapi",
     }
 
 

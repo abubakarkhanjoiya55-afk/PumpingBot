@@ -1,16 +1,23 @@
 # PumpingBot Deployment Guide
 
-## Trading backend (recommended): Local MT5 agents — NO MetaAPI
+## Trading backend (recommended): Windows VPS hosted agents — NO MetaAPI
 
-Railway pe sirf API + WebSocket hub chalta hai. Trading Windows local agent se hoti hai:
+**Users sirf mobile se MT5 login karte hain.**  
+Tumhara 1 Windows VPS sabke agents auto chalata hai.
 
-1. Railway env set karo:
-   - `TRADING_BACKEND=agent`
-   - `USE_METAAPI=0`
-2. Har user (aur master) Windows pe `local_agent/agent.py` chalaye — details: `local_agent/README.md`
-3. Check: `GET /agents` — online agents dikhne chahiye
+1. Railway env:
+   ```
+   TRADING_BACKEND=agent
+   USE_METAAPI=0
+   VPS_SECRET=long-random-secret
+   ```
+2. Windows VPS pe supervisor chalao — full steps: `vps_supervisor/README.md`
+3. Check:
+   - `GET /api` → version `3.26.0`, `use_metaapi: false`
+   - `GET /me/vps-status` (user token) → `vps_ready: true`
+   - `GET /agents` → online agents
 
-MetaAPI optional legacy hai (`USE_METAAPI=1`) — mehnga padta hai, default off.
+MetaAPI optional legacy (`USE_METAAPI=1`) — default off.
 
 ---
 

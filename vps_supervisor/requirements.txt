@@ -1,0 +1,3 @@
+requests>=2.31.0
+# Also install local_agent requirements on the VPS:
+#   pip install -r local_agent/requirements.txt
