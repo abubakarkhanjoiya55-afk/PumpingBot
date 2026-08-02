@@ -1,19 +1,19 @@
 1
 00:00:00,500 --> 00:00:03,000
-In this scene, the hero arrives in a quiet forest.
+The hero welcomes us into the movie adventure.
 
 2
 00:00:03,500 --> 00:00:06,500
-He is searching for a door that leads to another world.
+They need to find the hidden door before nightfall.
 
 3
 00:00:07,200 --> 00:00:10,000
-His companion is unsure, but follows him anyway.
+He points toward the old oak tree nearby.
 
 4
 00:00:10,800 --> 00:00:13,500
-They pause near an ancient oak tree.
+His friend asks if this is the right place.
 
 5
 00:00:14,000 --> 00:00:17,000
-Finally, they decide to step forward together.
+He says trust me, I've been here before, so they go.

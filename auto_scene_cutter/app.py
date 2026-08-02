@@ -1,5 +1,5 @@
 """
-Simple local test page for the Stage 1 SRT parser.
+Simple local test page for Stage 1 + Stage 2.
 
 Open in browser:
     http://localhost:5000
@@ -9,6 +9,7 @@ from pathlib import Path
 
 from flask import Flask, render_template_string, request
 
+from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
 
 app = Flask(__name__)
@@ -21,7 +22,7 @@ PAGE = """
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto Scene Cutter — SRT Test</title>
+  <title>Auto Scene Cutter — Stage 2 Test</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -32,6 +33,7 @@ PAGE = """
       --line: #2a3542;
       --ok: #3ecf8e;
       --err: #ff6b6b;
+      --warn: #f0c35d;
     }
     * { box-sizing: border-box; }
     body {
@@ -45,7 +47,7 @@ PAGE = """
       min-height: 100vh;
       padding: 32px 16px 48px;
     }
-    .wrap { max-width: 960px; margin: 0 auto; }
+    .wrap { max-width: 1100px; margin: 0 auto; }
     h1 { margin: 0 0 8px; font-size: 1.6rem; letter-spacing: 0.02em; }
     .sub { color: var(--muted); margin-bottom: 24px; }
     form {
@@ -102,6 +104,7 @@ PAGE = """
       border-radius: 12px;
       padding: 16px;
     }
+    section.full { grid-column: 1 / -1; }
     section h2 {
       margin: 0 0 6px;
       font-size: 1.05rem;
@@ -116,12 +119,25 @@ PAGE = """
     }
     th { color: var(--muted); font-weight: 600; }
     td.time { white-space: nowrap; color: #b8d4ef; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+    .badge.ok { background: rgba(62, 207, 142, 0.18); color: var(--ok); }
+    .badge.no { background: rgba(255, 107, 107, 0.18); color: var(--err); }
+    .score { color: var(--warn); white-space: nowrap; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Auto Scene Cutter</h1>
-    <p class="sub">Stage 1 test page — movie SRT + narration SRT parse karke dekho.</p>
+    <p class="sub">
+      Stage 1 parse + Stage 2 match — narration lines ko movie dialogue se jodo
+      aur cut plan dekho.
+    </p>
 
     <form method="post" enctype="multipart/form-data">
       <label>
@@ -133,7 +149,7 @@ PAGE = """
         <input type="file" name="narration_srt" accept=".srt" />
       </label>
       <div class="actions">
-        <button type="submit" name="action" value="upload">Parse uploaded files</button>
+        <button type="submit" name="action" value="upload">Parse + Match</button>
         <button class="secondary" type="submit" name="action" value="sample">
           Sample files se test karo
         </button>
@@ -147,7 +163,7 @@ PAGE = """
     {% if movie_entries is not none and narration_entries is not none %}
       <div class="grid">
         <section>
-          <h2>Movie SRT</h2>
+          <h2>Stage 1 — Movie SRT</h2>
           <div class="count">Total entries: {{ movie_entries|length }}</div>
           <table>
             <thead>
@@ -167,7 +183,7 @@ PAGE = """
         </section>
 
         <section>
-          <h2>Narration SRT</h2>
+          <h2>Stage 1 — Narration SRT</h2>
           <div class="count">Total entries: {{ narration_entries|length }}</div>
           <table>
             <thead>
@@ -185,6 +201,63 @@ PAGE = """
             </tbody>
           </table>
         </section>
+
+        {% if cut_plan is not none %}
+        <section class="full">
+          <h2>Stage 2 — Cut Plan</h2>
+          <div class="count">
+            Matched: {{ stats.matched }} /
+            {{ stats.total_narration_lines }}
+            (unmatched: {{ stats.unmatched }})
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Narration</th>
+                <th>Movie cut</th>
+                <th>Matched dialogue</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in cut_plan %}
+              <tr>
+                <td>
+                  {% if item.matched %}
+                    <span class="badge ok">MATCH</span>
+                  {% else %}
+                    <span class="badge no">NO MATCH</span>
+                  {% endif %}
+                </td>
+                <td>
+                  <strong>[{{ item.narration_index }}]</strong>
+                  {{ item.narration_text }}
+                </td>
+                <td class="time">
+                  {% if item.matched %}
+                    {{ '%.2f'|format(item.movie_start) }}s
+                    → {{ '%.2f'|format(item.movie_end) }}s
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td>
+                  {% if item.matched %}
+                    [{{ item.movie_index }}] {{ item.movie_text }}
+                  {% else %}
+                    —
+                  {% endif %}
+                </td>
+                <td class="score">
+                  {% if item.matched %}{{ '%.3f'|format(item.score) }}{% else %}0{% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </section>
+        {% endif %}
       </div>
     {% endif %}
   </div>
@@ -207,6 +280,8 @@ def index():
     error = None
     movie_entries = None
     narration_entries = None
+    cut_plan = None
+    stats = None
 
     if request.method == "POST":
         action = request.form.get("action", "upload")
@@ -226,6 +301,8 @@ def index():
 
             movie_entries = parse_srt(str(movie_path))
             narration_entries = parse_narration_srt(str(narration_path))
+            cut_plan = match_scenes(movie_entries, narration_entries)
+            stats = summarize_cut_plan(cut_plan)
         except (FileNotFoundError, ValueError, OSError) as exc:
             error = str(exc)
 
@@ -234,6 +311,8 @@ def index():
         error=error,
         movie_entries=movie_entries,
         narration_entries=narration_entries,
+        cut_plan=cut_plan,
+        stats=stats,
     )
 
 
