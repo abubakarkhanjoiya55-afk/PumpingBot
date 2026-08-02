@@ -98,6 +98,48 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(settings["preset"], "veryfast")
 
 
+class CuttingEngineTests(unittest.TestCase):
+    def test_match_plan_to_cut_plan_and_sample_pipeline(self):
+        from cutting_engine import match_plan_to_cut_plan, run_stage1_to_stage4
+        from video_cutter import create_sample_video
+
+        plan = [
+            {
+                "matched": True,
+                "clip_start": 1.0,
+                "clip_end": 3.5,
+                "narration_index": 1,
+            },
+            {"matched": False, "clip_start": None, "clip_end": None},
+            {
+                "matched": True,
+                "clip_start": 5.0,
+                "clip_end": 4.0,  # invalid, skipped
+                "narration_index": 2,
+            },
+        ]
+        cut_plan = match_plan_to_cut_plan(plan)
+        self.assertEqual(len(cut_plan), 1)
+        self.assertEqual(cut_plan[0]["movie_start"], 1.0)
+        self.assertEqual(cut_plan[0]["movie_end"], 3.5)
+
+        # Real ffmpeg sample cut (short video is enough if we use early timestamps)
+        video = BASE / "sample_movie.mp4"
+        create_sample_video(video, duration_seconds=60.0)
+        out = BASE / "output" / "test_stage4_cut.mp4"
+        result = run_stage1_to_stage4(
+            video_path=video,
+            movie_srt_path=str(BASE / "sample_movie_cluster.srt"),
+            narration_srt_path=str(BASE / "sample_narration.srt"),
+            output_path=out,
+            max_clip_duration=5.0,
+            quality="fast",
+        )
+        self.assertTrue(Path(result["output_video"]).exists())
+        self.assertGreater(Path(result["output_video"]).stat().st_size, 1000)
+        self.assertGreaterEqual(result["stats"]["matched"], 1)
+
+
 class MatchingEngineTests(unittest.TestCase):
     def test_trim_and_match_plan(self):
         from matching_engine import (

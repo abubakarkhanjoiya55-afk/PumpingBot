@@ -9,6 +9,7 @@ Ek hi entry point se common commands chalayein:
   python main.py render <project.json> [output.mp4]
   python main.py report <project.json> [report.html]
   python main.py batch <projects_folder> [output_folder] [--quality fast|balanced|high]
+  python main.py engine-sample
   python main.py serve
 """
 
@@ -20,6 +21,7 @@ from pathlib import Path
 
 from batch_render import batch_render
 from config import TRANSITION_OPTIONS, load_config
+from cutting_engine import run_stage1_to_stage4
 from final_render import create_sample_narration_audio
 from presets import list_qualities
 from project import create_project_from_sources, load_project, render_project, save_project
@@ -33,6 +35,7 @@ def _print_help() -> None:
         "Auto Scene Cutter — unified CLI\n\n"
         "Commands:\n"
         "  sample\n"
+        "  engine-sample          # Spec Stages 1→4: parse/cluster/match/cut\n"
         "  create <video> <movie.srt> <narration.srt> <project.json>\n"
         "         [--audio file] [--quality NAME] [--transition none|fade] [--fade-dur 0.35]\n"
         "  render <project.json> [output.mp4]\n"
