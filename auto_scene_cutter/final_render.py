@@ -299,6 +299,51 @@ def _rewrite_narration_srt_for_synced_video(
     return output_srt_path
 
 
+def render_from_cut_plan(
+    video_path: str | Path,
+    cut_plan: list[dict],
+    output_path: str | Path,
+    narration_audio_path: str | Path | None = None,
+    burn_subs: bool = True,
+) -> tuple[Path, dict]:
+    """
+    Stage 3+4 render using an already-built/edited cut plan.
+
+    Matching dubara nahi hota — project editor isi liye use karta hai.
+    """
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(prefix="asc_final_") as tmp:
+        tmp_dir = Path(tmp)
+        cut_path = tmp_dir / "cut.mp4"
+        cut_video_from_plan(video_path, cut_plan, cut_path, work_dir=tmp_dir / "clips")
+
+        current = cut_path
+
+        if narration_audio_path:
+            mixed = tmp_dir / "mixed.mp4"
+            mix_narration_audio(current, narration_audio_path, mixed)
+            current = mixed
+
+        if burn_subs:
+            synced_srt = tmp_dir / "burn.srt"
+            _rewrite_narration_srt_for_synced_video(cut_plan, synced_srt)
+            burned = tmp_dir / "burned.mp4"
+            burn_subtitles(current, synced_srt, burned)
+            current = burned
+
+        output_path.write_bytes(current.read_bytes())
+
+    info = {
+        "burn_subs": burn_subs,
+        "narration_audio": bool(narration_audio_path),
+        **summarize_cut_plan(cut_plan),
+    }
+    return output_path, info
+
+
 def render_final(
     video_path: str | Path,
     movie_srt_path: str | Path,
@@ -314,10 +359,6 @@ def render_final(
     Returns:
       (final_video_path, cut_plan, info_dict)
     """
-    video_path = Path(video_path)
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
     movie_entries = parse_srt(str(movie_srt_path))
     narration_entries = parse_narration_srt(str(narration_srt_path))
     cut_plan = match_scenes(movie_entries, narration_entries)
@@ -325,36 +366,15 @@ def render_final(
     if sync_to_narration:
         cut_plan = sync_cut_plan_to_narration(cut_plan)
 
-    with tempfile.TemporaryDirectory(prefix="asc_final_") as tmp:
-        tmp_dir = Path(tmp)
-        cut_path = tmp_dir / "cut.mp4"
-        cut_video_from_plan(video_path, cut_plan, cut_path, work_dir=tmp_dir / "clips")
-
-        current = cut_path
-
-        if narration_audio_path:
-            mixed = tmp_dir / "mixed.mp4"
-            mix_narration_audio(current, narration_audio_path, mixed)
-            current = mixed
-
-        if burn_subs:
-            # Final video 0-based hai, is liye synced SRT chahiye
-            synced_srt = tmp_dir / "burn.srt"
-            _rewrite_narration_srt_for_synced_video(cut_plan, synced_srt)
-            burned = tmp_dir / "burned.mp4"
-            burn_subtitles(current, synced_srt, burned)
-            current = burned
-
-        # Copy final into requested output path
-        output_path.write_bytes(current.read_bytes())
-
-    info = {
-        "sync_to_narration": sync_to_narration,
-        "burn_subs": burn_subs,
-        "narration_audio": bool(narration_audio_path),
-        **summarize_cut_plan(cut_plan),
-    }
-    return output_path, cut_plan, info
+    result, info = render_from_cut_plan(
+        video_path=video_path,
+        cut_plan=cut_plan,
+        output_path=output_path,
+        narration_audio_path=narration_audio_path,
+        burn_subs=burn_subs,
+    )
+    info["sync_to_narration"] = sync_to_narration
+    return result, cut_plan, info
 
 
 def main() -> None:
