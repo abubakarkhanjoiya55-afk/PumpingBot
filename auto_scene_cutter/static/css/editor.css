@@ -321,6 +321,45 @@ body {
 }
 .prop-empty { color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
 
+.rematch-box {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(42, 49, 64, 0.8);
+  display: grid;
+  gap: 8px;
+}
+.rematch-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+.rematch-box select {
+  width: 100%;
+  background: #0e121a;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+.rematch-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.rematch-actions .btn,
+.rematch-actions .btn-primary {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+.scene-block.skipped {
+  opacity: 0.35;
+  filter: grayscale(0.4);
+}
+
 /* Timeline */
 .timeline {
   border-top: 1px solid var(--line);

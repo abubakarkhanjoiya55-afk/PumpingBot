@@ -247,6 +247,69 @@ class MatchingEngineTests(unittest.TestCase):
         self.assertTrue(result["scenes"])
         self.assertTrue(result["match_plan"])
 
+    def test_paraphrase_coverage_and_global_assign(self):
+        from matching_engine import match_narration_to_scenes, rematch_plan_item
+
+        # Narration paraphrases a longer scene — coverage should still match
+        scenes = [
+            {
+                "scene_id": 1,
+                "start": 0.0,
+                "end": 10.0,
+                "combined_text": "Hello welcome to the movie. We need to find the hidden door. Look by the old oak tree.",
+                "subtitle_count": 3,
+            },
+            {
+                "scene_id": 2,
+                "start": 20.0,
+                "end": 30.0,
+                "combined_text": "The door opens into another world. Stay close and follow my voice.",
+                "subtitle_count": 2,
+            },
+            {
+                "scene_id": 3,
+                "start": 40.0,
+                "end": 45.0,
+                "combined_text": "Sunny weather picnic lunch outside park",
+                "subtitle_count": 1,
+            },
+        ]
+        narr = [
+            {
+                "index": 1,
+                "text": "The hero welcomes us and we need to find the hidden door by the oak tree",
+                "start": 0.0,
+                "end": 2.5,
+            },
+            {
+                "index": 2,
+                "text": "The door opens into another world so stay close and follow",
+                "start": 3.0,
+                "end": 5.5,
+            },
+        ]
+        plan = match_narration_to_scenes(scenes, narr, max_clip_duration=5.0)
+        self.assertTrue(plan[0]["matched"])
+        self.assertEqual(plan[0]["scene_id"], 1)
+        self.assertTrue(plan[1]["matched"])
+        self.assertEqual(plan[1]["scene_id"], 2)
+        # Distinct scenes preferred (no forced reuse when avoidable)
+        self.assertFalse(plan[0]["reused_scene"])
+        self.assertFalse(plan[1]["reused_scene"])
+
+        # Manual rematch / skip
+        skipped = rematch_plan_item(plan, scenes, narration_index=2, scene_id=None)
+        self.assertFalse(skipped[1]["matched"])
+        forced = rematch_plan_item(plan, scenes, narration_index=2, scene_id=3)
+        self.assertTrue(forced[1]["matched"])
+        self.assertEqual(forced[1]["scene_id"], 3)
+
+    def test_stem_helps_welcome_match(self):
+        narr = "The hero welcomes us at the door"
+        scene = "Hello, welcome to the movie near the door"
+        far = "Cars race around the track tonight"
+        self.assertGreater(similarity_score(narr, scene), similarity_score(narr, far))
+
 
 class SceneClusteringTests(unittest.TestCase):
     def test_cluster_by_gap_and_merge_short(self):

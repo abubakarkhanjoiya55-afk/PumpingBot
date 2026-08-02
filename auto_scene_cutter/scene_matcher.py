@@ -80,19 +80,50 @@ def _normalize_text(text: str) -> str:
     return text
 
 
+def _light_stem(word: str) -> str:
+    """
+    Very light English stem so welcome/welcomes/welcoming align.
+    Not a full Porter stemmer — just enough for subtitle matching.
+    """
+    if len(word) <= 3:
+        return word
+    for suffix in ("ing", "ies", "ied", "ers", "est", "ed", "es", "ly", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
 def _tokens(text: str) -> set[str]:
-    """Split normalized text into useful words (skip tiny / stop words)."""
+    """Split normalized text into useful stemmed words (skip tiny / stop words)."""
     words = _normalize_text(text).split()
-    return {w for w in words if len(w) > 2 and w not in _STOP_WORDS}
+    out: set[str] = set()
+    for w in words:
+        if len(w) <= 2 or w in _STOP_WORDS:
+            continue
+        out.add(_light_stem(w))
+    return out
+
+
+def _bigrams(text: str) -> set[str]:
+    """Ordered bigrams from word order (after stem + stop filter)."""
+    words = []
+    for w in _normalize_text(text).split():
+        if len(w) <= 2 or w in _STOP_WORDS:
+            continue
+        words.append(_light_stem(w))
+    return {f"{words[i]}_{words[i + 1]}" for i in range(len(words) - 1)}
 
 
 def similarity_score(text_a: str, text_b: str) -> float:
     """
-    Score how similar two subtitle lines are (0.0 to 1.0).
+    Score how similar two subtitle / scene texts are (0.0 to 1.0).
 
-    We mix two simple ideas:
-    1) shared important words (Jaccard)
-    2) overall string similarity (SequenceMatcher)
+    Mix:
+      1) Jaccard on stemmed keywords
+      2) Coverage — how much of narration (A) appears in scene (B)
+         (helps when VO paraphrases a longer scene)
+      3) Bigram overlap (phrase-ish signal)
+      4) SequenceMatcher on normalized strings
     """
     tokens_a = _tokens(text_a)
     tokens_b = _tokens(text_b)
@@ -101,8 +132,17 @@ def similarity_score(text_a: str, text_b: str) -> float:
         overlap = len(tokens_a & tokens_b)
         union = len(tokens_a | tokens_b) or 1
         jaccard = overlap / union
+        coverage = overlap / (len(tokens_a) or 1)
     else:
         jaccard = 0.0
+        coverage = 0.0
+
+    big_a = _bigrams(text_a)
+    big_b = _bigrams(text_b)
+    if big_a and big_b:
+        bigram = len(big_a & big_b) / (len(big_a | big_b) or 1)
+    else:
+        bigram = 0.0
 
     seq = SequenceMatcher(
         None,
@@ -110,8 +150,8 @@ def similarity_score(text_a: str, text_b: str) -> float:
         _normalize_text(text_b),
     ).ratio()
 
-    # Word overlap usually matters more for short subtitle lines
-    return (0.65 * jaccard) + (0.35 * seq)
+    # Coverage weighted high: narration→scene paraphrase matching
+    return (0.35 * jaccard) + (0.30 * coverage) + (0.15 * bigram) + (0.20 * seq)
 
 
 def find_best_movie_match(

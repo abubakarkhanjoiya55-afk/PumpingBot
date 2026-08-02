@@ -1,4 +1,4 @@
-/* SceneCut Pro editor — wired to Spec Stages 1→5 */
+/* SceneCut Pro editor — Stages 1→5 + manual rematch */
 
 const state = {
   files: {
@@ -8,10 +8,13 @@ const state = {
     narration_srt: null,
   },
   clips: [],
+  scenes: [],
+  matchPlan: [],
   selectedClipKey: null,
   pxPerSec: 24,
   movieUrl: null,
   outputDuration: 0,
+  busy: false,
 };
 
 function $(id) {
@@ -33,6 +36,16 @@ function showError(msg) {
   el.textContent = msg;
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 4500);
+}
+
+function setBusy(busy) {
+  state.busy = busy;
+  ["btnAutoCut", "btnAutoCutTop", "btnApplyRematch", "btnSkipClip", "btnSample"].forEach(
+    (id) => {
+      const el = $(id);
+      if (el) el.disabled = busy;
+    }
+  );
 }
 
 function setStatus(step, mode, timeLabel) {
@@ -99,14 +112,24 @@ function buildClipsFromMatchPlan(matchPlan) {
   const clips = [];
   let cursor = 0;
   (matchPlan || []).forEach((item, idx) => {
-    if (!item.matched || item.clip_start == null || item.clip_end == null) return;
+    const matched =
+      !!item.matched && item.clip_start != null && item.clip_end != null;
     const dur = Number(item.clip_duration);
-    const clipDur = Number.isFinite(dur) && dur > 0
-      ? dur
-      : Math.max(0.05, Number(item.clip_end) - Number(item.clip_start));
+    const clipDur =
+      matched && Number.isFinite(dur) && dur > 0
+        ? dur
+        : matched
+          ? Math.max(0.05, Number(item.clip_end) - Number(item.clip_start))
+          : 0;
+
+    const timelineStart = matched ? cursor : null;
+    const timelineEnd = matched ? cursor + clipDur : null;
+    if (matched) cursor += clipDur;
+
     clips.push({
-      key: `c${idx + 1}`,
+      key: `n${item.narration_index ?? idx + 1}`,
       index: clips.length + 1,
+      narration_index: item.narration_index,
       narration_text: item.narration_text || "",
       scene_text: item.scene_text || "",
       scene_id: item.scene_id,
@@ -114,28 +137,54 @@ function buildClipsFromMatchPlan(matchPlan) {
       clip_start: item.clip_start,
       clip_end: item.clip_end,
       clip_duration: clipDur,
-      timeline_start: cursor,
-      timeline_end: cursor + clipDur,
+      timeline_start: timelineStart,
+      timeline_end: timelineEnd,
       reused_scene: !!item.reused_scene,
       trimmed: !!item.trimmed,
+      matched,
     });
-    cursor += clipDur;
   });
   return clips;
+}
+
+function fillSceneSelect(selectedSceneId) {
+  const sel = $("sceneSelect");
+  if (!sel) return;
+  const scenes = state.scenes || [];
+  sel.innerHTML = "";
+
+  const skip = document.createElement("option");
+  skip.value = "";
+  skip.textContent = "— Skip / Unmatch —";
+  sel.appendChild(skip);
+
+  scenes.forEach((scene) => {
+    const opt = document.createElement("option");
+    opt.value = String(scene.scene_id);
+    const dur = Math.max(0, Number(scene.end) - Number(scene.start));
+    const text = (scene.combined_text || "").slice(0, 42);
+    opt.textContent = `Scene ${String(scene.scene_id).padStart(3, "0")} · ${dur.toFixed(1)}s · ${text}${
+      (scene.combined_text || "").length > 42 ? "…" : ""
+    }`;
+    sel.appendChild(opt);
+  });
+
+  if (selectedSceneId != null) sel.value = String(selectedSceneId);
+  else sel.value = "";
 }
 
 function renderTimeline() {
   const track = $("trackScenes");
   const audioTrack = $("trackAudio");
   track.innerHTML = "";
-  // Keep the wave element; clear VO clip overlays
   audioTrack.querySelectorAll(".vo-block").forEach((n) => n.remove());
 
-  const clips = state.clips || [];
+  const clips = (state.clips || []).filter((c) => c.matched);
   if (!clips.length) {
     track.style.minWidth = "100%";
     audioTrack.style.minWidth = "100%";
     state.outputDuration = 0;
+    updateFooterStats();
     return;
   }
 
@@ -181,10 +230,13 @@ function selectClip(key) {
 
   $("propEmpty").style.display = "none";
   $("propDetails").style.display = "block";
-  $("propTitle").textContent = `Clip_${String(clip.index).padStart(2, "0")}`;
-  $("propStart").textContent = fmtTime(clip.clip_start);
-  $("propEnd").textContent = fmtTime(clip.clip_end);
-  $("propDur").textContent = fmtTime(clip.clip_duration);
+  $("propTitle").textContent = clip.matched
+    ? `Clip_${String(clip.index).padStart(2, "0")}`
+    : `Narration_${clip.narration_index} (skipped)`;
+  $("propStart").textContent =
+    clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
+  $("propEnd").textContent = clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
+  $("propDur").textContent = clip.matched ? fmtTime(clip.clip_duration) : "—";
   $("propScore").textContent =
     clip.score != null ? Number(clip.score).toFixed(3) : "—";
   $("propSceneId").textContent =
@@ -193,6 +245,7 @@ function selectClip(key) {
   const narr = clip.narration_text || "";
   const scene = clip.scene_text || "";
   const flags = [
+    clip.matched ? null : "skipped",
     clip.trimmed ? "trimmed" : null,
     clip.reused_scene ? "reused scene" : null,
   ]
@@ -206,8 +259,10 @@ function selectClip(key) {
     .filter(Boolean)
     .join("\n");
 
+  fillSceneSelect(clip.scene_id);
+
   const video = $("videoPlayer");
-  if (video.src) {
+  if (video.src && clip.matched && clip.timeline_start != null) {
     video.currentTime = Math.max(0, Number(clip.timeline_start) || 0);
   }
   renderTimeline();
@@ -215,7 +270,7 @@ function selectClip(key) {
 }
 
 function updateFooterStats() {
-  const clips = state.clips || [];
+  const clips = (state.clips || []).filter((c) => c.matched);
   $("statScenes").textContent = String(clips.length);
   if (!clips.length) {
     $("statDuration").textContent = "00:00:00.00";
@@ -245,13 +300,38 @@ function showDownloads(show) {
   else block.setAttribute("hidden", "");
 }
 
+function applyPlanResult(data, opts = {}) {
+  state.matchPlan = data.match_plan || [];
+  state.scenes = data.scenes || state.scenes || [];
+  state.clips = buildClipsFromMatchPlan(state.matchPlan);
+  $("statSubs").textContent = String(
+    data.subtitle_count != null ? data.subtitle_count : $("statSubs").textContent
+  );
+
+  renderTimeline();
+  const keepKey = opts.keepKey;
+  const next =
+    (keepKey && state.clips.find((c) => c.key === keepKey)) ||
+    state.clips.find((c) => c.matched) ||
+    state.clips[0];
+  if (next) selectClip(next.key);
+  else {
+    $("propEmpty").style.display = "block";
+    $("propDetails").style.display = "none";
+  }
+
+  if (data.final_video_url) {
+    const video = $("videoPlayer");
+    video.src = `${data.final_video_url}?t=${Date.now()}`;
+    $("playerPlaceholder").classList.add("hide");
+    showDownloads(true);
+  }
+}
+
 async function runAutoCut() {
   resetStatus();
   showDownloads(false);
-  const btn = $("btnAutoCut");
-  const btnTop = $("btnAutoCutTop");
-  btn.disabled = true;
-  btnTop.disabled = true;
+  setBusy(true);
 
   const t0 = performance.now();
   try {
@@ -278,34 +358,67 @@ async function runAutoCut() {
 
     setStatus("analyze_movie", "done", `${data.subtitle_count || 0} subs`);
     setStatus("analyze_narration", "done", `${data.narration_lines || 0} lines`);
-    setStatus("matching", "done", `${stats.matched || 0}/${stats.total_narration_lines || 0}`);
+    setStatus(
+      "matching",
+      "done",
+      `${stats.matched || 0}/${stats.total_narration_lines || 0}`
+    );
     setStatus("cutting", "done", `${data.cut_clip_count || stats.matched || 0} clips`);
     setStatus("export", "done", elapsed);
 
-    state.clips = buildClipsFromMatchPlan(data.match_plan || []);
-    $("statSubs").textContent = String(data.subtitle_count || 0);
-
-    renderTimeline();
-    if (state.clips[0]) selectClip(state.clips[0].key);
-
-    const video = $("videoPlayer");
-    if (data.final_video_url) {
-      video.src = `${data.final_video_url}?t=${Date.now()}`;
-      $("playerPlaceholder").classList.add("hide");
-      showDownloads(true);
-    } else if (data.source_movie_url) {
-      video.src = data.source_movie_url;
-      $("playerPlaceholder").classList.add("hide");
-    }
+    applyPlanResult(data);
   } catch (err) {
-    ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach((s) => {
-      const li = document.querySelector(`[data-step="${s}"]`);
-      if (li && !li.classList.contains("done")) setStatus(s, "error", "fail");
-    });
+    ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach(
+      (s) => {
+        const li = document.querySelector(`[data-step="${s}"]`);
+        if (li && !li.classList.contains("done")) setStatus(s, "error", "fail");
+      }
+    );
     showError(err.message || String(err));
   } finally {
-    btn.disabled = false;
-    btnTop.disabled = false;
+    setBusy(false);
+  }
+}
+
+async function rematchSelected(sceneId, reexport = true) {
+  const clip = state.clips.find((c) => c.key === state.selectedClipKey);
+  if (!clip) {
+    showError("Pehle timeline se clip select karo.");
+    return;
+  }
+
+  setBusy(true);
+  setStatus("matching", "active", "edit…");
+  try {
+    const res = await fetch("/api/rematch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        narration_index: clip.narration_index,
+        scene_id: sceneId,
+        reexport,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Rematch fail");
+
+    const stats = data.stats || {};
+    setStatus(
+      "matching",
+      "done",
+      `${stats.matched || 0}/${stats.total_narration_lines || 0}`
+    );
+    if (reexport) {
+      setStatus("cutting", "done", "re-cut");
+      setStatus("export", "done", "re-export");
+    }
+
+    applyPlanResult(data, { keepKey: `n${clip.narration_index}` });
+  } catch (err) {
+    setStatus("matching", "error", "fail");
+    showError(err.message || String(err));
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -317,6 +430,12 @@ function wireControls() {
 
   $("btnAutoCut").addEventListener("click", runAutoCut);
   $("btnAutoCutTop").addEventListener("click", runAutoCut);
+  $("btnApplyRematch").addEventListener("click", () => {
+    const val = $("sceneSelect").value;
+    rematchSelected(val === "" ? null : Number(val), true);
+  });
+  $("btnSkipClip").addEventListener("click", () => rematchSelected(null, true));
+
   $("btnSample").addEventListener("click", async () => {
     resetStatus();
     showDownloads(false);
@@ -327,7 +446,11 @@ function wireControls() {
 
       updateFileCard("movie", data.files.movie, data.files.movie_meta);
       updateFileCard("movie_srt", data.files.movie_srt, data.files.movie_srt_meta);
-      updateFileCard("narration_srt", data.files.narration_srt, data.files.narration_srt_meta);
+      updateFileCard(
+        "narration_srt",
+        data.files.narration_srt,
+        data.files.narration_srt_meta
+      );
       if (data.files.narration_audio) {
         updateFileCard(
           "narration_audio",

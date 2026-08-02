@@ -78,6 +78,14 @@ def trim_scene_to_clip(
     }
 
 
+def score_narration_against_scene(narration_entry: dict, scene: dict) -> float:
+    """Similarity of one narration line vs one clustered scene text."""
+    return similarity_score(
+        narration_entry.get("text", ""),
+        scene.get("combined_text", ""),
+    )
+
+
 def find_best_scene_for_narration(
     narration_entry: dict,
     scenes: list[dict],
@@ -92,7 +100,6 @@ def find_best_scene_for_narration(
       (scene_dict_or_None, score, reused_flag)
     """
     used_scene_ids = used_scene_ids or set()
-    narr_text = narration_entry.get("text", "")
 
     best_unused = None
     best_unused_score = -1.0
@@ -100,7 +107,7 @@ def find_best_scene_for_narration(
     best_any_score = -1.0
 
     for scene in scenes:
-        score = similarity_score(narr_text, scene.get("combined_text", ""))
+        score = score_narration_against_scene(narration_entry, scene)
         sid = int(scene["scene_id"])
 
         if score > best_any_score:
@@ -121,6 +128,54 @@ def find_best_scene_for_narration(
     return None, 0.0, False
 
 
+def _empty_match_item(narr: dict, narr_dur: float) -> dict:
+    return {
+        "narration_index": narr["index"],
+        "narration_text": narr["text"],
+        "narration_start": narr["start"],
+        "narration_end": narr["end"],
+        "narration_duration": round(narr_dur, 3),
+        "matched": False,
+        "score": 0.0,
+        "reused_scene": False,
+        "scene_id": None,
+        "clip_start": None,
+        "clip_end": None,
+        "clip_duration": None,
+        "original_scene_duration": None,
+        "trimmed": False,
+        "scene_text": None,
+    }
+
+
+def build_match_item(
+    narr: dict,
+    scene: dict,
+    score: float,
+    reused: bool,
+    max_clip_duration: float = 5.0,
+) -> dict:
+    """Build one match-plan row for a narration + chosen scene."""
+    narr_dur = narration_duration(narr)
+    target = narr_dur if narr_dur > 0 else max_clip_duration
+    clip = trim_scene_to_clip(
+        scene,
+        target_duration=target,
+        max_clip_duration=max_clip_duration,
+    )
+    return {
+        "narration_index": narr["index"],
+        "narration_text": narr["text"],
+        "narration_start": narr["start"],
+        "narration_end": narr["end"],
+        "narration_duration": round(narr_dur, 3),
+        "matched": True,
+        "score": round(float(score), 3),
+        "reused_scene": bool(reused),
+        **clip,
+    }
+
+
 def match_narration_to_scenes(
     scenes: list[dict],
     narration_entries: list[dict],
@@ -131,90 +186,155 @@ def match_narration_to_scenes(
     """
     Match every narration line to a movie scene and build clip windows.
 
-    Returns a list of match items:
-    {
-      "narration_index": 1,
-      "narration_text": "...",
-      "narration_start": 0.5,
-      "narration_end": 3.0,
-      "narration_duration": 2.5,
-      "matched": True,
-      "score": 0.55,
-      "reused_scene": False,
-      "scene_id": 2,
-      "clip_start": 20.0,   # where to cut in the movie
-      "clip_end": 23.0,
-      "clip_duration": 3.0,
-      "original_scene_duration": 16.0,
-      "trimmed": True,
-      "scene_text": "...",
-    }
+    Assignment strategy (better than pure sequential greedy):
+      1) Score all narration×scene pairs
+      2) Assign highest scores first (global best-first)
+      3) Prefer unused scenes; only reuse after unused options are gone
+
+    Returns a list of match items (see build_match_item / _empty_match_item).
     """
     if not scenes:
         raise ValueError("Scenes list empty hai — pehle Stage 2 clustering chalao.")
     if not narration_entries:
         raise ValueError("Narration entries empty hain — matching nahi ho sakti.")
 
+    # Precompute all pair scores
+    pairs: list[tuple[float, int, int]] = []  # (score, narr_pos, scene_pos)
+    for ni, narr in enumerate(narration_entries):
+        for si, scene in enumerate(scenes):
+            score = score_narration_against_scene(narr, scene)
+            if score >= min_score:
+                pairs.append((score, ni, si))
+
+    pairs.sort(key=lambda row: row[0], reverse=True)
+
+    assigned: dict[int, tuple[dict, float, bool]] = {}
     used_scene_ids: set[int] = set()
-    plan: list[dict] = []
 
-    for narr in narration_entries:
-        narr_dur = narration_duration(narr)
-        scene, score, reused = find_best_scene_for_narration(
-            narr,
-            scenes,
-            used_scene_ids=used_scene_ids,
-            min_score=min_score,
-            prefer_unused=prefer_unused,
-        )
-
-        if scene is None:
-            plan.append(
-                {
-                    "narration_index": narr["index"],
-                    "narration_text": narr["text"],
-                    "narration_start": narr["start"],
-                    "narration_end": narr["end"],
-                    "narration_duration": round(narr_dur, 3),
-                    "matched": False,
-                    "score": 0.0,
-                    "reused_scene": False,
-                    "scene_id": None,
-                    "clip_start": None,
-                    "clip_end": None,
-                    "clip_duration": None,
-                    "original_scene_duration": None,
-                    "trimmed": False,
-                    "scene_text": None,
-                }
-            )
+    # Pass 1: unique scenes only (best pairs first)
+    for score, ni, si in pairs:
+        if ni in assigned:
             continue
+        scene = scenes[si]
+        sid = int(scene["scene_id"])
+        if sid in used_scene_ids:
+            continue
+        assigned[ni] = (scene, score, False)
+        used_scene_ids.add(sid)
 
-        # Target clip length follows narration timing, but never above max_clip_duration
-        target = narr_dur if narr_dur > 0 else max_clip_duration
-        clip = trim_scene_to_clip(
-            scene,
-            target_duration=target,
-            max_clip_duration=max_clip_duration,
-        )
+    # Pass 2 (optional reuse): leftover narrations get best remaining scene
+    if not prefer_unused or len(assigned) < len(narration_entries):
+        for score, ni, si in pairs:
+            if ni in assigned:
+                continue
+            scene = scenes[si]
+            sid = int(scene["scene_id"])
+            reused = sid in used_scene_ids
+            # If prefer_unused, only allow reuse once unique pass is done
+            assigned[ni] = (scene, score, reused)
+            used_scene_ids.add(sid)
 
-        used_scene_ids.add(int(scene["scene_id"]))
-
+    plan: list[dict] = []
+    for ni, narr in enumerate(narration_entries):
+        narr_dur = narration_duration(narr)
+        if ni not in assigned:
+            plan.append(_empty_match_item(narr, narr_dur))
+            continue
+        scene, score, reused = assigned[ni]
         plan.append(
-            {
-                "narration_index": narr["index"],
-                "narration_text": narr["text"],
-                "narration_start": narr["start"],
-                "narration_end": narr["end"],
-                "narration_duration": round(narr_dur, 3),
-                "matched": True,
-                "score": score,
-                "reused_scene": reused,
-                **clip,
-            }
+            build_match_item(
+                narr,
+                scene,
+                score=score,
+                reused=reused,
+                max_clip_duration=max_clip_duration,
+            )
         )
 
     return plan
+
+
+def scene_by_id(scenes: list[dict], scene_id: int) -> dict | None:
+    """Lookup clustered scene by id."""
+    for scene in scenes:
+        if int(scene["scene_id"]) == int(scene_id):
+            return scene
+    return None
+
+
+def rematch_plan_item(
+    match_plan: list[dict],
+    scenes: list[dict],
+    narration_index: int,
+    scene_id: int | None,
+    max_clip_duration: float = 5.0,
+) -> list[dict]:
+    """
+    Manual editor action:
+      - scene_id=None → skip / unmatch that narration line
+      - scene_id=N → force that scene onto the narration line
+
+    Returns a new match_plan list (does not mutate the input list items in-place
+    beyond replacing the target row).
+    """
+    scenes_map = {int(s["scene_id"]): s for s in scenes}
+    used = {
+        int(m["scene_id"])
+        for m in match_plan
+        if m.get("matched") and m.get("scene_id") is not None
+        and int(m["narration_index"]) != int(narration_index)
+    }
+
+    new_plan: list[dict] = []
+    found = False
+    for item in match_plan:
+        if int(item["narration_index"]) != int(narration_index):
+            new_plan.append(dict(item))
+            continue
+
+        found = True
+        narr = {
+            "index": item["narration_index"],
+            "text": item["narration_text"],
+            "start": item["narration_start"],
+            "end": item["narration_end"],
+        }
+        narr_dur = narration_duration(narr)
+
+        if scene_id is None:
+            new_plan.append(_empty_match_item(narr, narr_dur))
+            continue
+
+        scene = scenes_map.get(int(scene_id))
+        if scene is None:
+            raise ValueError(f"Scene id {scene_id} nahi mili.")
+
+        score = score_narration_against_scene(narr, scene)
+        reused = int(scene_id) in used
+        new_plan.append(
+            build_match_item(
+                narr,
+                scene,
+                score=score,
+                reused=reused,
+                max_clip_duration=max_clip_duration,
+            )
+        )
+
+    if not found:
+        raise ValueError(f"Narration index {narration_index} match plan mein nahi hai.")
+
+    # Refresh reused flags after edit
+    seen: set[int] = set()
+    for item in new_plan:
+        if not item.get("matched") or item.get("scene_id") is None:
+            item["reused_scene"] = False
+            continue
+        sid = int(item["scene_id"])
+        item["reused_scene"] = sid in seen
+        seen.add(sid)
+
+    return new_plan
 
 
 def summarize_match_plan(match_plan: list[dict]) -> dict:
