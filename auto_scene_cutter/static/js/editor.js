@@ -65,6 +65,7 @@ function setBusy(busy) {
     "btnSkipClip",
     "btnSample",
     "btnSaveProject",
+    "btnOpenProject",
     "btnUndo",
     "btnTrimInMinus",
     "btnTrimInPlus",
@@ -612,6 +613,97 @@ async function saveProject() {
   }
 }
 
+function closeOpenModal() {
+  $("openModal").hidden = true;
+}
+
+async function refreshRecentProjects() {
+  const box = $("recentProjects");
+  box.innerHTML = `<div class="recent-empty">Loading…</div>`;
+  try {
+    const res = await fetch("/api/project/list");
+    const data = await res.json();
+    const projects = data.projects || [];
+    if (!projects.length) {
+      box.innerHTML = `<div class="recent-empty">No saved projects yet. Use Save after Auto Cut.</div>`;
+      return;
+    }
+    box.innerHTML = "";
+    projects.forEach((p) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "recent-item";
+      btn.innerHTML = `<strong>${p.filename}</strong><span>${p.meta || ""}</span>`;
+      btn.addEventListener("click", () => loadProjectByFilename(p.filename));
+      box.appendChild(btn);
+    });
+  } catch (err) {
+    box.innerHTML = `<div class="recent-empty">${err.message || "Could not list projects"}</div>`;
+  }
+}
+
+async function openProjectModal() {
+  $("openModal").hidden = false;
+  await refreshRecentProjects();
+}
+
+async function applyLoadedProject(data) {
+  if (data.files) {
+    if (data.files.movie) updateFileCard("movie", data.files.movie, "");
+    if (data.files.movie_srt) updateFileCard("movie_srt", data.files.movie_srt, "");
+    if (data.files.narration_srt)
+      updateFileCard("narration_srt", data.files.narration_srt, "");
+  }
+  resetStatus();
+  ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach((s) =>
+    setStatus(s, "done", "loaded")
+  );
+  setProgress(data.final_video_url ? 100 : 0, data.final_video_url ? "Loaded" : "Plan loaded");
+  applyPlanResult(data);
+  if (data.source_movie_url && !data.final_video_url) {
+    $("videoPlayer").src = data.source_movie_url;
+    $("playerPlaceholder").classList.add("hide");
+  }
+  showDownloads(!!data.final_video_url, data.report_url);
+  showOk(`Opened ${data.loaded || data.project_name || "project"}`);
+}
+
+async function loadProjectByFilename(filename) {
+  setBusy(true);
+  try {
+    const res = await fetch("/api/project/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Open fail");
+    closeOpenModal();
+    await applyLoadedProject(data);
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loadProjectFromFile(file) {
+  setBusy(true);
+  try {
+    const body = new FormData();
+    body.append("file", file);
+    const res = await fetch("/api/project/load", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Open fail");
+    closeOpenModal();
+    await applyLoadedProject(data);
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(false);
+  }
+}
+
 function wireControls() {
   bindFileInput("fileMovie", "movie", "movie");
   bindFileInput("fileMovieSrt", "movie_srt", "movie_srt");
@@ -628,6 +720,18 @@ function wireControls() {
   $("btnToolDel").addEventListener("click", () => rematchSelected(null, true));
   $("btnUndo").addEventListener("click", undoLast);
   $("btnSaveProject").addEventListener("click", saveProject);
+  $("btnOpenProject").addEventListener("click", openProjectModal);
+  $("btnCloseOpen").addEventListener("click", closeOpenModal);
+  $("btnCloseOpen2").addEventListener("click", closeOpenModal);
+  $("btnBrowseProject").addEventListener("click", () => $("fileProject").click());
+  $("fileProject").addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) loadProjectFromFile(file);
+    e.target.value = "";
+  });
+  $("openModal").addEventListener("click", (e) => {
+    if (e.target === $("openModal")) closeOpenModal();
+  });
 
   $("btnTrimInMinus").addEventListener("click", () => trimSelected(0.25, 0));
   $("btnTrimInPlus").addEventListener("click", () => trimSelected(-0.25, 0));

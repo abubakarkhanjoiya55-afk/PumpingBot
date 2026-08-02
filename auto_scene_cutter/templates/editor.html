@@ -21,9 +21,11 @@
       </div>
       <div class="top-actions">
         <button class="btn" id="btnUndo" type="button">Undo</button>
+        <button class="btn" id="btnOpenProject" type="button">Open</button>
         <button class="btn" id="btnSaveProject" type="button">Save</button>
         <button class="btn" id="btnSample" type="button">Sample</button>
         <button class="btn btn-primary" id="btnAutoCutTop" type="button">Auto Cut</button>
+        <input id="fileProject" type="file" accept=".json,application/json" hidden />
       </div>
     </header>
 
@@ -219,6 +221,22 @@
 
   <div class="toast toast-error" id="errorToast"></div>
   <div class="toast toast-ok" id="okToast"></div>
+
+  <div class="modal" id="openModal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Open project</h3>
+        <button class="btn btn-icon" id="btnCloseOpen" type="button">✕</button>
+      </div>
+      <p class="modal-hint">Pick a recent SceneCut project, or browse a `.scenecut.json` file.</p>
+      <div class="recent-list" id="recentProjects"></div>
+      <div class="btn-row">
+        <button class="btn" id="btnBrowseProject" type="button">Browse file…</button>
+        <button class="btn btn-primary" id="btnCloseOpen2" type="button">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
 </body>
 </html>
