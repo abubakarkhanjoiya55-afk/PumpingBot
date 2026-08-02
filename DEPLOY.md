@@ -1,5 +1,19 @@
 # PumpingBot Deployment Guide
 
+## Trading backend (recommended): Local MT5 agents — NO MetaAPI
+
+Railway pe sirf API + WebSocket hub chalta hai. Trading Windows local agent se hoti hai:
+
+1. Railway env set karo:
+   - `TRADING_BACKEND=agent`
+   - `USE_METAAPI=0`
+2. Har user (aur master) Windows pe `local_agent/agent.py` chalaye — details: `local_agent/README.md`
+3. Check: `GET /agents` — online agents dikhne chahiye
+
+MetaAPI optional legacy hai (`USE_METAAPI=1`) — mehnga padta hai, default off.
+
+---
+
 ## ⚠️ IMPORTANT: Railway abhi GitHub se connected NAHI hai
 
 Production abhi bhi purana code chala raha hai:

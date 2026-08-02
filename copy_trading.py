@@ -1,11 +1,12 @@
 """
 Fast multi-user copy trading — master + followers open/close in parallel.
 
-Goal: fan-out every order at the same moment so users are not left open
-after master closes (and opens land nearly together).
+Preferred path: local MT5 agents over WebSocket (no MetaAPI).
+Optional fallback: MetaAPI when USE_METAAPI=1.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 import threading
 import time
 from datetime import datetime
@@ -18,9 +19,122 @@ WATCHER_POLL_SEC = 0.35
 CONNECT_WAIT_TRIES = 40
 CONNECT_WAIT_STEP = 0.25  # ~10s max cold connect
 
+# agent = local Windows MT5 agents (default, free, fast, scales)
+# metaapi = legacy cloud terminals (paid)
+TRADING_BACKEND = os.environ.get("TRADING_BACKEND", "agent").strip().lower()
+USE_METAAPI = os.environ.get("USE_METAAPI", "0").strip().lower() in (
+    "1", "true", "yes", "on"
+)
+
 _executor = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="copy")
 _known_master_positions = {}
 _copy_lock = threading.Lock()
+
+
+def agent_mode_enabled() -> bool:
+    return TRADING_BACKEND == "agent" or not USE_METAAPI
+
+
+def _persist_agent_open_results(results, symbol, trend, score, master_ticket,
+                                SessionLocal, Trade):
+    """Save successful agent ACKs into trades table."""
+    db = SessionLocal()
+    try:
+        for r in results or []:
+            if not r.get("ok") or r.get("skip"):
+                continue
+            user_id = r.get("user_id")
+            ticket = r.get("ticket")
+            if not user_id or not ticket:
+                continue
+            existing = db.query(Trade).filter(
+                Trade.user_id == user_id,
+                Trade.master_ticket == master_ticket,
+                Trade.status == "open",
+            ).first()
+            if existing:
+                continue
+            db.add(Trade(
+                user_id=user_id,
+                symbol=symbol,
+                trade_type=trend,
+                lot=float(r.get("lot") or 0.01),
+                open_price=float(r.get("price") or 0),
+                score=score or 0,
+                mt5_ticket=int(ticket),
+                master_ticket=master_ticket,
+                status="open",
+            ))
+        db.commit()
+    except Exception as e:
+        print(f"[COPY AGENT] persist open error: {e}")
+    finally:
+        db.close()
+
+
+def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance,
+                           entry, sl, master_ticket, source="BOT"):
+    """Broadcast COPY_OPEN to all online follower agents in parallel."""
+    from agent_hub import agent_hub
+    pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
+
+    payload = {
+        "type": "copy_open",
+        "symbol": symbol,
+        "side": trend,
+        "score": score,
+        "atr": atr,
+        "master_lot": master_lot,
+        "master_balance": master_balance,
+        "entry": entry,
+        "sl": sl,
+        "master_ticket": master_ticket,
+        "source": source,
+    }
+    results = agent_hub.broadcast_sync(
+        payload, roles={"follower"}, require_ready=True, timeout=2.5
+    )
+    _persist_agent_open_results(
+        results, symbol, trend, score, master_ticket, SessionLocal, Trade
+    )
+    return results
+
+
+def fanout_close_via_agents(master_ticket, symbol):
+    """Broadcast COPY_CLOSE to all online follower agents in parallel."""
+    from agent_hub import agent_hub
+    pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
+
+    results = agent_hub.broadcast_sync(
+        {
+            "type": "copy_close",
+            "master_ticket": master_ticket,
+            "symbol": symbol,
+        },
+        roles={"follower"},
+        require_ready=False,
+        timeout=2.5,
+    )
+
+    db = SessionLocal()
+    try:
+        rows = db.query(Trade).filter(
+            Trade.master_ticket == master_ticket,
+            Trade.status == "open",
+        ).all()
+        by_user = {r.get("user_id"): r for r in (results or []) if r.get("user_id")}
+        for row in rows:
+            ack = by_user.get(row.user_id)
+            row.status = "closed"
+            row.closed_at = datetime.utcnow()
+            if ack and ack.get("profit") is not None:
+                row.profit = float(ack.get("profit") or 0)
+        db.commit()
+    except Exception as e:
+        print(f"[COPY AGENT] persist close error: {e}")
+    finally:
+        db.close()
+    return results
 
 
 def _get_pool_helpers():
@@ -190,6 +304,23 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
                             master_lot, master_balance, entry, sl, trade_mode,
                             master_ticket=None, source="BOT"):
     """Place proportional copies on every active follower — all in parallel."""
+    # Preferred: local agents (no MetaAPI)
+    if agent_mode_enabled():
+        from agent_hub import agent_hub
+        if agent_hub.online_followers(require_ready=False):
+            print(f"[COPY] AGENT fan-out {source}: {symbol} {trend}")
+            return fanout_open_via_agents(
+                symbol, trend, score, atr, master_lot, master_balance,
+                entry, sl, master_ticket, source,
+            )
+        if not USE_METAAPI:
+            print("[COPY] No online agents and MetaAPI disabled — skip")
+            return []
+
+    if not USE_METAAPI:
+        print("[COPY] MetaAPI disabled — enable agents or USE_METAAPI=1")
+        return []
+
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
     db = SessionLocal()
     try:
@@ -197,10 +328,9 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
         if not followers:
             return []
 
-        print(f"[COPY] {source}: {symbol} {trend} → {len(followers)} follower(s) PARALLEL")
+        print(f"[COPY] MetaAPI {source}: {symbol} {trend} → {len(followers)} PARALLEL")
         t0 = time.perf_counter()
 
-        # Warm connections in parallel first (usually already warm)
         warm_futs = [
             _executor.submit(ensure_follower_ready, f, pool_get, pool_is_ready)
             for f in followers
@@ -211,7 +341,6 @@ def copy_trade_to_followers(master_user_id, symbol, trend, score, atr,
             except Exception:
                 pass
 
-        # Fire every order_send at once
         futs = [
             _executor.submit(
                 _open_one_follower, f, symbol, trend, score, atr, master_lot,
@@ -309,6 +438,14 @@ def _close_one_follower_trade(ft, symbol, pool_get, pool_is_ready, SessionLocal,
 
 def copy_close_to_followers(master_ticket, symbol):
     """Close all follower positions linked to master_ticket — in parallel."""
+    if agent_mode_enabled():
+        print(f"[COPY CLOSE] AGENT fan-out master={master_ticket} {symbol}")
+        results = fanout_close_via_agents(master_ticket, symbol)
+        if results is not None and not USE_METAAPI:
+            return results
+        if results:
+            return results
+
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
     db = SessionLocal()
     try:
@@ -319,7 +456,6 @@ def copy_close_to_followers(master_ticket, symbol):
         if not follower_trades:
             return []
 
-        # Detach simple snapshots so worker threads use their own sessions
         snapshots = [
             type("FT", (), {
                 "id": ft.id,
@@ -328,8 +464,8 @@ def copy_close_to_followers(master_ticket, symbol):
             })()
             for ft in follower_trades
         ]
-        print(f"[COPY CLOSE] master={master_ticket} {symbol} → "
-              f"{len(snapshots)} follower(s) PARALLEL")
+        print(f"[COPY CLOSE] MetaAPI master={master_ticket} {symbol} → "
+              f"{len(snapshots)} PARALLEL")
         t0 = time.perf_counter()
 
         futs = [

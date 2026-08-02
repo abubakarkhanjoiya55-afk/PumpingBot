@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,17 +17,24 @@ import asyncio
 import smtplib
 import uuid
 import shutil
+import json
 from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
+from agent_hub import agent_hub, AgentSession
 from copy_trading import (
     copy_trade_to_followers,
     start_copy_watcher,
     schedule_close_followers,
     parallel_open_master_and_followers,
     warmup_followers,
+    agent_mode_enabled,
+    USE_METAAPI,
+    TRADING_BACKEND,
+    fanout_open_via_agents,
+    fanout_close_via_agents,
 )
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
@@ -93,7 +100,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.24.0"   # Simple candle charts; Doji@support / S/R retest / triangle break
+API_VERSION = "3.25.0"   # Local MT5 agent hub (no MetaAPI) + M1 copy trading
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -2211,16 +2218,37 @@ async def connect_mt5(creds: MT5Credentials,
                       current_user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
     """
-    Master (admin): existing MetaApi account use karta hai
-    Follower: MetaApi mein unka account dhundta hai ya naya banata hai
-    Har bar file update karne ki zaroorat nahi!
+    Default (agent mode): sirf credentials save — trading local Windows agent se.
+    Legacy MetaAPI: USE_METAAPI=1 pe cloud terminal setup.
     """
-    print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login}")
+    print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login} "
+          f"backend={TRADING_BACKEND} metaapi={USE_METAAPI}")
 
     if current_user.mt5_login and current_user.mt5_login != creds.mt5_login:
         active_bots[current_user.id] = False
         current_user.bot_active = False
         print(f"[CONNECT] Switching account {current_user.mt5_login} → {creds.mt5_login}")
+
+    # ── Preferred path: local agent (no MetaAPI cost) ─────────────────
+    if agent_mode_enabled() and not USE_METAAPI:
+        current_user.mt5_login = creds.mt5_login
+        current_user.mt5_password = creds.mt5_password
+        current_user.mt5_server = creds.mt5_server
+        # Keep any old metaapi id but unused
+        db.commit()
+        role = "master" if is_master_user(current_user) else "follower"
+        online = any(a["user_id"] == current_user.id for a in agent_hub.list_agents())
+        return {
+            "message": (
+                f"Credentials saved for local agent ({role}). "
+                "Windows pe local_agent/agent.py chalao — MetaAPI ki zarurat nahi."
+            ),
+            "balance": 0,
+            "mt5_ready": online,
+            "role": role,
+            "trading_backend": "agent",
+            "agent_online": online,
+        }
 
     if is_master_user(current_user):
         # ── Master: existing connection use karo ──────────────────────────
@@ -2341,6 +2369,35 @@ def start_bot(current_user: User = Depends(get_current_user),
     current_user.bot_active = True
     db.commit()
 
+    # Agent mode: strategy runs on Windows master agent; server only fans out
+    if agent_mode_enabled() and not USE_METAAPI:
+        online = any(a["user_id"] == current_user.id and a.get("ready")
+                     for a in agent_hub.list_agents())
+        if is_master_user(current_user):
+            if not online:
+                return {
+                    "message": (
+                        "Bot armed. Windows pe MASTER local_agent chalao "
+                        "(AGENT_ROLE=master) — wahi M1 trades karega aur "
+                        "followers ko instant copy bhejega. MetaAPI nahi chahiye."
+                    ),
+                    "trading_backend": "agent",
+                    "agent_online": False,
+                }
+            return {
+                "message": "Master agent online — local M1 bot + fast copy fan-out active!",
+                "trading_backend": "agent",
+                "agent_online": True,
+            }
+        return {
+            "message": (
+                "Copy trading armed. Apna FOLLOWER local_agent Windows pe "
+                "chalao — master trades local MT5 pe mirror hongi."
+            ),
+            "trading_backend": "agent",
+            "agent_online": online,
+        }
+
     if is_master_user(current_user):
         if not mt5_manager._ready:
             raise HTTPException(400, "MetaApi not ready — reconnect MT5 first")
@@ -2430,10 +2487,13 @@ def get_status(current_user: User = Depends(get_current_user)):
 @app.on_event("startup")
 async def startup_event():
     migrate_schema(engine)
+    agent_hub.bind_loop(asyncio.get_running_loop())
     threading.Thread(target=daily_scheduler, daemon=True).start()
-    start_copy_watcher()
+    if USE_METAAPI:
+        start_copy_watcher()
     start_device_care_scanner()
-    print("[STARTUP] Daily scheduler + copy watcher + My Signals started")
+    print(f"[STARTUP] backend={TRADING_BACKEND} USE_METAAPI={USE_METAAPI} "
+          f"agent_hub ready; copy_watcher={'on' if USE_METAAPI else 'off'}")
 
     db = SessionLocal()
     try:
@@ -2509,81 +2569,82 @@ async def startup_event():
         # Expire any packages that ended while server was down
         pause_expired_subscriptions()
 
-        # FIX: Get admin user and pass credentials to initialize()
-        # (previously called with no args — this was the root cause!)
-        user = db.query(User).filter(User.username == "admin").first()
-        if user and user.mt5_login:
-            print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
-            mt5_manager.initialize(
-                login=user.mt5_login,
-                password=user.mt5_password,
-                server=user.mt5_server
-            )
+        if not USE_METAAPI:
+            print("[STARTUP] MetaAPI disabled — using local MT5 agents "
+                  "(Windows local_agent). No cloud terminal init.")
+            user = db.query(User).filter(User.username == "admin").first()
+            if user:
+                # Arm master bot flag; actual trading is on master agent
+                active_bots[user.id] = True
+                user.bot_active = True
+                db.commit()
+            print("[STARTUP] Run local_agent on Windows for master + each follower")
         else:
-            print("[STARTUP] No credentials found — calling initialize() without args")
-            mt5_manager.initialize()
+            # Legacy MetaAPI cloud terminals
+            user = db.query(User).filter(User.username == "admin").first()
+            if user and user.mt5_login:
+                print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
+                mt5_manager.initialize(
+                    login=user.mt5_login,
+                    password=user.mt5_password,
+                    server=user.mt5_server
+                )
+            else:
+                print("[STARTUP] No credentials found — calling initialize() without args")
+                mt5_manager.initialize()
 
-        # FIX: Wait up to 90 seconds (was 45 iterations of 2s = 90s)
-        print("[STARTUP] Waiting for MetaApi _ready...")
-        for i in range(45):
+            print("[STARTUP] Waiting for MetaApi _ready...")
+            for i in range(45):
+                if mt5_manager._ready:
+                    break
+                await asyncio.sleep(2)
+                if i % 5 == 0:
+                    print(f"[STARTUP] Still waiting... {i*2}s elapsed")
+
+            print(f"[STARTUP] MetaApi _ready = {mt5_manager._ready}")
+
             if mt5_manager._ready:
-                break
-            await asyncio.sleep(2)
-            if i % 5 == 0:
-                print(f"[STARTUP] Still waiting... {i*2}s elapsed")
+                metaapi_ready_event.set()
+                print("[STARTUP] metaapi_ready_event SET ✓")
+                try:
+                    warmup_followers()
+                except Exception as e:
+                    print(f"[STARTUP] follower warmup: {e}")
+            else:
+                print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
 
-        print(f"[STARTUP] MetaApi _ready = {mt5_manager._ready}")
+            user = db.query(User).filter(User.username == "admin").first()
+            if user and mt5_manager._ready and not active_bots.get(user.id):
+                active_bots[user.id] = True
+                user.bot_active = True
+                db.commit()
+                threading.Thread(
+                    target=run_user_bot_watchdog,
+                    args=(user.id, user.mt5_login,
+                          user.mt5_password, user.mt5_server),
+                    daemon=True).start()
+                print("[STARTUP] PumpingBot auto-started!")
 
-        if mt5_manager._ready:
-            # FIX: Set the threading.Event so bot thread can proceed
-            metaapi_ready_event.set()
-            print("[STARTUP] metaapi_ready_event SET ✓")
-            # Pre-warm follower MetaApi sockets so copy fan-out has ~0 connect lag
-            try:
-                warmup_followers()
-            except Exception as e:
-                print(f"[STARTUP] follower warmup: {e}")
-        else:
-            print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
-            print("[STARTUP] Go to MT5 page → Connect → then Start Bot manually")
+            followers = db.query(User).filter(
+                User.bot_active == True,
+                User.username != "admin",
+                User.metaapi_account_id != None,
+                User.subscription_status == "active",
+            ).all()
 
-        # Auto-start bot only when MetaApi is confirmed ready
-        user = db.query(User).filter(User.username == "admin").first()
-        if user and mt5_manager._ready and not active_bots.get(user.id):
-            active_bots[user.id] = True
-            user.bot_active = True
+            for follower in followers:
+                if not has_active_subscription(follower):
+                    follower.bot_active = False
+                    active_bots[follower.id] = False
+                    continue
+                try:
+                    print(f"[STARTUP] Reconnecting follower: {follower.username}")
+                    conn = create_user_manager(follower.metaapi_account_id)
+                    pool_add(follower.id, conn)
+                    print(f"[STARTUP] Follower {follower.username} reconnected ✅")
+                except Exception as fe:
+                    print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
             db.commit()
-            threading.Thread(
-                target=run_user_bot_watchdog,
-                args=(user.id, user.mt5_login,
-                      user.mt5_password, user.mt5_server),
-                daemon=True).start()
-            print("[STARTUP] PumpingBot auto-started!")
-        elif not mt5_manager._ready:
-            print("[STARTUP] Auto-start skipped — MetaApi not ready")
-            print("[STARTUP] Use /connect-mt5 then /bot/start after deployment")
-
-        # ── Followers ko bhi reconnect karo (sirf active subscription) ─────
-        followers = db.query(User).filter(
-            User.bot_active == True,
-            User.username != "admin",
-            User.metaapi_account_id != None,
-            User.subscription_status == "active",
-        ).all()
-
-        for follower in followers:
-            if not has_active_subscription(follower):
-                follower.bot_active = False
-                active_bots[follower.id] = False
-                continue
-            try:
-                print(f"[STARTUP] Reconnecting follower: {follower.username}")
-                conn = create_user_manager(follower.metaapi_account_id)
-                pool_add(follower.id, conn)
-                print(f"[STARTUP] Follower {follower.username} reconnected ✅")
-            except Exception as fe:
-                print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
-        db.commit()
 
     except Exception as e:
         import traceback
@@ -2593,11 +2654,199 @@ async def startup_event():
         db.close()
 
 
+def _user_from_token(token: str, db: Session):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            return None
+        return db.query(User).filter(
+            or_(User.username == username, User.email == username)
+        ).first()
+    except Exception:
+        return None
+
+
+def _handle_master_trade_open(user: "User", msg: dict):
+    """Master agent opened a trade locally — fan-out to follower agents + DB."""
+    symbol = msg.get("symbol")
+    side = msg.get("side")
+    ticket = int(msg.get("master_ticket") or 0)
+    lot = float(msg.get("lot") or 0.01)
+    balance = float(msg.get("balance") or 0)
+    entry = float(msg.get("entry") or 0)
+    sl = float(msg.get("sl") or 0)
+    score = float(msg.get("score") or 50)
+    atr = float(msg.get("atr") or 0)
+    source = msg.get("source") or "BOT"
+
+    db = SessionLocal()
+    try:
+        existing = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.mt5_ticket == ticket,
+            Trade.status == "open",
+        ).first()
+        if not existing and ticket:
+            db.add(Trade(
+                user_id=user.id,
+                symbol=symbol,
+                trade_type=side,
+                lot=lot,
+                open_price=entry,
+                score=score,
+                mt5_ticket=ticket,
+                master_ticket=ticket,
+                status="open",
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+    threading.Thread(
+        target=fanout_open_via_agents,
+        args=(symbol, side, score, atr, lot, balance, entry, sl, ticket, source),
+        daemon=True,
+    ).start()
+    print(f"[AGENT HUB] master_trade_open {symbol} {side} ticket={ticket}")
+
+
+def _handle_master_trade_close(user: "User", msg: dict):
+    ticket = int(msg.get("master_ticket") or 0)
+    symbol = msg.get("symbol") or ""
+    profit = msg.get("profit")
+
+    db = SessionLocal()
+    try:
+        row = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.mt5_ticket == ticket,
+            Trade.status == "open",
+        ).first()
+        if row:
+            row.status = "closed"
+            row.closed_at = datetime.utcnow()
+            if profit is not None:
+                row.profit = float(profit)
+            db.commit()
+    finally:
+        db.close()
+
+    threading.Thread(
+        target=fanout_close_via_agents,
+        args=(ticket, symbol),
+        daemon=True,
+    ).start()
+    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol}")
+
+
+@app.websocket("/ws/agent")
+async def ws_agent(websocket: WebSocket, token: str = Query(...)):
+    """Local Windows MT5 agents connect here (no MetaAPI)."""
+    await websocket.accept()
+    db = SessionLocal()
+    user = _user_from_token(token, db)
+    db.close()
+    if not user:
+        await websocket.send_text(json.dumps({"type": "error", "error": "unauthorized"}))
+        await websocket.close(code=4401)
+        return
+
+    role_default = "master" if is_master_user(user) else "follower"
+    session = AgentSession(
+        user_id=user.id,
+        username=user.username,
+        role=role_default,
+        websocket=websocket,
+        login=user.mt5_login,
+        server=user.mt5_server,
+    )
+    await agent_hub.register(session)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+
+            mtype = msg.get("type")
+            if mtype == "hello":
+                session.role = (msg.get("role") or role_default).lower()
+                session.login = msg.get("login") or session.login
+                session.server = msg.get("server") or session.server
+                session.balance = float(msg.get("balance") or 0)
+                session.equity = float(msg.get("equity") or 0)
+                session.ready = bool(msg.get("ready"))
+                session.last_seen = time.time()
+                await websocket.send_text(json.dumps({
+                    "type": "welcome",
+                    "user_id": user.id,
+                    "role": session.role,
+                    "backend": TRADING_BACKEND,
+                }))
+                continue
+
+            if mtype in ("heartbeat", "pong"):
+                await agent_hub.touch(
+                    user.id,
+                    balance=msg.get("balance"),
+                    equity=msg.get("equity"),
+                    ready=msg.get("ready"),
+                )
+                continue
+
+            if mtype == "ack":
+                agent_hub.resolve_response(user.id, msg)
+                continue
+
+            if mtype == "master_trade_open":
+                if is_master_user(user) or session.role == "master":
+                    _handle_master_trade_open(user, msg)
+                    await websocket.send_text(json.dumps({
+                        "type": "ack", "req_id": msg.get("req_id"), "ok": True,
+                    }))
+                continue
+
+            if mtype == "master_trade_close":
+                if is_master_user(user) or session.role == "master":
+                    _handle_master_trade_close(user, msg)
+                    await websocket.send_text(json.dumps({
+                        "type": "ack", "req_id": msg.get("req_id"), "ok": True,
+                    }))
+                continue
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[AGENT HUB] ws error user={user.id}: {e}")
+    finally:
+        await agent_hub.unregister(user.id, websocket)
+
+
+@app.get("/agents")
+def list_agents(current_user: User = Depends(get_current_user)):
+    """Online local MT5 agents (master + followers)."""
+    agents = agent_hub.list_agents()
+    if not is_master_user(current_user):
+        agents = [a for a in agents if a["user_id"] == current_user.id]
+    return {
+        "trading_backend": TRADING_BACKEND,
+        "use_metaapi": USE_METAAPI,
+        "agents": agents,
+        "online_count": len(agents),
+    }
+
+
 @app.get("/api")
 def api_root():
     return {
         "message":       "PumpingBot Smart API",
         "version":       API_VERSION,
+        "trading_backend": TRADING_BACKEND,
+        "use_metaapi":   USE_METAAPI,
+        "agents_online": len(agent_hub.list_agents()),
         "metaapi_ready": mt5_manager._ready,
         "event_set":     metaapi_ready_event.is_set(),
     }
