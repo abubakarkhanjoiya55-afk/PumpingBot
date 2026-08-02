@@ -81,7 +81,7 @@ function setBusy(busy) {
 
 function setProgress(percent, message) {
   $("progressFill").style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
-  $("progressMsg").textContent = message || "Idle";
+  $("progressMsg").textContent = message || "Ready";
 }
 
 function setStatus(step, mode, timeLabel) {
@@ -102,7 +102,7 @@ function resetStatus() {
   ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach((s) =>
     setStatus(s, null, "—")
   );
-  setProgress(0, "Idle");
+  setProgress(0, "Ready");
 }
 
 function readSettingsFromUi() {
@@ -129,11 +129,28 @@ function writeSettingsToUi(settings) {
 }
 
 function updateFileCard(key, name, meta) {
-  const card = document.querySelector(`.file-card[data-key="${key}"]`);
+  const card = document.querySelector(`.asset[data-key="${key}"]`);
   if (!card) return;
   card.classList.remove("empty");
-  card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
+  const label =
+    {
+      movie: "Movie",
+      movie_srt: "Movie SRT",
+      narration_audio: "Narration Audio",
+      narration_srt: "Narration SRT",
+    }[key] || key;
+  card.innerHTML = `<div><span>${label}</span><strong title="${name}">${name}</strong></div><em class="meta">${meta || ""}</em>`;
   state.files[key] = name;
+
+  const btn = document.querySelector(`.file-pick-btn[data-for="${
+    {
+      movie: "fileMovie",
+      movie_srt: "fileMovieSrt",
+      narration_audio: "fileNarrationAudio",
+      narration_srt: "fileNarrationSrt",
+    }[key]
+  }"]`);
+  if (btn) btn.textContent = name.length > 22 ? `${name.slice(0, 20)}…` : name;
 }
 
 function bindFileInput(inputId, key, kind) {
@@ -265,7 +282,7 @@ function renderTimeline() {
   });
 
   $("audioWave").classList.toggle("active", clips.length > 0);
-  $("timelineScaleLabel").textContent = `Scale: ${state.pxPerSec}px/s`;
+  $("timelineScaleLabel").textContent = `${state.pxPerSec} px/s`;
   updateFooterStats();
 }
 
@@ -274,11 +291,11 @@ function selectClip(key) {
   const clip = state.clips.find((c) => c.key === key);
   if (!clip) return;
 
-  $("propEmpty").style.display = "none";
-  $("propDetails").style.display = "block";
+  $("propEmpty").hidden = true;
+  $("propDetails").hidden = false;
   $("propTitle").textContent = clip.matched
-    ? `Clip_${String(clip.index).padStart(2, "0")}`
-    : `Narration_${clip.narration_index} (skipped)`;
+    ? `Clip ${String(clip.index).padStart(2, "0")}`
+    : `Narration ${clip.narration_index} · skipped`;
   $("propStart").textContent =
     clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
   $("propEnd").textContent = clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
@@ -353,7 +370,7 @@ function applyPlanResult(data, opts = {}) {
   if (data.settings) writeSettingsToUi(data.settings);
   if (data.project_name) {
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
+    $("projectNameLabel").textContent = state.projectName;
   }
   if (data.subtitle_count != null) $("statSubs").textContent = String(data.subtitle_count);
 
@@ -365,8 +382,8 @@ function applyPlanResult(data, opts = {}) {
     state.clips[0];
   if (next) selectClip(next.key);
   else {
-    $("propEmpty").style.display = "block";
-    $("propDetails").style.display = "none";
+    $("propEmpty").hidden = false;
+    $("propDetails").hidden = true;
   }
 
   if (data.final_video_url) {
@@ -586,7 +603,7 @@ async function saveProject() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save fail");
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
+    $("projectNameLabel").textContent = state.projectName;
     showOk(`Saved ${data.filename}`);
   } catch (err) {
     showError(err.message || String(err));
