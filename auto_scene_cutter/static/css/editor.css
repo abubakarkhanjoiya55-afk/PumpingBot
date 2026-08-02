@@ -186,6 +186,51 @@ body {
 }
 .hint { margin-top: 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
 
+.download-block { margin-top: 16px; }
+.download-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.download-links a {
+  color: var(--accent-2);
+  text-decoration: none;
+  font-size: 0.86rem;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(139, 92, 255, 0.35);
+  background: var(--accent-dim);
+}
+.download-links a:hover { border-color: var(--accent-2); }
+
+.status-list li.active {
+  border-color: rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.08);
+}
+.status-list li.active .check {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+.status-list li.error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.vo-block {
+  position: absolute;
+  top: 12px;
+  height: 48px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #334155, #1e293b);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  color: #e2e8f0;
+  padding: 6px 8px;
+  font-size: 0.7rem;
+  overflow: hidden;
+  pointer-events: none;
+}
+.vo-block .sid { font-weight: 700; }
+
 /* Center player */
 .center {
   min-width: 0;

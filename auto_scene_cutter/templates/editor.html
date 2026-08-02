@@ -55,16 +55,26 @@
           <ul class="status-list" id="statusList">
             <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time">—</div></li>
             <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time">—</div></li>
-            <li data-step="cluster_scenes"><div class="check">✓</div><div>Clustering Scenes</div><div class="time">—</div></li>
-            <li data-step="place_timeline"><div class="check">✓</div><div>Placing on Timeline</div><div class="time">—</div></li>
+            <li data-step="matching"><div class="check">✓</div><div>Matching Scenes</div><div class="time">—</div></li>
+            <li data-step="cutting"><div class="check">✓</div><div>Cutting (Max 5s)</div><div class="time">—</div></li>
+            <li data-step="export"><div class="check">✓</div><div>Export (VO + Subs)</div><div class="time">—</div></li>
           </ul>
 
           <div class="auto-cut-wrap">
             <button class="btn btn-primary" id="btnAutoCut" type="button">Auto Cut Scenes</button>
             <p class="hint">
-              Stage 1+2: movie SRT parse + scene clustering.
-              Timeline pe scenes aa jayenge (reference editor layout).
+              Stages 1–5: parse → cluster → match → cut → export (VO + burned subs).
+              Timeline pe matched clips aa jayenge.
             </p>
+          </div>
+
+          <div class="download-block" id="downloadBlock" hidden>
+            <div class="panel-head" style="padding-left:0;padding-right:0;">Download</div>
+            <div class="download-links">
+              <a id="dlFinal" href="/api/media/final" download>Final video</a>
+              <a id="dlCut" href="/api/media/cut" download>Cut only</a>
+              <a id="dlSrt" href="/api/media/timeline-srt" download>Timeline SRT</a>
+            </div>
           </div>
         </div>
       </aside>
@@ -96,12 +106,13 @@
               Timeline se koi scene select karo — yahan start/end/duration dikhega.
             </div>
             <div id="propDetails" style="display:none;">
-              <div class="prop-title" id="propTitle">Scene</div>
+              <div class="prop-title" id="propTitle">Clip</div>
               <div class="prop-grid">
-                <div class="prop-row"><span>Start Time</span><strong id="propStart">—</strong></div>
-                <div class="prop-row"><span>End Time</span><strong id="propEnd">—</strong></div>
+                <div class="prop-row"><span>Movie Cut</span><strong id="propStart">—</strong></div>
+                <div class="prop-row"><span>Clip End</span><strong id="propEnd">—</strong></div>
                 <div class="prop-row"><span>Duration</span><strong class="accent" id="propDur">—</strong></div>
-                <div class="prop-row"><span>Subtitle Lines</span><strong id="propLines">—</strong></div>
+                <div class="prop-row"><span>Match Score</span><strong id="propScore">—</strong></div>
+                <div class="prop-row"><span>Scene ID</span><strong id="propSceneId">—</strong></div>
               </div>
               <div class="prop-note" id="propNote">—</div>
             </div>
