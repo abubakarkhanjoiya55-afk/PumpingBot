@@ -22,6 +22,7 @@ from pathlib import Path
 from batch_render import batch_render
 from config import TRANSITION_OPTIONS, load_config
 from cutting_engine import run_stage1_to_stage4
+from export_engine import run_stage1_to_stage5
 from final_render import create_sample_narration_audio
 from presets import list_qualities
 from project import create_project_from_sources, load_project, render_project, save_project
@@ -35,7 +36,7 @@ def _print_help() -> None:
         "Auto Scene Cutter — unified CLI\n\n"
         "Commands:\n"
         "  sample\n"
-        "  engine-sample          # Spec Stages 1→4: parse/cluster/match/cut\n"
+        "  engine-sample          # Spec Stages 1→5: parse/cluster/match/cut/export\n"
         "  create <video> <movie.srt> <narration.srt> <project.json>\n"
         "         [--audio file] [--quality NAME] [--transition none|fade] [--fade-dur 0.35]\n"
         "  render <project.json> [output.mp4]\n"
@@ -205,23 +206,27 @@ def cmd_serve(_args: list[str]) -> int:
 
 
 def cmd_engine_sample(_args: list[str]) -> int:
-    """Spec backend Stages 1→4 on bundled sample files."""
+    """Spec backend Stages 1→5 on bundled sample files."""
     base = Path(__file__).resolve().parent
     video = base / "sample_movie.mp4"
     print("Sample movie (60s)...")
     create_sample_video(video, duration_seconds=60.0)
-    output = base / "output" / "stage4_sample_cut.mp4"
-    result = run_stage1_to_stage4(
+    output = base / "output" / "stage5_final.mp4"
+    result = run_stage1_to_stage5(
         video_path=video,
         movie_srt_path=str(base / "sample_movie_cluster.srt"),
         narration_srt_path=str(base / "sample_narration.srt"),
         output_path=output,
+        narration_audio_path=None,
         max_clip_duration=5.0,
         quality="fast",
+        burn_subs=True,
     )
     print(f"Scenes: {len(result['scenes'])}")
     print(f"Matched: {result['stats']['matched']}/{result['stats']['total_narration_lines']}")
-    print(f"Output: {result['output_video']}")
+    print(f"Cut-only: {result['cut_only_video']}")
+    print(f"Final: {result['output_video']}")
+    print(f"Timeline SRT: {result['timeline_srt']}")
     return 0
 
 

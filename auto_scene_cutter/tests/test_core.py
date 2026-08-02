@@ -98,6 +98,53 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(settings["preset"], "veryfast")
 
 
+class ExportEngineTests(unittest.TestCase):
+    def test_timeline_srt_and_stage5_sample(self):
+        from export_engine import build_timeline_srt, run_stage1_to_stage5
+        from video_cutter import create_sample_video
+
+        plan = [
+            {
+                "matched": True,
+                "clip_start": 1.0,
+                "clip_end": 3.5,
+                "clip_duration": 2.5,
+                "narration_text": "One",
+            },
+            {
+                "matched": True,
+                "clip_start": 20.0,
+                "clip_end": 22.5,
+                "clip_duration": 2.5,
+                "narration_text": "Two",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            srt_path = Path(tmp) / "t.srt"
+            build_timeline_srt(plan, srt_path)
+            text = srt_path.read_text(encoding="utf-8")
+            self.assertIn("One", text)
+            self.assertIn("Two", text)
+            self.assertIn("00:00:00,000 --> 00:00:02,500", text)
+
+        video = BASE / "sample_movie.mp4"
+        create_sample_video(video, duration_seconds=60.0)
+        out = BASE / "output" / "test_stage5_final.mp4"
+        result = run_stage1_to_stage5(
+            video_path=video,
+            movie_srt_path=str(BASE / "sample_movie_cluster.srt"),
+            narration_srt_path=str(BASE / "sample_narration.srt"),
+            output_path=out,
+            narration_audio_path=None,  # synthetic VO ok
+            max_clip_duration=5.0,
+            burn_subs=True,
+            quality="fast",
+        )
+        self.assertTrue(Path(result["output_video"]).exists())
+        self.assertGreater(Path(result["output_video"]).stat().st_size, 1000)
+        self.assertTrue(Path(result["timeline_srt"]).exists())
+
+
 class CuttingEngineTests(unittest.TestCase):
     def test_match_plan_to_cut_plan_and_sample_pipeline(self):
         from cutting_engine import match_plan_to_cut_plan, run_stage1_to_stage4
