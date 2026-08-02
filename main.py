@@ -22,7 +22,13 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
-from copy_trading import copy_trade_to_followers, start_copy_watcher
+from copy_trading import (
+    copy_trade_to_followers,
+    start_copy_watcher,
+    schedule_close_followers,
+    parallel_open_master_and_followers,
+    warmup_followers,
+)
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
@@ -447,10 +453,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # ─── Position management (indicators in trading_engine.py) ─────────────────────
 
-def close_pos(pos, reason=""):
+def close_pos_master_only(pos, reason=""):
+    """Close master position only (no follower fan-out)."""
     try:
         tick = mt5_manager.symbol_info_tick(pos.symbol)
-        if tick is None: return False, 0
+        if tick is None:
+            return False, 0
         price = tick.bid if pos.type == 0 else tick.ask
         request = {
             "action":       mt5_manager.TRADE_ACTION_DEAL,
@@ -459,7 +467,7 @@ def close_pos(pos, reason=""):
             "type":         mt5_manager.ORDER_TYPE_SELL if pos.type == 0 else mt5_manager.ORDER_TYPE_BUY,
             "position":     pos.ticket,
             "price":        price,
-            "deviation":    50,
+            "deviation":    80,
             "magic":        888888,
             "comment":      f"PB_{reason}",
             "type_time":    mt5_manager.ORDER_TIME_GTC,
@@ -469,11 +477,26 @@ def close_pos(pos, reason=""):
         if result.retcode != mt5_manager.TRADE_RETCODE_DONE:
             return False, 0
         ticket = _as_int_ticket(pos.ticket)
-        conn = mt5_manager
-        profit, _ = fetch_position_closed_profit(conn, ticket)
+        profit, _ = fetch_position_closed_profit(mt5_manager, ticket)
         return True, profit if profit is not None else pos.profit
-    except:
+    except Exception:
         return False, 0
+
+
+def close_pos(pos, reason=""):
+    """
+    Close master and kick ALL follower closes in the same instant.
+    Followers are submitted to the copy executor BEFORE master close awaits,
+    so users are not left open after master exits.
+    """
+    ticket = _as_int_ticket(getattr(pos, "ticket", 0))
+    symbol = getattr(pos, "symbol", "")
+    if ticket and symbol:
+        try:
+            schedule_close_followers(ticket, symbol)
+        except Exception as e:
+            print(f"[SYNC CLOSE] schedule followers failed: {e}")
+    return close_pos_master_only(pos, reason)
 
 def update_trade_closed(user_id, symbol, profit, close_price, ticket=None):
     db = SessionLocal()
@@ -1120,15 +1143,18 @@ def run_user_bot(user_id, login, password, server):
                     elif reason == "no_data":
                         print(f"[NO DATA] {symbol}")
                     elif reason == "no_candles":
-                        print(f"[NO CANDLES] {symbol} — M15/H1 data nahi mili, MetaApi check karo")
+                        print(f"[NO CANDLES] {symbol} — M1 data nahi mili, MetaApi check karo")
+                    elif reason == "no_pattern":
+                        print(f"[NO PATTERN] {symbol} M1 — waiting for candle setup")
+                    elif reason == "no_confirm":
+                        print(f"[NO CONFIRM] {symbol} "
+                              f"{analysis.get('pattern_name')} "
+                              f"dir={analysis.get('pattern_dir')} "
+                              f"({analysis.get('confirm')})")
                     elif reason == "no_breakout":
-                        ah = analysis.get("m15_high")
-                        al = analysis.get("m15_low")
-                        if ah and al:
-                            print(f"[NO BO] {symbol} M15 range {al:.5f}-{ah:.5f} "
-                                  f"bid={analysis.get('bid', 0):.5f} ask={analysis.get('ask', 0):.5f}")
+                        print(f"[NO SETUP] {symbol}")
                     else:
-                        print(f"[NO TICK] {symbol}")
+                        print(f"[SKIP RAW] {symbol} reason={reason}")
                     continue
 
                 trend = analysis["trend"]
@@ -1142,18 +1168,16 @@ def run_user_bot(user_id, login, password, server):
                 closes15 = analysis.get("closes15") or []
                 price = closes15[-1] if closes15 else tick.ask
 
-                pinfo = f"| {bname}" if bname else ""
-                if pname:
-                    pinfo += f" | {pname}"
-                print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
-                      f"BreakoutScore:{score} HTF:{analysis['htf_aligned']} "
-                      f"M15:{analysis.get('m15_breakout')} "
-                      f"H1:{analysis.get('h1_breakout')} H4:{analysis.get('h4_breakout')} {pinfo}")
+                print(f"[{now.strftime('%H:%M:%S')}] {symbol} {trend} {trade_mode} "
+                      f"M1Score:{score} pattern={pname or bname} "
+                      f"confirm={analysis.get('m1_confirm')}")
 
                 ok, skip_reason = trade_eligible(analysis)
 
                 if ok:
-                    print(f"[BREAKOUT!] {symbol} {trend} score={score} — trade lag rahi hai")
+                    print(f"[M1 PATTERN!] {symbol} {trend} score={score} "
+                          f"{analysis.get('pattern_name')} "
+                          f"confirm={analysis.get('m1_confirm')} — sync open")
 
                 db = SessionLocal()
                 sig = Signal(
@@ -1189,15 +1213,23 @@ def run_user_bot(user_id, login, password, server):
                                     else mt5_manager.ORDER_TYPE_SELL,
                     "price":        entry,
                     "sl":           sl,
-                    "deviation":    50,
+                    "deviation":    80,
                     "magic":        888888,
-                    "comment":      f"BO_{trade_mode}_S{score}",
+                    "comment":      f"M1_{trade_mode}_S{score}",
                     "type_time":    mt5_manager.ORDER_TIME_GTC,
                     "type_filling": mt5_manager.ORDER_FILLING_IOC,
                 }
 
-                result = mt5_manager.order_send(request)
-                if result.retcode == mt5_manager.TRADE_RETCODE_DONE:
+                # Master + all followers open together (parallel fan-out)
+                if user_id == MASTER_USER_ID:
+                    result, _follower_results = parallel_open_master_and_followers(
+                        user_id, symbol, trend, score, atr, lot, balance,
+                        entry, sl, trade_mode, request, source="BOT",
+                    )
+                else:
+                    result = mt5_manager.order_send(request)
+
+                if result and result.retcode == mt5_manager.TRADE_RETCODE_DONE:
                     target = get_breakout_profit_target(
                         entry, trend, levels, lot, symbol, mt5_manager, score)
                     print(f"[{trade_mode}] TRADE PLACED! {symbol} {trend} "
@@ -1209,22 +1241,13 @@ def run_user_bot(user_id, login, password, server):
                         mt5_ticket=result.order, master_ticket=result.order,
                         status="open")
                     db.add(trade); db.commit(); db.close()
-
-                    if user_id == MASTER_USER_ID:
-                        threading.Thread(
-                            target=copy_trade_to_followers,
-                            args=(user_id, symbol, trend, score, atr,
-                                  lot, balance, entry, sl, trade_mode,
-                                  result.order, "BOT"),
-                            daemon=True
-                        ).start()
-
                     bot_pos = get_bot_positions(user_id, mt5_manager)
                 else:
-                    print(f"[FAIL] {symbol}: retcode={result.retcode}")
+                    ret = getattr(result, "retcode", None)
+                    print(f"[FAIL] {symbol}: retcode={ret}")
                     _set_symbol_cooldown(user_id, symbol, now, lost_money=False)
 
-                time.sleep(1)
+                time.sleep(0.2)
 
             time.sleep(SCAN_INTERVAL_SEC)
 
@@ -2515,6 +2538,11 @@ async def startup_event():
             # FIX: Set the threading.Event so bot thread can proceed
             metaapi_ready_event.set()
             print("[STARTUP] metaapi_ready_event SET ✓")
+            # Pre-warm follower MetaApi sockets so copy fan-out has ~0 connect lag
+            try:
+                warmup_followers()
+            except Exception as e:
+                print(f"[STARTUP] follower warmup: {e}")
         else:
             print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
             print("[STARTUP] Go to MT5 page → Connect → then Start Bot manually")
