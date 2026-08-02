@@ -98,6 +98,67 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(settings["preset"], "veryfast")
 
 
+class MatchingEngineTests(unittest.TestCase):
+    def test_trim_and_match_plan(self):
+        from matching_engine import (
+            match_narration_to_scenes,
+            run_stage1_to_stage3,
+            trim_scene_to_clip,
+        )
+
+        scene = {
+            "scene_id": 1,
+            "start": 10.0,
+            "end": 20.0,
+            "combined_text": "find the hidden door",
+            "subtitle_count": 2,
+        }
+        clip = trim_scene_to_clip(scene, target_duration=3.0, max_clip_duration=5.0)
+        self.assertEqual(clip["clip_start"], 10.0)
+        self.assertEqual(clip["clip_end"], 13.0)
+        self.assertTrue(clip["trimmed"])
+
+        # max 5s cap
+        clip2 = trim_scene_to_clip(scene, target_duration=9.0, max_clip_duration=5.0)
+        self.assertEqual(clip2["clip_duration"], 5.0)
+
+        scenes = [
+            {
+                "scene_id": 1,
+                "start": 0.0,
+                "end": 8.0,
+                "combined_text": "welcome movie hidden door oak tree",
+                "subtitle_count": 3,
+            },
+            {
+                "scene_id": 2,
+                "start": 20.0,
+                "end": 30.0,
+                "combined_text": "right place trust me lets go",
+                "subtitle_count": 3,
+            },
+        ]
+        narr = [
+            {"index": 1, "text": "find the hidden door near oak", "start": 0.0, "end": 2.5},
+            {"index": 2, "text": "is this the right place trust me", "start": 3.0, "end": 5.5},
+        ]
+        plan = match_narration_to_scenes(scenes, narr, max_clip_duration=5.0)
+        self.assertEqual(len(plan), 2)
+        self.assertTrue(plan[0]["matched"])
+        self.assertTrue(plan[1]["matched"])
+        self.assertLessEqual(plan[0]["clip_duration"], 5.0)
+
+        # End-to-end on sample files
+        result = run_stage1_to_stage3(
+            str(BASE / "sample_movie_cluster.srt"),
+            str(BASE / "sample_narration.srt"),
+            max_clip_duration=5.0,
+        )
+        self.assertGreaterEqual(result["stats"]["matched"], 1)
+        self.assertTrue(result["scenes"])
+        self.assertTrue(result["match_plan"])
+
+
 class SceneClusteringTests(unittest.TestCase):
     def test_cluster_by_gap_and_merge_short(self):
         from scene_clustering import cluster_movie_scenes, merge_short_scenes
