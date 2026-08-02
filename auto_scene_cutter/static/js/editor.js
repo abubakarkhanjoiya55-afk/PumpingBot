@@ -831,6 +831,127 @@ async function quitDesktop() {
   }
 }
 
+/* ——— CapCut-style mobile sheets ——— */
+const mobileSheetState = {
+  node: null,
+  parent: null,
+  next: null,
+  name: null,
+};
+
+function isMobileUi() {
+  return window.matchMedia("(max-width: 900px)").matches;
+}
+
+function closeMobileSheet() {
+  const sheet = $("mobileSheet");
+  const backdrop = $("mobileBackdrop");
+  if (mobileSheetState.node && mobileSheetState.parent) {
+    const node = mobileSheetState.node;
+    node.style.display = "";
+    node.style.border = "";
+    node.style.background = "";
+    node.style.overflow = "";
+    if (mobileSheetState.next) {
+      mobileSheetState.parent.insertBefore(node, mobileSheetState.next);
+    } else {
+      mobileSheetState.parent.appendChild(node);
+    }
+  }
+  mobileSheetState.node = null;
+  mobileSheetState.parent = null;
+  mobileSheetState.next = null;
+  mobileSheetState.name = null;
+  if (sheet) sheet.hidden = true;
+  if (backdrop) backdrop.hidden = true;
+  document.querySelectorAll(".m-dock-item").forEach((b) => b.classList.remove("active"));
+}
+
+function openMobileSheet(name, title, sourceNode) {
+  if (!sourceNode) return;
+  closeMobileSheet();
+  const sheet = $("mobileSheet");
+  const backdrop = $("mobileBackdrop");
+  const scroll = $("mobileSheetScroll");
+  const titleEl = $("mobileSheetTitle");
+  if (!sheet || !scroll) return;
+
+  mobileSheetState.node = sourceNode;
+  mobileSheetState.parent = sourceNode.parentNode;
+  mobileSheetState.next = sourceNode.nextSibling;
+  mobileSheetState.name = name;
+
+  // Show panel content inside sheet (desktop CSS hides .panel on mobile)
+  sourceNode.style.display = "block";
+  sourceNode.style.border = "0";
+  sourceNode.style.background = "transparent";
+  sourceNode.style.overflow = "visible";
+  scroll.innerHTML = "";
+  scroll.appendChild(sourceNode);
+
+  if (titleEl) titleEl.textContent = title;
+  sheet.hidden = false;
+  if (backdrop) backdrop.hidden = false;
+
+  document.querySelectorAll(".m-dock-item").forEach((b) => {
+    b.classList.toggle("active", b.dataset.sheet === name);
+  });
+}
+
+function wireMobileUi() {
+  const left = document.querySelector(".panel.left");
+  const right = document.querySelector(".panel.right");
+
+  document.querySelectorAll(".m-dock-item").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const name = btn.dataset.sheet;
+      if (name === "media") {
+        openMobileSheet("media", "Media & Render", left);
+      } else if (name === "edit") {
+        openMobileSheet("edit", "Edit clip", right);
+      } else if (name === "export") {
+        openMobileSheet("export", "Export", left);
+        // jump downloads into view if present
+        setTimeout(() => {
+          const dl = document.getElementById("downloadBlock");
+          if (dl) dl.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 50);
+      } else if (name === "auto") {
+        closeMobileSheet();
+        if (!state.busy) await runAutoCut();
+      }
+    });
+  });
+
+  $("btnCloseSheet")?.addEventListener("click", closeMobileSheet);
+  $("mobileBackdrop")?.addEventListener("click", closeMobileSheet);
+
+  $("btnMobileExport")?.addEventListener("click", () => {
+    openMobileSheet("export", "Export", left);
+    setTimeout(() => {
+      const dl = document.getElementById("downloadBlock");
+      if (dl) {
+        dl.hidden = false;
+        dl.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }, 50);
+  });
+
+  $("btnMobileMenu")?.addEventListener("click", () => {
+    const choice = window.prompt(
+      "Quick actions:\n1 Sample\n2 Open project\n3 Save\n4 Undo\n\nType number:"
+    );
+    if (choice === "1") $("btnSample").click();
+    else if (choice === "2") $("btnOpenProject").click();
+    else if (choice === "3") $("btnSaveProject").click();
+    else if (choice === "4") $("btnUndo").click();
+  });
+
+  window.addEventListener("resize", () => {
+    if (!isMobileUi()) closeMobileSheet();
+  });
+}
+
 async function boot() {
   try {
     const res = await fetch("/api/settings");
@@ -856,6 +977,7 @@ async function boot() {
   }
 
   wireControls();
+  wireMobileUi();
   renderTimeline();
 }
 

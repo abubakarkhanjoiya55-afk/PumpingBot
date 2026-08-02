@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#090b10" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>SceneCut Pro+</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,7 +21,7 @@
           <small>Cinematic auto-cut studio</small>
         </div>
       </div>
-      <div class="top-actions">
+      <div class="top-actions top-actions-desktop">
         <button class="btn" id="btnUndo" type="button">Undo</button>
         <button class="btn" id="btnOpenProject" type="button">Open</button>
         <button class="btn" id="btnSaveProject" type="button">Save</button>
@@ -27,6 +29,10 @@
         <button class="btn btn-primary" id="btnAutoCutTop" type="button">Auto Cut</button>
         <button class="btn btn-danger" id="btnQuitDesktop" type="button" hidden>Quit</button>
         <input id="fileProject" type="file" accept=".json,application/json" hidden />
+      </div>
+      <div class="top-actions top-actions-mobile">
+        <button class="btn btn-ghost" id="btnMobileMenu" type="button" aria-label="More">☰</button>
+        <button class="btn btn-export" id="btnMobileExport" type="button">Export</button>
       </div>
     </header>
 
@@ -218,6 +224,32 @@
       <div><span>Subs</span><strong id="statSubs">0</strong></div>
       <div><span>Quality</span><strong id="statQuality">balanced</strong></div>
     </footer>
+
+    <!-- CapCut-style mobile bottom dock -->
+    <nav class="m-dock" aria-label="Mobile tools">
+      <button type="button" class="m-dock-item" data-sheet="media">
+        <span class="m-ico">▣</span><span>Media</span>
+      </button>
+      <button type="button" class="m-dock-item m-dock-main" data-sheet="auto" id="btnMobileAuto">
+        <span class="m-ico">✦</span><span>Auto Cut</span>
+      </button>
+      <button type="button" class="m-dock-item" data-sheet="edit">
+        <span class="m-ico">✎</span><span>Edit</span>
+      </button>
+      <button type="button" class="m-dock-item" data-sheet="export">
+        <span class="m-ico">↑</span><span>Export</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="m-backdrop" id="mobileBackdrop" hidden></div>
+  <div class="m-sheet" id="mobileSheet" hidden>
+    <div class="m-sheet-grab"></div>
+    <div class="m-sheet-head">
+      <strong id="mobileSheetTitle">Tools</strong>
+      <button type="button" class="btn btn-icon" id="btnCloseSheet">✕</button>
+    </div>
+    <div class="m-sheet-scroll" id="mobileSheetScroll"></div>
   </div>
 
   <div class="toast toast-error" id="errorToast"></div>
