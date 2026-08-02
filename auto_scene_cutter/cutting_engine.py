@@ -95,6 +95,8 @@ def run_stage1_to_stage4(
     min_score: float = 0.12,
     quality: str = "fast",
     transition: str = "none",
+    transition_duration: float = 0.25,
+    progress_callback=None,
 ) -> dict:
     """
     Full backend engine (no UI):
@@ -111,7 +113,11 @@ def run_stage1_to_stage4(
 
     matched_count = stage3["stats"]["matched"]
     # segments + concat
-    logger = ProgressLogger(total=matched_count + 1, label="Stage4")
+    logger = ProgressLogger(
+        total=matched_count + 1,
+        label="Stage4",
+        callback=progress_callback,
+    )
 
     output = cut_from_match_plan(
         video_path=video_path,
@@ -119,6 +125,7 @@ def run_stage1_to_stage4(
         output_path=output_path,
         quality=quality,
         transition=transition,
+        transition_duration=transition_duration,
         progress=logger,
     )
 
@@ -128,6 +135,7 @@ def run_stage1_to_stage4(
         "cut_clip_count": matched_count,
         "quality": quality,
         "transition": transition,
+        "transition_duration": transition_duration,
     }
 
 

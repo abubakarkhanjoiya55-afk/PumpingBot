@@ -404,5 +404,81 @@ class ReportTests(unittest.TestCase):
             self.assertIn("report_test", text)
 
 
+class ProPlusTests(unittest.TestCase):
+    def test_settings_trim_reorder_project(self):
+        from pro_plus import (
+            build_editor_project,
+            load_editor_project,
+            normalize_settings,
+            reorder_match_plan,
+            save_editor_project,
+            trim_match_clip,
+        )
+
+        settings = normalize_settings(
+            {"quality": "nope", "transition": "fade", "max_clip_duration": 99}
+        )
+        self.assertEqual(settings["quality"], "balanced")
+        self.assertEqual(settings["transition"], "fade")
+        self.assertEqual(settings["max_clip_duration"], 30.0)
+
+        plan = [
+            {
+                "narration_index": 1,
+                "narration_text": "one",
+                "narration_start": 0,
+                "narration_end": 2,
+                "matched": True,
+                "scene_id": 1,
+                "scene_start": 10.0,
+                "scene_end": 20.0,
+                "clip_start": 10.0,
+                "clip_end": 13.0,
+                "clip_duration": 3.0,
+                "score": 0.5,
+                "scene_text": "hello",
+            },
+            {
+                "narration_index": 2,
+                "narration_text": "two",
+                "narration_start": 2,
+                "narration_end": 4,
+                "matched": True,
+                "scene_id": 2,
+                "scene_start": 30.0,
+                "scene_end": 40.0,
+                "clip_start": 30.0,
+                "clip_end": 32.5,
+                "clip_duration": 2.5,
+                "score": 0.4,
+                "scene_text": "world",
+            },
+        ]
+        trimmed = trim_match_clip(plan, 1, delta_start=0.5, delta_end=-0.5)
+        self.assertEqual(trimmed[0]["clip_start"], 10.5)
+        self.assertEqual(trimmed[0]["clip_end"], 12.5)
+
+        reordered = reorder_match_plan(plan, [2, 1])
+        self.assertEqual(reordered[0]["narration_index"], 2)
+        self.assertEqual(reordered[1]["narration_index"], 1)
+
+        session = {
+            "movie": str(BASE / "sample_movie.mp4"),
+            "movie_srt": str(BASE / "sample_movie_cluster.srt"),
+            "narration_srt": str(BASE / "sample_narration.srt"),
+            "narration_audio": None,
+            "last_match_plan": plan,
+            "scenes": [{"scene_id": 1, "start": 10, "end": 20, "combined_text": "hello"}],
+            "settings": settings,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "demo.scenecut.json"
+            project = build_editor_project("demo", session)
+            save_editor_project(project, path)
+            loaded = load_editor_project(path)
+            self.assertEqual(loaded["kind"], "scenecut_pro_plus")
+            self.assertEqual(len(loaded["match_plan"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

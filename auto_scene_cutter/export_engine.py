@@ -199,6 +199,7 @@ def export_final_video(
     burn_subs: bool = True,
     original_volume: float = 0.12,
     narration_volume: float = 1.0,
+    progress_callback=None,
 ) -> dict:
     """
     Stage 4 cut video → Stage 5 final export (VO mix + optional subs).
@@ -211,7 +212,7 @@ def export_final_video(
         raise FileNotFoundError(f"Cut video nahi mili: {cut_video_path}")
 
     steps = 2 + (1 if burn_subs else 0)  # timeline audio + mix (+ burn)
-    logger = ProgressLogger(total=steps, label="Stage5")
+    logger = ProgressLogger(total=steps, label="Stage5", callback=progress_callback)
 
     with tempfile.TemporaryDirectory(prefix="asc_export_") as tmp:
         tmp_dir = Path(tmp)
@@ -265,7 +266,9 @@ def run_stage1_to_stage5(
     max_clip_duration: float = 5.0,
     quality: str = "fast",
     transition: str = "none",
+    transition_duration: float = 0.25,
     burn_subs: bool = True,
+    progress_callback=None,
 ) -> dict:
     """
     Full Spec backend:
@@ -283,6 +286,8 @@ def run_stage1_to_stage5(
         max_clip_duration=max_clip_duration,
         quality=quality,
         transition=transition,
+        transition_duration=transition_duration,
+        progress_callback=progress_callback,
     )
 
     export_info = export_final_video(
@@ -291,6 +296,7 @@ def run_stage1_to_stage5(
         output_path=output_path,
         source_narration_audio=narration_audio_path,
         burn_subs=burn_subs,
+        progress_callback=progress_callback,
     )
 
     return {

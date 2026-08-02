@@ -62,6 +62,17 @@ body {
   box-shadow: 0 0 18px rgba(139, 92, 255, 0.45);
 }
 .brand span { color: var(--muted); font-weight: 500; margin-left: 6px; font-size: 0.85rem; }
+.plus-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #c4b5fd, var(--accent));
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  vertical-align: middle;
+}
 .top-actions { display: flex; gap: 8px; }
 .btn {
   border: 0;
@@ -185,6 +196,54 @@ body {
   font-size: 0.95rem;
 }
 .hint { margin-top: 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.4; }
+
+.settings-grid {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.settings-grid label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+.settings-grid select,
+.settings-grid input[type="number"] {
+  width: 100%;
+  background: #0e121a;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+.settings-grid .check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 0.84rem;
+}
+.progress-wrap { margin-bottom: 10px; }
+.progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #1a2030;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), #38bdf8);
+  transition: width 0.25s ease;
+}
+.progress-msg {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
 
 .download-block { margin-top: 16px; }
 .download-links {
@@ -509,6 +568,21 @@ body {
   z-index: 50;
 }
 .error-toast.show { display: block; }
+
+.ok-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 50px;
+  max-width: 360px;
+  background: rgba(6, 78, 59, 0.95);
+  border: 1px solid #34d399;
+  color: #d1fae5;
+  padding: 12px 14px;
+  border-radius: 10px;
+  display: none;
+  z-index: 50;
+}
+.ok-toast.show { display: block; }
 
 @media (max-width: 1100px) {
   .workspace { grid-template-columns: 240px 1fr 240px; }

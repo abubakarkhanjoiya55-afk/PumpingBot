@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SceneCut Pro — Main Editor</title>
+  <title>SceneCut Pro+</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}" />
 </head>
 <body>
@@ -11,17 +11,19 @@
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true"></div>
-        SceneCut Pro
+        SceneCut Pro<span class="plus-badge">+</span>
         <span>AI Movie Scene Cutter</span>
       </div>
       <div class="top-actions">
+        <button class="btn" id="btnUndo" type="button" title="Undo last edit">Undo</button>
+        <button class="btn" id="btnSaveProject" type="button">Save Project</button>
         <button class="btn" id="btnSample" type="button">Load Sample</button>
         <button class="btn btn-primary" id="btnAutoCutTop" type="button">Auto Cut Scenes</button>
       </div>
     </header>
 
     <main class="workspace">
-      <!-- Left: files + status -->
+      <!-- Left: files + settings + status -->
       <aside class="panel left">
         <div class="panel-head">Imported Files</div>
         <div class="panel-body">
@@ -51,20 +53,50 @@
             <div class="file-card empty" data-key="narration_srt">Narration Timestamps — not loaded</div>
           </div>
 
+          <div class="panel-head" style="padding-left:0;padding-right:0;">Pro+ Settings</div>
+          <div class="settings-grid">
+            <label>
+              Quality
+              <select id="setQuality">
+                <option value="fast">Fast</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+            <label>
+              Transition
+              <select id="setTransition">
+                <option value="none">None</option>
+                <option value="fade" selected>Fade</option>
+              </select>
+            </label>
+            <label>
+              Max Clip (s)
+              <input id="setMaxClip" type="number" min="0.5" max="30" step="0.5" value="5" />
+            </label>
+            <label class="check-row">
+              <input id="setBurnSubs" type="checkbox" checked />
+              Burn narration subs
+            </label>
+          </div>
+
           <div class="panel-head" style="padding-left:0;padding-right:0;">Auto Cut Status</div>
+          <div class="progress-wrap">
+            <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+            <div class="progress-msg" id="progressMsg">Idle</div>
+          </div>
           <ul class="status-list" id="statusList">
             <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time">—</div></li>
             <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time">—</div></li>
             <li data-step="matching"><div class="check">✓</div><div>Matching Scenes</div><div class="time">—</div></li>
-            <li data-step="cutting"><div class="check">✓</div><div>Cutting (Max 5s)</div><div class="time">—</div></li>
+            <li data-step="cutting"><div class="check">✓</div><div>Cutting</div><div class="time">—</div></li>
             <li data-step="export"><div class="check">✓</div><div>Export (VO + Subs)</div><div class="time">—</div></li>
           </ul>
 
           <div class="auto-cut-wrap">
             <button class="btn btn-primary" id="btnAutoCut" type="button">Auto Cut Scenes</button>
             <p class="hint">
-              Stages 1–5: parse → cluster → match → cut → export (VO + burned subs).
-              Timeline pe matched clips aa jayenge.
+              Pro+: live progress, quality/transition presets, project save, trim, undo, HTML report.
             </p>
           </div>
 
@@ -74,6 +106,7 @@
               <a id="dlFinal" href="/api/media/final" download>Final video</a>
               <a id="dlCut" href="/api/media/cut" download>Cut only</a>
               <a id="dlSrt" href="/api/media/timeline-srt" download>Timeline SRT</a>
+              <a id="dlReport" href="/api/media/report" download>HTML Report</a>
             </div>
           </div>
         </div>
@@ -103,7 +136,7 @@
         <div class="panel-body">
           <div class="prop-card" id="propCard">
             <div class="prop-empty" id="propEmpty">
-              Timeline se koi scene select karo — yahan start/end/duration dikhega.
+              Timeline se koi clip select karo — rematch / trim / reorder yahan.
             </div>
             <div id="propDetails" style="display:none;">
               <div class="prop-title" id="propTitle">Clip</div>
@@ -123,7 +156,20 @@
                   <button class="btn btn-primary" id="btnApplyRematch" type="button">Apply Scene</button>
                   <button class="btn" id="btnSkipClip" type="button">Skip Clip</button>
                 </div>
-                <p class="hint">Scene change ke baad cut + export dubara chalega.</p>
+              </div>
+
+              <div class="rematch-box">
+                <label class="rematch-label">Trim / Order</label>
+                <div class="rematch-actions">
+                  <button class="btn" id="btnTrimInMinus" type="button">In −0.25s</button>
+                  <button class="btn" id="btnTrimInPlus" type="button">In +0.25s</button>
+                  <button class="btn" id="btnTrimOutMinus" type="button">Out −0.25s</button>
+                  <button class="btn" id="btnTrimOutPlus" type="button">Out +0.25s</button>
+                </div>
+                <div class="rematch-actions" style="margin-top:8px;">
+                  <button class="btn" id="btnMoveLeft" type="button">← Earlier</button>
+                  <button class="btn" id="btnMoveRight" type="button">Later →</button>
+                </div>
               </div>
             </div>
           </div>
@@ -134,12 +180,11 @@
     <!-- Bottom timeline -->
     <section class="timeline">
       <div class="timeline-toolbar">
-        <button class="tool" title="Select" type="button">Sel</button>
-        <button class="tool" title="Split" type="button">Split</button>
-        <button class="tool" title="Delete" type="button">Del</button>
-        <button class="tool" title="Zoom -" id="btnZoomOut" type="button">−</button>
-        <button class="tool" title="Zoom +" id="btnZoomIn" type="button">+</button>
+        <button class="tool" id="btnToolDel" title="Skip / Delete selected" type="button">Del</button>
+        <button class="tool" id="btnZoomOut" title="Zoom -" type="button">−</button>
+        <button class="tool" id="btnZoomIn" title="Zoom +" type="button">+</button>
         <span class="timecode" id="timelineScaleLabel">Scale: 24px/s</span>
+        <span class="timecode" id="projectNameLabel">Project: —</span>
       </div>
       <div class="timeline-body">
         <div class="track-labels">
@@ -158,14 +203,15 @@
 
     <footer class="footer">
       <div>Project Duration: <strong id="statDuration">00:00:00.00</strong></div>
-      <div>Total Scenes: <strong id="statScenes">0</strong></div>
-      <div>Avg Scene: <strong id="statAvg">00:00:00.00</strong></div>
+      <div>Total Clips: <strong id="statScenes">0</strong></div>
+      <div>Avg Clip: <strong id="statAvg">00:00:00.00</strong></div>
       <div>Subtitles: <strong id="statSubs">0</strong></div>
-      <div>Save Location: <strong>auto_scene_cutter/output</strong></div>
+      <div>Quality: <strong id="statQuality">balanced</strong></div>
     </footer>
   </div>
 
   <div class="error-toast" id="errorToast"></div>
+  <div class="ok-toast" id="okToast"></div>
   <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
 </body>
 </html>
