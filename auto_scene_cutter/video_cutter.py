@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from presets import DEFAULT_QUALITY, get_quality_settings
 from scene_matcher import match_scenes
 from srt_parser import parse_narration_srt, parse_srt
 
@@ -102,6 +103,7 @@ def cut_video_from_plan(
     cut_plan: list[dict],
     output_path: str | Path,
     work_dir: str | Path | None = None,
+    quality: str = DEFAULT_QUALITY,
 ) -> Path:
     """
     Cut matched scenes from a video and join them into one file.
@@ -112,11 +114,13 @@ def cut_video_from_plan(
         output_path: where the final joined video should be saved
         work_dir: optional temp folder for middle clips
                   (if None, a temporary folder is created and cleaned up)
+        quality: Stage 6 preset name — fast / balanced / high
 
     Returns:
         Path to the finished output video.
     """
     ffmpeg = ensure_ffmpeg()
+    quality_settings = get_quality_settings(quality)
     video_path = Path(video_path)
     output_path = Path(output_path)
 
@@ -169,9 +173,9 @@ def cut_video_from_plan(
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                quality_settings["preset"],
                 "-crf",
-                "23",
+                quality_settings["crf"],
                 "-c:a",
                 "aac",
                 "-movflags",

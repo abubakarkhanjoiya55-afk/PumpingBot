@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from presets import DEFAULT_QUALITY
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
 from video_cutter import (
@@ -305,6 +306,7 @@ def render_from_cut_plan(
     output_path: str | Path,
     narration_audio_path: str | Path | None = None,
     burn_subs: bool = True,
+    quality: str = DEFAULT_QUALITY,
 ) -> tuple[Path, dict]:
     """
     Stage 3+4 render using an already-built/edited cut plan.
@@ -318,7 +320,13 @@ def render_from_cut_plan(
     with tempfile.TemporaryDirectory(prefix="asc_final_") as tmp:
         tmp_dir = Path(tmp)
         cut_path = tmp_dir / "cut.mp4"
-        cut_video_from_plan(video_path, cut_plan, cut_path, work_dir=tmp_dir / "clips")
+        cut_video_from_plan(
+            video_path,
+            cut_plan,
+            cut_path,
+            work_dir=tmp_dir / "clips",
+            quality=quality,
+        )
 
         current = cut_path
 
@@ -339,6 +347,7 @@ def render_from_cut_plan(
     info = {
         "burn_subs": burn_subs,
         "narration_audio": bool(narration_audio_path),
+        "quality": quality,
         **summarize_cut_plan(cut_plan),
     }
     return output_path, info
@@ -352,6 +361,7 @@ def render_final(
     narration_audio_path: str | Path | None = None,
     sync_to_narration: bool = True,
     burn_subs: bool = True,
+    quality: str = DEFAULT_QUALITY,
 ) -> tuple[Path, list[dict], dict]:
     """
     Full Stage 1→4 pipeline.
@@ -372,6 +382,7 @@ def render_final(
         output_path=output_path,
         narration_audio_path=narration_audio_path,
         burn_subs=burn_subs,
+        quality=quality,
     )
     info["sync_to_narration"] = sync_to_narration
     return result, cut_plan, info

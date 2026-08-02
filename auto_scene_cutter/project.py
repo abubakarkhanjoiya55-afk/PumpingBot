@@ -1,16 +1,15 @@
 """
-Project Module (Stage 5)
+Project Module (Stage 5 + Stage 6 helpers)
 
-Stage 4 tak auto render ho jata tha.
-Stage 5 mein hum cut plan ko project JSON ki tarah save/load karte hain,
-editor se timings fix karte hain, phir bina dubara match kiye render karte hain.
+Stage 5: cut plan ko project JSON ki tarah save/load + editor.
+Stage 6: quality preset + manual rematch support bhi yahan hai.
 
 Project JSON roughly aisa dikhta hai:
 {
   "version": 1,
   "name": "my_cut",
   "paths": { "video": "...", "movie_srt": "...", "narration_srt": "...", "narration_audio": "..." },
-  "settings": { "sync_to_narration": true, "burn_subs": true },
+  "settings": { "sync_to_narration": true, "burn_subs": true, "quality": "balanced" },
   "cut_plan": [ ... Stage 2/4 items ... ]
 }
 """
@@ -25,10 +24,10 @@ from typing import Any
 
 from final_render import (
     create_sample_narration_audio,
-    render_final,
     render_from_cut_plan,
     sync_cut_plan_to_narration,
 )
+from presets import DEFAULT_QUALITY, QUALITY_PRESETS
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
 from video_cutter import create_sample_video
@@ -45,8 +44,13 @@ def build_project(
     narration_audio_path: str | Path | None = None,
     sync_to_narration: bool = True,
     burn_subs: bool = True,
+    quality: str = DEFAULT_QUALITY,
 ) -> dict[str, Any]:
     """Create an in-memory project dictionary."""
+    quality_key = (quality or DEFAULT_QUALITY).strip().lower()
+    if quality_key not in QUALITY_PRESETS:
+        quality_key = DEFAULT_QUALITY
+
     return {
         "version": PROJECT_VERSION,
         "name": name,
@@ -64,6 +68,7 @@ def build_project(
         "settings": {
             "sync_to_narration": bool(sync_to_narration),
             "burn_subs": bool(burn_subs),
+            "quality": quality_key,
         },
         "cut_plan": cut_plan,
         "stats": summarize_cut_plan(cut_plan),
@@ -103,14 +108,59 @@ def load_project(project_path: str | Path) -> dict[str, Any]:
 
     data.setdefault("version", PROJECT_VERSION)
     data.setdefault("name", project_path.stem)
-    data.setdefault("settings", {"sync_to_narration": True, "burn_subs": True})
+    data.setdefault(
+        "settings",
+        {
+            "sync_to_narration": True,
+            "burn_subs": True,
+            "quality": DEFAULT_QUALITY,
+        },
+    )
+    data["settings"].setdefault("quality", DEFAULT_QUALITY)
     data["stats"] = summarize_cut_plan(data["cut_plan"])
     return data
+
+
+def assign_movie_match(
+    cut_item: dict,
+    movie_entry: dict,
+    sync_to_narration: bool = True,
+    pad_seconds: float = 0.35,
+) -> dict:
+    """
+    Stage 6 manual rematch:
+    ek narration line ko manually kisi movie subtitle se jodo.
+    """
+    updated = dict(cut_item)
+    movie_start = max(0.0, float(movie_entry["start"]) - pad_seconds)
+    movie_end = float(movie_entry["end"]) + pad_seconds
+
+    if sync_to_narration:
+        narr_dur = float(cut_item["narration_end"]) - float(cut_item["narration_start"])
+        if narr_dur > 0:
+            movie_end = movie_start + narr_dur
+
+    updated.update(
+        {
+            "matched": True,
+            "movie_index": movie_entry["index"],
+            "movie_text": movie_entry["text"],
+            "movie_start": round(movie_start, 3),
+            "movie_end": round(movie_end, 3),
+            "target_duration": round(movie_end - movie_start, 3),
+            "score": 1.0,  # manual choice = full confidence
+            "synced_to_narration": bool(sync_to_narration),
+            "manual_match": True,
+        }
+    )
+    return updated
 
 
 def apply_cut_plan_edits(
     cut_plan: list[dict],
     edits: list[dict],
+    movie_entries: list[dict] | None = None,
+    sync_to_narration: bool = True,
 ) -> list[dict]:
     """
     Editor se aayi hui values cut plan pe apply karo.
@@ -121,9 +171,13 @@ def apply_cut_plan_edits(
         "matched": true/false,
         "movie_start": 1.2,
         "movie_end": 3.5,
+        "assign_movie_index": 4,   # optional Stage 6 rematch
       }
     """
     by_index = {int(item["narration_index"]): dict(item) for item in cut_plan}
+    movies_by_index = {
+        int(m["index"]): m for m in (movie_entries or [])
+    }
 
     for edit in edits:
         idx = int(edit["narration_index"])
@@ -132,6 +186,28 @@ def apply_cut_plan_edits(
 
         row = by_index[idx]
         matched = bool(edit.get("matched", row.get("matched", False)))
+
+        # Optional manual rematch from dropdown
+        assign_idx = edit.get("assign_movie_index")
+        if matched and assign_idx not in (None, "", "0", 0):
+            try:
+                assign_idx_int = int(assign_idx)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Narration [{idx}] invalid movie index: {assign_idx}"
+                ) from exc
+            if assign_idx_int not in movies_by_index:
+                raise ValueError(
+                    f"Narration [{idx}] ke liye movie index {assign_idx_int} nahi mili."
+                )
+            row = assign_movie_match(
+                row,
+                movies_by_index[assign_idx_int],
+                sync_to_narration=sync_to_narration,
+            )
+            by_index[idx] = row
+            continue
+
         row["matched"] = matched
 
         if matched:
@@ -144,7 +220,6 @@ def apply_cut_plan_edits(
             row["movie_start"] = round(start, 3)
             row["movie_end"] = round(end, 3)
             row["target_duration"] = round(end - start, 3)
-            # Keep text fields if present; editor may not send them
             if edit.get("movie_text"):
                 row["movie_text"] = edit["movie_text"]
             if edit.get("movie_index") is not None:
@@ -157,6 +232,7 @@ def apply_cut_plan_edits(
             row["score"] = 0.0
             row["target_duration"] = None
             row["synced_to_narration"] = False
+            row["manual_match"] = False
 
         by_index[idx] = row
 
@@ -172,6 +248,7 @@ def create_project_from_sources(
     narration_audio_path: str | Path | None = None,
     sync_to_narration: bool = True,
     burn_subs: bool = True,
+    quality: str = DEFAULT_QUALITY,
 ) -> dict[str, Any]:
     """
     Stage 1+2 (+ optional sync) chala ke naya project banao.
@@ -192,6 +269,7 @@ def create_project_from_sources(
         narration_audio_path=narration_audio_path,
         sync_to_narration=sync_to_narration,
         burn_subs=burn_subs,
+        quality=quality,
     )
 
 
@@ -206,6 +284,7 @@ def render_project(
     settings = project.get("settings", {})
     video = paths.get("video")
     audio = paths.get("narration_audio")
+    quality = settings.get("quality", DEFAULT_QUALITY)
 
     if not video or not Path(video).exists():
         raise FileNotFoundError(f"Project video missing/not found: {video}")
@@ -220,9 +299,11 @@ def render_project(
         output_path=output_path,
         narration_audio_path=audio,
         burn_subs=bool(settings.get("burn_subs", True)),
+        quality=quality,
     )
     info["project_name"] = project.get("name")
     info["sync_to_narration"] = bool(settings.get("sync_to_narration", True))
+    info["quality"] = quality
     return result, info
 
 
@@ -270,26 +351,31 @@ def main() -> None:
                 narration_audio_path=audio,
                 sync_to_narration=True,
                 burn_subs=True,
+                quality="fast",
             )
             save_project(project, project_path)
             print(f"Project saved: {project_path}")
 
-            # Demo edit: pehli clip ko thoda short kar do
+            # Demo: pehli line ko movie line #6 pe manually rematch
+            movies = parse_srt(str(movie_srt))
             edits = [
                 {
                     "narration_index": project["cut_plan"][0]["narration_index"],
                     "matched": True,
-                    "movie_start": project["cut_plan"][0]["movie_start"],
-                    "movie_end": round(
-                        float(project["cut_plan"][0]["movie_start"]) + 1.5,
-                        3,
-                    ),
+                    "movie_start": 0,
+                    "movie_end": 1,
+                    "assign_movie_index": 6,
                 }
             ]
-            project["cut_plan"] = apply_cut_plan_edits(project["cut_plan"], edits)
+            project["cut_plan"] = apply_cut_plan_edits(
+                project["cut_plan"],
+                edits,
+                movie_entries=movies,
+                sync_to_narration=True,
+            )
             project["stats"] = summarize_cut_plan(project["cut_plan"])
             save_project(project, project_path)
-            print("Demo edit apply ho gaya (first clip -> 1.5s).")
+            print("Demo rematch apply ho gaya (narration 1 -> movie 6).")
 
             print("Edited project se render...")
             result, info = render_project(project, output_video)
