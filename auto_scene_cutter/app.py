@@ -1,5 +1,5 @@
 """
-Simple local test page for Stage 1 + Stage 2.
+Local test page for Stage 1 + Stage 2 + Stage 3.
 
 Open in browser:
     http://localhost:5000
@@ -7,14 +7,17 @@ Open in browser:
 
 from pathlib import Path
 
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template_string, request, send_file
 
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
+from video_cutter import build_and_cut, create_sample_video
 
 app = Flask(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / "output"
+UPLOAD_DIR = BASE_DIR / "_uploads"
 
 PAGE = """
 <!doctype html>
@@ -22,7 +25,7 @@ PAGE = """
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto Scene Cutter — Stage 2 Test</title>
+  <title>Auto Scene Cutter — Stage 3 Test</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -67,7 +70,7 @@ PAGE = """
       padding: 10px;
     }
     .actions { display: flex; flex-wrap: wrap; gap: 10px; }
-    button {
+    button, .btn {
       border: 0;
       border-radius: 8px;
       padding: 10px 16px;
@@ -75,6 +78,8 @@ PAGE = """
       font-weight: 600;
       background: var(--accent);
       color: #041018;
+      text-decoration: none;
+      display: inline-block;
     }
     button.secondary {
       background: transparent;
@@ -88,6 +93,18 @@ PAGE = """
       background: rgba(255, 107, 107, 0.12);
       border: 1px solid rgba(255, 107, 107, 0.4);
       color: #ffc9c9;
+    }
+    .success {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: rgba(62, 207, 142, 0.12);
+      border: 1px solid rgba(62, 207, 142, 0.4);
+      color: #b8f5d5;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
     }
     .grid {
       margin-top: 22px;
@@ -129,17 +146,28 @@ PAGE = """
     .badge.ok { background: rgba(62, 207, 142, 0.18); color: var(--ok); }
     .badge.no { background: rgba(255, 107, 107, 0.18); color: var(--err); }
     .score { color: var(--warn); white-space: nowrap; }
+    video {
+      width: 100%;
+      max-width: 720px;
+      margin-top: 12px;
+      border-radius: 10px;
+      background: #000;
+      border: 1px solid var(--line);
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Auto Scene Cutter</h1>
     <p class="sub">
-      Stage 1 parse + Stage 2 match — narration lines ko movie dialogue se jodo
-      aur cut plan dekho.
+      Stage 1 parse → Stage 2 match → Stage 3 ffmpeg cut/join.
     </p>
 
     <form method="post" enctype="multipart/form-data">
+      <label>
+        Movie video (optional for sample test)
+        <input type="file" name="movie_video" accept="video/*" />
+      </label>
       <label>
         Movie SRT
         <input type="file" name="movie_srt" accept=".srt" />
@@ -149,15 +177,30 @@ PAGE = """
         <input type="file" name="narration_srt" accept=".srt" />
       </label>
       <div class="actions">
-        <button type="submit" name="action" value="upload">Parse + Match</button>
+        <button type="submit" name="action" value="upload">
+          Parse + Match + Cut
+        </button>
         <button class="secondary" type="submit" name="action" value="sample">
-          Sample files se test karo
+          Sample se full test (video bhi banega)
         </button>
       </div>
     </form>
 
     {% if error %}
       <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if output_name %}
+      <div class="success">
+        <span>Stage 3 output ready: {{ output_name }}</span>
+        <a class="btn" href="{{ url_for('download_output', filename=output_name) }}">
+          Download cut video
+        </a>
+      </div>
+      <section style="margin-top:16px;">
+        <h2>Preview</h2>
+        <video controls src="{{ url_for('download_output', filename=output_name) }}"></video>
+      </section>
     {% endif %}
 
     {% if movie_entries is not none and narration_entries is not none %}
@@ -268,9 +311,8 @@ PAGE = """
 
 def _save_upload(file_storage, filename: str) -> Path:
     """Save an uploaded file into a temp folder and return its path."""
-    upload_dir = BASE_DIR / "_uploads"
-    upload_dir.mkdir(exist_ok=True)
-    path = upload_dir / filename
+    UPLOAD_DIR.mkdir(exist_ok=True)
+    path = UPLOAD_DIR / filename
     file_storage.save(path)
     return path
 
@@ -282,28 +324,54 @@ def index():
     narration_entries = None
     cut_plan = None
     stats = None
+    output_name = None
 
     if request.method == "POST":
         action = request.form.get("action", "upload")
         try:
+            OUTPUT_DIR.mkdir(exist_ok=True)
+
             if action == "sample":
-                movie_path = BASE_DIR / "sample_movie.srt"
-                narration_path = BASE_DIR / "sample_narration.srt"
+                movie_srt_path = BASE_DIR / "sample_movie.srt"
+                narration_srt_path = BASE_DIR / "sample_narration.srt"
+                video_path = BASE_DIR / "sample_movie.mp4"
+                if not video_path.exists():
+                    create_sample_video(video_path, duration_seconds=20.0)
+                output_path = OUTPUT_DIR / "sample_cut.mp4"
             else:
                 movie_file = request.files.get("movie_srt")
                 narration_file = request.files.get("narration_srt")
+                video_file = request.files.get("movie_video")
+
                 if not movie_file or not movie_file.filename:
                     raise ValueError("Movie SRT file select karo.")
                 if not narration_file or not narration_file.filename:
                     raise ValueError("Narration SRT file select karo.")
-                movie_path = _save_upload(movie_file, "movie_upload.srt")
-                narration_path = _save_upload(narration_file, "narration_upload.srt")
+                if not video_file or not video_file.filename:
+                    raise ValueError(
+                        "Movie video select karo, ya sample button use karo."
+                    )
 
-            movie_entries = parse_srt(str(movie_path))
-            narration_entries = parse_narration_srt(str(narration_path))
+                movie_srt_path = _save_upload(movie_file, "movie_upload.srt")
+                narration_srt_path = _save_upload(narration_file, "narration_upload.srt")
+                video_path = _save_upload(video_file, "movie_upload.mp4")
+                output_path = OUTPUT_DIR / "upload_cut.mp4"
+
+            movie_entries = parse_srt(str(movie_srt_path))
+            narration_entries = parse_narration_srt(str(narration_srt_path))
             cut_plan = match_scenes(movie_entries, narration_entries)
             stats = summarize_cut_plan(cut_plan)
-        except (FileNotFoundError, ValueError, OSError) as exc:
+
+            # Stage 3: actually cut + join
+            build_and_cut(
+                video_path,
+                movie_srt_path,
+                narration_srt_path,
+                output_path,
+            )
+            output_name = output_path.name
+
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
             error = str(exc)
 
     return render_template_string(
@@ -313,10 +381,21 @@ def index():
         narration_entries=narration_entries,
         cut_plan=cut_plan,
         stats=stats,
+        output_name=output_name,
     )
 
 
+@app.route("/download/<path:filename>")
+def download_output(filename: str):
+    """Serve a generated cut video from the output folder."""
+    # Keep downloads inside output/ only (simple path safety)
+    safe_name = Path(filename).name
+    path = OUTPUT_DIR / safe_name
+    if not path.exists():
+        return "File nahi mili.", 404
+    return send_file(path, as_attachment=False, download_name=safe_name)
+
+
 if __name__ == "__main__":
-    # 0.0.0.0 = local machine se browser mein open ho sake
     print("Test page: http://localhost:5000")
     app.run(host="0.0.0.0", port=5000, debug=False)

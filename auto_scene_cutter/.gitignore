@@ -1,4 +1,6 @@
 _uploads/
+output/
+sample_movie.mp4
 __pycache__/
 *.pyc
 .venv/
