@@ -1,6 +1,7 @@
 _uploads/
 output/
 sample_movie.mp4
+sample_narration.m4a
 __pycache__/
 *.pyc
 .venv/

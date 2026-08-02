@@ -1,5 +1,5 @@
 """
-Local test page for Stage 1 + Stage 2 + Stage 3.
+Local test page for Stage 1 → Stage 4.
 
 Open in browser:
     http://localhost:5000
@@ -9,9 +9,10 @@ from pathlib import Path
 
 from flask import Flask, render_template_string, request, send_file
 
+from final_render import create_sample_narration_audio, render_final
 from scene_matcher import match_scenes, summarize_cut_plan
 from srt_parser import parse_narration_srt, parse_srt
-from video_cutter import build_and_cut, create_sample_video
+from video_cutter import create_sample_video
 
 app = Flask(__name__)
 
@@ -25,7 +26,7 @@ PAGE = """
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Auto Scene Cutter — Stage 3 Test</title>
+  <title>Auto Scene Cutter — Stage 4 Test</title>
   <style>
     :root {
       --bg: #0f1419;
@@ -62,6 +63,14 @@ PAGE = """
       gap: 14px;
     }
     label { display: grid; gap: 6px; font-size: 0.92rem; color: var(--muted); }
+    label.check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+    }
+    label.check input { width: auto; }
+    .checks { display: flex; flex-wrap: wrap; gap: 14px; }
     input[type="file"] {
       color: var(--text);
       background: #121820;
@@ -160,7 +169,7 @@ PAGE = """
   <div class="wrap">
     <h1>Auto Scene Cutter</h1>
     <p class="sub">
-      Stage 1 parse → Stage 2 match → Stage 3 ffmpeg cut/join.
+      Stage 1 parse → Stage 2 match → Stage 3 cut → Stage 4 sync / VO mix / subs.
     </p>
 
     <form method="post" enctype="multipart/form-data">
@@ -176,12 +185,26 @@ PAGE = """
         Narration SRT
         <input type="file" name="narration_srt" accept=".srt" />
       </label>
+      <label>
+        Narration audio / voiceover (optional)
+        <input type="file" name="narration_audio" accept="audio/*,.m4a,.mp3,.wav,.aac" />
+      </label>
+      <div class="checks">
+        <label class="check">
+          <input type="checkbox" name="sync_to_narration" value="1" checked />
+          Sync clip length to narration
+        </label>
+        <label class="check">
+          <input type="checkbox" name="burn_subs" value="1" checked />
+          Burn narration subtitles
+        </label>
+      </div>
       <div class="actions">
         <button type="submit" name="action" value="upload">
-          Parse + Match + Cut
+          Full render (1→4)
         </button>
         <button class="secondary" type="submit" name="action" value="sample">
-          Sample se full test (video bhi banega)
+          Sample se full Stage 4 test
         </button>
       </div>
     </form>
@@ -192,9 +215,16 @@ PAGE = """
 
     {% if output_name %}
       <div class="success">
-        <span>Stage 3 output ready: {{ output_name }}</span>
+        <span>
+          Stage 4 ready: {{ output_name }}
+          {% if info %}
+            | sync={{ info.sync_to_narration }}
+            | subs={{ info.burn_subs }}
+            | audio={{ info.narration_audio }}
+          {% endif %}
+        </span>
         <a class="btn" href="{{ url_for('download_output', filename=output_name) }}">
-          Download cut video
+          Download final video
         </a>
       </div>
       <section style="margin-top:16px;">
@@ -247,7 +277,7 @@ PAGE = """
 
         {% if cut_plan is not none %}
         <section class="full">
-          <h2>Stage 2 — Cut Plan</h2>
+          <h2>Stage 2/4 — Cut Plan (after sync if enabled)</h2>
           <div class="count">
             Matched: {{ stats.matched }} /
             {{ stats.total_narration_lines }}
@@ -281,6 +311,9 @@ PAGE = """
                   {% if item.matched %}
                     {{ '%.2f'|format(item.movie_start) }}s
                     → {{ '%.2f'|format(item.movie_end) }}s
+                    {% if item.get('target_duration') %}
+                      <br />(target {{ '%.2f'|format(item.target_duration) }}s)
+                    {% endif %}
                   {% else %}
                     —
                   {% endif %}
@@ -325,9 +358,13 @@ def index():
     cut_plan = None
     stats = None
     output_name = None
+    info = None
 
     if request.method == "POST":
         action = request.form.get("action", "upload")
+        sync_to_narration = request.form.get("sync_to_narration") == "1"
+        burn_subs = request.form.get("burn_subs") == "1"
+
         try:
             OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -335,13 +372,17 @@ def index():
                 movie_srt_path = BASE_DIR / "sample_movie.srt"
                 narration_srt_path = BASE_DIR / "sample_narration.srt"
                 video_path = BASE_DIR / "sample_movie.mp4"
+                audio_path = BASE_DIR / "sample_narration.m4a"
                 if not video_path.exists():
                     create_sample_video(video_path, duration_seconds=20.0)
-                output_path = OUTPUT_DIR / "sample_cut.mp4"
+                narration_entries = parse_narration_srt(str(narration_srt_path))
+                create_sample_narration_audio(narration_entries, audio_path)
+                output_path = OUTPUT_DIR / "sample_final.mp4"
             else:
                 movie_file = request.files.get("movie_srt")
                 narration_file = request.files.get("narration_srt")
                 video_file = request.files.get("movie_video")
+                audio_file = request.files.get("narration_audio")
 
                 if not movie_file or not movie_file.filename:
                     raise ValueError("Movie SRT file select karo.")
@@ -355,21 +396,25 @@ def index():
                 movie_srt_path = _save_upload(movie_file, "movie_upload.srt")
                 narration_srt_path = _save_upload(narration_file, "narration_upload.srt")
                 video_path = _save_upload(video_file, "movie_upload.mp4")
-                output_path = OUTPUT_DIR / "upload_cut.mp4"
+                audio_path = None
+                if audio_file and audio_file.filename:
+                    audio_path = _save_upload(audio_file, "narration_upload_audio")
+                output_path = OUTPUT_DIR / "upload_final.mp4"
 
             movie_entries = parse_srt(str(movie_srt_path))
             narration_entries = parse_narration_srt(str(narration_srt_path))
-            cut_plan = match_scenes(movie_entries, narration_entries)
-            stats = summarize_cut_plan(cut_plan)
 
-            # Stage 3: actually cut + join
-            build_and_cut(
+            result, cut_plan, info = render_final(
                 video_path,
                 movie_srt_path,
                 narration_srt_path,
                 output_path,
+                narration_audio_path=audio_path,
+                sync_to_narration=sync_to_narration,
+                burn_subs=burn_subs,
             )
-            output_name = output_path.name
+            stats = summarize_cut_plan(cut_plan)
+            output_name = result.name
 
         except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
             error = str(exc)
@@ -382,13 +427,13 @@ def index():
         cut_plan=cut_plan,
         stats=stats,
         output_name=output_name,
+        info=info,
     )
 
 
 @app.route("/download/<path:filename>")
 def download_output(filename: str):
-    """Serve a generated cut video from the output folder."""
-    # Keep downloads inside output/ only (simple path safety)
+    """Serve a generated final video from the output folder."""
     safe_name = Path(filename).name
     path = OUTPUT_DIR / safe_name
     if not path.exists():
