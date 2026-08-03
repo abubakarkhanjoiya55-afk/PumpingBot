@@ -110,12 +110,12 @@ fi
 echo "Service ID: $SERVICE_ID"
 echo "Environment ID: $ENV_ID"
 
-# Best-effort: point instance at this repo subdirectory + Dockerfile
-echo "Configuring root directory / Dockerfile (best-effort) ..."
-UPDATE="$(gql "{\"query\":\"mutation(\$serviceId: String!, \$environmentId: String!, \$input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: \$serviceId, environmentId: \$environmentId, input: \$input) }\",\"variables\":{\"serviceId\":\"$SERVICE_ID\",\"environmentId\":\"$ENV_ID\",\"input\":{\"rootDirectory\":\"auto_scene_cutter\",\"dockerfilePath\":\"Dockerfile\"}}}")"
+# railway up uploads THIS folder as the service root, so rootDirectory must be empty.
+# (If rootDirectory=auto_scene_cutter while uploading from inside that folder, build fails instantly.)
+echo "Configuring Dockerfile build with empty rootDirectory for railway up ..."
+UPDATE="$(gql "{\"query\":\"mutation(\$serviceId: String!, \$environmentId: String!, \$input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: \$serviceId, environmentId: \$environmentId, input: \$input) }\",\"variables\":{\"serviceId\":\"$SERVICE_ID\",\"environmentId\":\"$ENV_ID\",\"input\":{\"rootDirectory\":\"\",\"dockerfilePath\":\"Dockerfile\"}}}")"
 echo "$UPDATE" | python3 -m json.tool 2>/dev/null || echo "$UPDATE"
 
-# Prefer uploading from this folder (works even before GitHub root-dir is set)
 echo "Trying railway up from auto_scene_cutter/ ..."
 set +e
 railway link --project "$PROJECT_ID" --environment "$ENVIRONMENT_NAME" --service "$SERVICE_NAME" </dev/null
@@ -123,6 +123,9 @@ UP_OUT="$(railway up --service "$SERVICE_NAME" --detach -m "scenecut deploy $(da
 UP_RC=$?
 echo "$UP_OUT"
 set -e
+
+# Don't treat a previous FAILED deployment as instant failure while a new one is still starting
+sleep 8
 
 if [ "$UP_RC" -ne 0 ]; then
   echo "railway up failed — trying GraphQL latestCommit deploy ..."
