@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Download SceneCut Pro — Student Pack</title>
+  <style>
+    :root {
+      --bg: #0c0e14;
+      --panel: #14171f;
+      --line: #2a3140;
+      --text: #eef1f7;
+      --muted: #8b93a7;
+      --accent: #8b5cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(700px 380px at 20% -10%, rgba(139,92,255,.22), transparent 55%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(560px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 28px 26px;
+      box-shadow: 0 16px 40px rgba(0,0,0,.35);
+    }
+    .mark {
+      width: 42px; height: 42px; border-radius: 10px;
+      background: linear-gradient(145deg, #9b74ff, #6d28d9);
+      display: grid; place-items: center;
+      font-weight: 800; margin-bottom: 14px;
+    }
+    h1 { margin: 0 0 6px; font-size: 1.45rem; }
+    p { margin: 0 0 14px; color: var(--muted); line-height: 1.5; }
+    .meta {
+      font-size: 0.84rem;
+      color: var(--muted);
+      margin-bottom: 18px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--line);
+    }
+    .actions { display: grid; gap: 10px; }
+    a.btn {
+      display: block;
+      text-align: center;
+      text-decoration: none;
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(180deg, #9b74ff, #7c4dff);
+      box-shadow: 0 8px 20px rgba(139,92,255,.35);
+    }
+    a.btn.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,.45);
+      box-shadow: none;
+    }
+    ol { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.55; }
+    li { margin-bottom: 6px; }
+    .foot { margin-top: 18px; font-size: 0.78rem; color: var(--muted); }
+    .err { color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">S</div>
+    <h1>SceneCut Pro — Student Pack</h1>
+    <p>Download karo, students ko bhejo, Windows pe INSTALL_WINDOWS.bat chalao.</p>
+
+    {% if pack_ready %}
+    <div class="meta">
+      File: <strong>{{ pack_name }}</strong><br />
+      Size: <strong>{{ pack_size }}</strong><br />
+      Updated: <strong>{{ pack_mtime }}</strong>
+    </div>
+    <div class="actions">
+      <a class="btn" href="/api/download/student-pack">⬇ Download ZIP</a>
+      <a class="btn secondary" href="/">Open Live Demo Editor</a>
+    </div>
+    {% else %}
+    <p class="err">Pack abhi ready nahi — server pe build chalani hogi.</p>
+    <div class="actions">
+      <a class="btn secondary" href="/">Open Live Demo</a>
+    </div>
+    {% endif %}
+
+    <p style="margin-top:20px;margin-bottom:8px;color:#c4b5fd;font-weight:700;">Windows install (students)</p>
+    <ol>
+      <li>ZIP extract karo</li>
+      <li>Python 3.10+ install (Add to PATH)</li>
+      <li><code>winget install Gyan.FFmpeg</code></li>
+      <li><strong>INSTALL_WINDOWS.bat</strong> double-click</li>
+      <li>Desktop shortcut: SceneCut Pro+</li>
+    </ol>
+    <div class="foot">Details: STUDENT_README.txt / README.txt inside the zip.</div>
+  </div>
+</body>
+</html>

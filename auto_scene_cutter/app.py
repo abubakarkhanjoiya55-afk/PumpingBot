@@ -767,8 +767,66 @@ def api_media_narration():
     return send_file(path)
 
 
+def _student_pack_path() -> Path:
+    # Prefer pack next to app source; fallback to writable data dir
+    primary = RESOURCE_DIR / "releases" / "SceneCut-Pro-Student.zip"
+    if primary.exists():
+        return primary
+    return BASE_DIR / "releases" / "SceneCut-Pro-Student.zip"
+
+
+def _fmt_bytes(n: int) -> str:
+    mb = n / (1024 * 1024)
+    if mb >= 1:
+        return f"{mb:.1f} MB"
+    return f"{max(1, n // 1024)} KB"
+
+
+@app.get("/download")
+def download_page():
+    """Public student download landing page."""
+    pack = _student_pack_path()
+    ready = pack.exists()
+    mtime = ""
+    size = ""
+    if ready:
+        st = pack.stat()
+        size = _fmt_bytes(st.st_size)
+        from datetime import datetime
+
+        mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+    return render_template(
+        "download.html",
+        pack_ready=ready,
+        pack_name="SceneCut-Pro-Student.zip",
+        pack_size=size or "—",
+        pack_mtime=mtime or "—",
+    )
+
+
+@app.get("/api/download/student-pack")
+def api_download_student_pack():
+    pack = _student_pack_path()
+    if not pack.exists():
+        return (
+            jsonify(
+                {
+                    "error": "Student pack abhi ready nahi. Server pe build_student_pack.sh chalao.",
+                }
+            ),
+            404,
+        )
+    return send_file(
+        pack,
+        as_attachment=True,
+        download_name="SceneCut-Pro-Student.zip",
+        mimetype="application/zip",
+    )
+
+
 @app.get("/health")
 def health():
+    pack = _student_pack_path()
     return jsonify(
         {
             "ok": True,
@@ -776,6 +834,8 @@ def health():
             "engine": "stages-1-to-5",
             "pro_plus": True,
             "desktop": os.environ.get("SCENECUT_DESKTOP") == "1",
+            "student_pack": pack.exists(),
+            "download_page": "/download",
         }
     )
 
