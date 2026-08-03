@@ -14,6 +14,7 @@ import copy
 import os
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -89,6 +90,28 @@ SESSION = {
 JOB = JobProgress()
 _JOB_LOCK = threading.Lock()
 _JOB_THREAD: threading.Thread | None = None
+_UPLOAD_LOCK = threading.Lock()
+# In-progress chunked uploads: id -> meta
+PENDING_UPLOADS: dict[str, dict] = {}
+
+UPLOAD_KIND_MAP = {
+    "movie": "movie",
+    "movie_srt": "movie_srt",
+    "narration_audio": "narration_audio",
+    "narration_srt": "narration_srt",
+}
+UPLOAD_ALLOWED_EXT = {
+    "movie": {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ""},
+    "movie_srt": {".srt", ".txt", ""},
+    "narration_audio": {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ""},
+    "narration_srt": {".srt", ".txt", ""},
+}
+UPLOAD_EXT_HINTS = {
+    "movie": "Movie ke liye MP4/MOV/MKV select karo (SRT nahi).",
+    "movie_srt": "Movie SRT ke liye .srt file select karo.",
+    "narration_audio": "Narration audio ke liye MP3/M4A/WAV select karo.",
+    "narration_srt": "Narration timestamps ke liye .srt file select karo.",
+}
 
 
 def _ensure_dirs() -> None:
@@ -394,6 +417,49 @@ def _too_large(_err):
     ), 413
 
 
+def _upload_dest_name(kind: str, suffix: str) -> str:
+    return {
+        "movie": f"movie_upload{suffix or '.mp4'}",
+        "movie_srt": "movie_upload.srt",
+        "narration_audio": f"narration_upload_audio{suffix or '.m4a'}",
+        "narration_srt": "narration_upload.srt",
+    }[kind]
+
+
+def _upload_tip(kind: str) -> str | None:
+    if kind == "movie":
+        return "Movie OK. Ab Movie SRT + Narration SRT bhi select karo, phir Export dabao."
+    if kind in ("movie_srt", "narration_srt") and SESSION.get("movie"):
+        need = []
+        if not SESSION.get("movie_srt"):
+            need.append("Movie SRT")
+        if not SESSION.get("narration_srt"):
+            need.append("Narration SRT")
+        return "Ab Export dabao." if not need else f"Ab {', '.join(need)} bhi select karo."
+    return None
+
+
+def _validate_upload_kind(kind: str, original_name: str) -> tuple[str | None, str | None]:
+    """Return (error, suffix)."""
+    if kind not in UPLOAD_KIND_MAP:
+        return f"Unknown kind: {kind}", None
+    suffix = (Path(original_name).suffix or "").lower()
+    if suffix and suffix not in UPLOAD_ALLOWED_EXT[kind]:
+        return UPLOAD_EXT_HINTS[kind], None
+    return None, suffix
+
+
+def _finalize_saved_upload(kind: str, path: Path, original_name: str) -> dict:
+    SESSION[UPLOAD_KIND_MAP[kind]] = str(path)
+    return {
+        "ok": True,
+        "filename": original_name,
+        "meta": _file_meta(path),
+        "kind": kind,
+        "tip": _upload_tip(kind),
+    }
+
+
 @app.post("/api/upload")
 def api_upload():
     kind = (request.form.get("kind") or "").strip()
@@ -401,68 +467,141 @@ def api_upload():
     if not file or not file.filename:
         return jsonify({"error": "File select nahi hui. Dobara Movie File pe click karke select karo."}), 400
 
-    mapping = {
-        "movie": "movie",
-        "movie_srt": "movie_srt",
-        "narration_audio": "narration_audio",
-        "narration_srt": "narration_srt",
-    }
-    if kind not in mapping:
-        return jsonify({"error": f"Unknown kind: {kind}"}), 400
+    err, suffix = _validate_upload_kind(kind, file.filename)
+    if err:
+        return jsonify({"error": err}), 400
 
-    suffix = (Path(file.filename).suffix or "").lower()
-    allowed = {
-        "movie": {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ""},
-        "movie_srt": {".srt", ".txt", ""},
-        "narration_audio": {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ""},
-        "narration_srt": {".srt", ".txt", ""},
-    }
-    if suffix and suffix not in allowed[kind]:
-        hints = {
-            "movie": "Movie ke liye MP4/MOV/MKV select karo (SRT nahi).",
-            "movie_srt": "Movie SRT ke liye .srt file select karo.",
-            "narration_audio": "Narration audio ke liye MP3/M4A/WAV select karo.",
-            "narration_srt": "Narration timestamps ke liye .srt file select karo.",
-        }
-        return jsonify({"error": hints[kind]}), 400
-
-    filename = {
-        "movie": f"movie_upload{suffix or '.mp4'}",
-        "movie_srt": "movie_upload.srt",
-        "narration_audio": f"narration_upload_audio{suffix or '.m4a'}",
-        "narration_srt": "narration_upload.srt",
-    }[kind]
-
+    filename = _upload_dest_name(kind, suffix or "")
     try:
         path = _save_upload(file, filename)
         if not path.exists() or path.stat().st_size <= 0:
             return jsonify({"error": "Upload path failed — file save nahi hui. Disk full ya permission issue."}), 500
-        SESSION[mapping[kind]] = str(path)
+        return jsonify(_finalize_saved_upload(kind, path, file.filename))
     except OSError as exc:
         return jsonify({"error": f"Upload path failed: {exc}"}), 500
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": f"Upload fail: {exc}"}), 500
 
-    tip = None
-    if kind == "movie":
-        tip = "Movie OK. Ab Movie SRT + Narration SRT bhi select karo, phir Export dabao."
-    elif kind in ("movie_srt", "narration_srt") and SESSION.get("movie"):
-        need = []
-        if not SESSION.get("movie_srt"):
-            need.append("Movie SRT")
-        if not SESSION.get("narration_srt"):
-            need.append("Narration SRT")
-        tip = ("Ab Export dabao." if not need else f"Ab {', '.join(need)} bhi select karo.")
+
+@app.post("/api/upload/init")
+def api_upload_init():
+    """Start a chunked upload (mobile-friendly; survives flaky networks)."""
+    payload = request.get_json(silent=True) or {}
+    kind = (payload.get("kind") or "").strip()
+    original = (payload.get("filename") or "upload.bin").strip() or "upload.bin"
+    size = int(payload.get("size") or 0)
+    err, suffix = _validate_upload_kind(kind, original)
+    if err:
+        return jsonify({"error": err}), 400
+    if size <= 0:
+        return jsonify({"error": "File size invalid."}), 400
+    if size > int(app.config.get("MAX_CONTENT_LENGTH") or 0):
+        return jsonify({"error": "File bahut bari hai (max ~2GB)."}), 413
+
+    _ensure_dirs()
+    upload_id = uuid.uuid4().hex
+    dest_name = _upload_dest_name(kind, suffix or "")
+    part_path = UPLOAD_DIR / f".part_{upload_id}"
+    chunk_size = int(payload.get("chunk_size") or (2 * 1024 * 1024))
+    chunk_size = max(256 * 1024, min(chunk_size, 4 * 1024 * 1024))
+    total_chunks = (size + chunk_size - 1) // chunk_size
+    with _UPLOAD_LOCK:
+        PENDING_UPLOADS[upload_id] = {
+            "kind": kind,
+            "original": original,
+            "dest_name": dest_name,
+            "part_path": str(part_path),
+            "size": size,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+            "next_index": 0,
+        }
+    # Pre-create empty sparse-ish file
+    with open(part_path, "wb") as fh:
+        fh.truncate(size)
+    return jsonify(
+        {
+            "ok": True,
+            "upload_id": upload_id,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+        }
+    )
+
+
+@app.post("/api/upload/chunk")
+def api_upload_chunk():
+    upload_id = (request.form.get("upload_id") or "").strip()
+    try:
+        index = int(request.form.get("index"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "chunk index missing"}), 400
+    chunk = request.files.get("chunk")
+    if not upload_id or chunk is None:
+        return jsonify({"error": "upload_id/chunk missing"}), 400
+
+    with _UPLOAD_LOCK:
+        meta = PENDING_UPLOADS.get(upload_id)
+    if not meta:
+        return jsonify({"error": "Upload session expire — dobara file select karo."}), 400
+
+    # Allow retry of the current expected chunk only (sequential).
+    if index != meta["next_index"]:
+        return jsonify(
+            {
+                "error": f"Chunk order wrong (expected {meta['next_index']}, got {index}).",
+                "next_index": meta["next_index"],
+            }
+        ), 409
+
+    data = chunk.read()
+    part_path = Path(meta["part_path"])
+    offset = index * meta["chunk_size"]
+    try:
+        with open(part_path, "r+b") as fh:
+            fh.seek(offset)
+            fh.write(data)
+        with _UPLOAD_LOCK:
+            if upload_id in PENDING_UPLOADS:
+                PENDING_UPLOADS[upload_id]["next_index"] = index + 1
+    except OSError as exc:
+        return jsonify({"error": f"Upload path failed: {exc}"}), 500
 
     return jsonify(
         {
             "ok": True,
-            "filename": file.filename,
-            "meta": _file_meta(path),
-            "kind": kind,
-            "tip": tip,
+            "index": index,
+            "next_index": index + 1,
+            "total_chunks": meta["total_chunks"],
         }
     )
+
+
+@app.post("/api/upload/complete")
+def api_upload_complete():
+    payload = request.get_json(silent=True) or {}
+    upload_id = (payload.get("upload_id") or "").strip()
+    with _UPLOAD_LOCK:
+        meta = PENDING_UPLOADS.pop(upload_id, None)
+    if not meta:
+        return jsonify({"error": "Upload session expire — dobara file select karo."}), 400
+
+    part_path = Path(meta["part_path"])
+    if not part_path.exists():
+        return jsonify({"error": "Upload path failed — partial file missing."}), 500
+    if part_path.stat().st_size != meta["size"]:
+        part_path.unlink(missing_ok=True)
+        return jsonify({"error": "Upload incomplete — size mismatch. Dobara try karo."}), 400
+
+    dest = UPLOAD_DIR / meta["dest_name"]
+    try:
+        if dest.exists():
+            dest.unlink()
+        part_path.replace(dest)
+    except OSError as exc:
+        return jsonify({"error": f"Upload path failed: {exc}"}), 500
+
+    return jsonify(_finalize_saved_upload(meta["kind"], dest, meta["original"]))
 
 
 @app.post("/api/load-sample")
@@ -936,6 +1075,13 @@ if __name__ == "__main__":
     if os.environ.get("SCENECUT_WEB") == "1":
         from waitress import serve
 
-        serve(app, host=host, port=port, threads=8)
+        serve(
+            app,
+            host=host,
+            port=port,
+            threads=8,
+            channel_timeout=3600,
+            recv_bytes=65536,
+        )
     else:
         app.run(host=host, port=port, debug=False)

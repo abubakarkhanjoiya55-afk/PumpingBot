@@ -216,6 +216,126 @@ async function readJsonSafe(res) {
   }
 }
 
+function formatUploadError(err) {
+  const msg = (err && err.message) || String(err || "");
+  if (/SERVER_DOWN/i.test(msg)) {
+    return "Server band / nahi mil raha. Page refresh karo. Desktop app hai to SceneCut dobara kholo.";
+  }
+  if (/failed to fetch|networkerror|load failed|abort/i.test(msg)) {
+    return "Upload toot gaya (net slow / timeout). Wi‑Fi pe chhoti movie try karo, ya /download se Student Pack use karo.";
+  }
+  return msg || "Upload/path failed";
+}
+
+function setUploadProgress(label) {
+  const hint = $("filesHint");
+  if (hint) {
+    hint.classList.remove("ready", "bad");
+    hint.textContent = label;
+  }
+  showOk(label);
+}
+
+async function ensureServerUp() {
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    if (!res.ok) throw new Error("SERVER_DOWN");
+    return true;
+  } catch (_) {
+    throw new Error("SERVER_DOWN");
+  }
+}
+
+async function fetchWithRetry(url, options, tries = 3) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, options);
+      return res;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    }
+  }
+  throw lastErr || new Error("failed to fetch");
+}
+
+async function uploadFileResilient(file, kind, onProgress) {
+  await ensureServerUp();
+  const CHUNK = 2 * 1024 * 1024; // 2MB — mobile-friendly
+  const useChunks = file.size > 6 * 1024 * 1024;
+
+  if (!useChunks) {
+    onProgress?.(`Uploading ${file.name}…`);
+    const body = new FormData();
+    body.append("kind", kind);
+    body.append("file", file);
+    const res = await fetchWithRetry("/api/upload", { method: "POST", body }, 3);
+    const data = await readJsonSafe(res);
+    if (!res.ok) throw new Error(data.error || "Upload/path failed");
+    return data;
+  }
+
+  onProgress?.(`Upload start: ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`);
+  const initRes = await fetchWithRetry(
+    "/api/upload/init",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        filename: file.name,
+        size: file.size,
+        chunk_size: CHUNK,
+      }),
+    },
+    3
+  );
+  const init = await readJsonSafe(initRes);
+  if (!initRes.ok) throw new Error(init.error || "Upload init fail");
+
+  const chunkSize = init.chunk_size || CHUNK;
+  const total = init.total_chunks || Math.ceil(file.size / chunkSize);
+  for (let index = 0; index < total; index++) {
+    const start = index * chunkSize;
+    const end = Math.min(file.size, start + chunkSize);
+    const blob = file.slice(start, end);
+    let ok = false;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 4 && !ok; attempt++) {
+      try {
+        const fd = new FormData();
+        fd.append("upload_id", init.upload_id);
+        fd.append("index", String(index));
+        fd.append("chunk", blob, `chunk_${index}`);
+        const res = await fetch("/api/upload/chunk", { method: "POST", body: fd });
+        const data = await readJsonSafe(res);
+        if (!res.ok) throw new Error(data.error || `Chunk ${index} fail`);
+        ok = true;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      }
+    }
+    if (!ok) throw lastErr || new Error("Upload chunk failed");
+    const pct = Math.round(((index + 1) / total) * 100);
+    onProgress?.(`Uploading… ${pct}% (${index + 1}/${total})`);
+  }
+
+  const doneRes = await fetchWithRetry(
+    "/api/upload/complete",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_id: init.upload_id }),
+    },
+    3
+  );
+  const done = await readJsonSafe(doneRes);
+  if (!doneRes.ok) throw new Error(done.error || "Upload complete fail");
+  return done;
+}
+
 function bindFileInput(inputId, key, kind) {
   const input = $(inputId);
   if (!input) return;
@@ -226,14 +346,13 @@ function bindFileInput(inputId, key, kind) {
       document.querySelector(`.file-row[data-key="${key}"]`) ||
       document.querySelector(`.file-card[data-key="${key}"]`);
     if (card) card.classList.add("uploading");
-    showOk(`Uploading ${file.name}…`);
-    const body = new FormData();
-    body.append("kind", kind);
-    body.append("file", file);
     try {
-      const res = await fetch("/api/upload", { method: "POST", body });
-      const data = await readJsonSafe(res);
-      if (!res.ok) throw new Error(data.error || "Upload/path failed");
+      if (kind === "movie" && file.size > 400 * 1024 * 1024) {
+        showOk(
+          "Bari movie hai — upload slow ho sakti hai. Best: /download Student Pack (desktop)."
+        );
+      }
+      const data = await uploadFileResilient(file, kind, setUploadProgress);
       updateFileCard(key, data.filename, data.meta);
       if (kind === "movie") {
         if (state.movieUrl) URL.revokeObjectURL(state.movieUrl);
@@ -245,15 +364,7 @@ function bindFileInput(inputId, key, kind) {
       if (kind === "narration_audio") $("audioWave")?.classList.add("active");
       updateFilesHint(data.tip || `${data.filename} upload ho gayi ✓`);
     } catch (err) {
-      const msg = err.message || String(err);
-      // Common network wording → clearer Roman Urdu
-      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-        showError(
-          "Upload/path failed — internet/server nahi mila. Page refresh karke dobara try karo."
-        );
-      } else {
-        showError(msg);
-      }
+      showError(formatUploadError(err));
       updateFilesHint();
     } finally {
       if (card) card.classList.remove("uploading");

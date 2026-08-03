@@ -69,7 +69,14 @@ def _run_server(port: int) -> None:
     try:
         from waitress import serve
 
-        serve(app, host="127.0.0.1", port=port, threads=8)
+        serve(
+            app,
+            host="127.0.0.1",
+            port=port,
+            threads=8,
+            channel_timeout=3600,
+            recv_bytes=65536,
+        )
     except ImportError:
         app.run(
             host="127.0.0.1",

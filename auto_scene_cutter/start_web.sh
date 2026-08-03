@@ -24,5 +24,13 @@ from app import app, _ensure_dirs
 
 _ensure_dirs()
 port = int(os.environ.get("PORT", "8080"))
-serve(app, host="0.0.0.0", port=port, threads=8)
+serve(
+    app,
+    host="0.0.0.0",
+    port=port,
+    threads=8,
+    # Slow mobile movie uploads need a long channel timeout
+    channel_timeout=3600,
+    recv_bytes=65536,
+)
 PY
