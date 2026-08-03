@@ -7,6 +7,7 @@ on:
       - "device_care/**"
       - "my_signals_service/**"
       - ".github/workflows/my-signals-deploy.yml"
+      - "scripts/railway-deploy-my-signals.sh"
   workflow_dispatch:
 
 jobs:
@@ -18,7 +19,7 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli@5.2.0
 
-      - name: Deploy My Signals service
+      - name: Deploy My Signals → reasonable-essence web
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || 'c2f246da-a5ec-4432-ad4e-925438b85982' }}
@@ -27,14 +28,5 @@ jobs:
             echo "::warning::RAILWAY_TOKEN missing — skip My Signals deploy"
             exit 0
           fi
-          # Repo-root context (Dockerfile copies device_care + my_signals_service)
-          railway up \
-            --service my-signals \
-            --detach \
-            -m "My Signals standalone deploy" \
-            2>&1 || \
-          railway up \
-            --service my_signals \
-            --detach \
-            2>&1 || \
-          echo "::warning::Create Railway service named 'my-signals' once, then re-run"
+          chmod +x scripts/railway-deploy-my-signals.sh
+          ./scripts/railway-deploy-my-signals.sh

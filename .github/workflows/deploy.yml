@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
 
 env:
+  # reasonable-essence — used ONLY for legacy token discovery; bot lives on proactive-healing
   RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
-  VITE_API_URL: https://web-production-26ef9.up.railway.app
+  VITE_API_URL: https://web-production-c78a0.up.railway.app
 
 jobs:
-  railway:
+  railway-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,19 +19,41 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli@5.2.0
 
-      - name: Deploy backend to Railway
+      - name: Deploy / configure PumpingBot (proactive-healing)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_BOT_PROJECT_ID: ${{ secrets.RAILWAY_BOT_PROJECT_ID }}
+          RAILWAY_BOT_SERVICE: ${{ secrets.RAILWAY_BOT_SERVICE || 'web' }}
           RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
           RAILWAY_ENVIRONMENT_ID: ${{ secrets.RAILWAY_ENVIRONMENT_ID }}
-          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          VPS_SECRET: ${{ secrets.VPS_SECRET }}
+          MY_SIGNALS_URL: ${{ secrets.MY_SIGNALS_URL || 'https://web-production-26ef9.up.railway.app' }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "::warning::RAILWAY_TOKEN secret missing"
             exit 0
           fi
-          chmod +x scripts/railway-deploy.sh
-          ./scripts/railway-deploy.sh
+          chmod +x scripts/railway-deploy-bot.sh
+          ./scripts/railway-deploy-bot.sh
+
+  railway-my-signals:
+    runs-on: ubuntu-latest
+    needs: []
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+      - name: Ensure My Signals on reasonable-essence web
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || 'c2f246da-a5ec-4432-ad4e-925438b85982' }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN missing"
+            exit 0
+          fi
+          chmod +x scripts/railway-deploy-my-signals.sh
+          ./scripts/railway-deploy-my-signals.sh
 
   vercel:
     runs-on: ubuntu-latest
