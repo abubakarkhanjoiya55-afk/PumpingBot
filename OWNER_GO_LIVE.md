@@ -13,12 +13,12 @@ Short checklist: [`BOT_GO_LIVE.md`](BOT_GO_LIVE.md)
 Browser: https://web-production-c78a0.up.railway.app/api  
 
 ```
-"version": "3.28.2" (ya 3.28.x)
+"version": "3.28.3" (ya 3.28.x)
 "use_metaapi": false
 "trading_backend": "agent"
 ```
 
-`VPS_SECRET` default = `pumpingbot-vps-live-2026` (code + VPS dono pe same).
+`VPS_SECRET` = `pumpingbot-vps-live-2026` (code + VPS `config.bat` — same)
 
 ---
 

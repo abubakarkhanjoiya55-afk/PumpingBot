@@ -10,20 +10,22 @@ os.environ.setdefault("TRADING_BACKEND", "agent")
 
 
 class TestVpsAuth(unittest.TestCase):
-    def test_secret_helper(self):
-        from vps_auth import vps_secret
-        self.assertEqual(vps_secret(), "test-secret-123")
-
-    def test_default_secret_when_env_empty(self):
+    def test_go_live_secret_default(self):
         import importlib
         import vps_auth
-        with patch.dict(os.environ, {"VPS_SECRET": ""}, clear=False):
-            # empty string → fall back to built-in default
-            os.environ.pop("VPS_SECRET", None)
+        importlib.reload(vps_auth)
+        self.assertEqual(vps_auth.vps_secret(), "pumpingbot-vps-live-2026")
+
+    def test_override_when_flag_set(self):
+        import importlib
+        import vps_auth
+        with patch.dict(os.environ, {
+            "VPS_SECRET_OVERRIDE": "1",
+            "VPS_SECRET": "custom-secret",
+        }):
             importlib.reload(vps_auth)
-            self.assertEqual(vps_auth.vps_secret(), "pumpingbot-vps-live-2026")
-        # restore test secret for other tests
-        os.environ["VPS_SECRET"] = "test-secret-123"
+            self.assertEqual(vps_auth.vps_secret(), "custom-secret")
+        os.environ.pop("VPS_SECRET_OVERRIDE", None)
         importlib.reload(vps_auth)
 
     def test_migrate_file_lists_vps_columns(self):
