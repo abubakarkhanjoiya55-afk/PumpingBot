@@ -44,6 +44,7 @@ function fmtTime(seconds) {
 
 function showError(msg) {
   const el = $("errorToast");
+  if (!el) return;
   el.textContent = msg;
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 4500);
@@ -51,6 +52,7 @@ function showError(msg) {
 
 function showOk(msg) {
   const el = $("okToast");
+  if (!el) return;
   el.textContent = msg;
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 2800);
@@ -82,7 +84,7 @@ function setBusy(busy) {
 
 function setProgress(percent, message) {
   $("progressFill").style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
-  $("progressMsg").textContent = message || "Ready";
+  $("progressMsg").textContent = message || "Idle";
 }
 
 function setStatus(step, mode, timeLabel) {
@@ -103,7 +105,7 @@ function resetStatus() {
   ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach((s) =>
     setStatus(s, null, "—")
   );
-  setProgress(0, "Ready");
+  setProgress(0, "Idle");
 }
 
 function readSettingsFromUi() {
@@ -130,28 +132,11 @@ function writeSettingsToUi(settings) {
 }
 
 function updateFileCard(key, name, meta) {
-  const card = document.querySelector(`.asset[data-key="${key}"]`);
+  const card = document.querySelector(`.file-card[data-key="${key}"]`);
   if (!card) return;
   card.classList.remove("empty");
-  const label =
-    {
-      movie: "Movie",
-      movie_srt: "Movie SRT",
-      narration_audio: "Narration Audio",
-      narration_srt: "Narration SRT",
-    }[key] || key;
-  card.innerHTML = `<div><span>${label}</span><strong title="${name}">${name}</strong></div><em class="meta">${meta || ""}</em>`;
+  card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
   state.files[key] = name;
-
-  const btn = document.querySelector(`.file-pick-btn[data-for="${
-    {
-      movie: "fileMovie",
-      movie_srt: "fileMovieSrt",
-      narration_audio: "fileNarrationAudio",
-      narration_srt: "fileNarrationSrt",
-    }[key]
-  }"]`);
-  if (btn) btn.textContent = name.length > 22 ? `${name.slice(0, 20)}…` : name;
 }
 
 function bindFileInput(inputId, key, kind) {
@@ -268,7 +253,7 @@ function renderTimeline() {
       "scene-block" + (state.selectedClipKey === clip.key ? " selected" : "");
     block.style.left = `${left}px`;
     block.style.width = `${w}px`;
-    block.innerHTML = `<div class="sid">C${String(clip.index).padStart(2, "0")}</div><div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
+    block.innerHTML = `<div class="sid">${String(clip.index).padStart(3, "0")}</div><div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
     block.title = clip.scene_text || clip.narration_text || "";
     block.addEventListener("click", () => selectClip(clip.key));
     track.appendChild(block);
@@ -283,7 +268,7 @@ function renderTimeline() {
   });
 
   $("audioWave").classList.toggle("active", clips.length > 0);
-  $("timelineScaleLabel").textContent = `${state.pxPerSec} px/s`;
+  $("timelineScaleLabel").textContent = `Scale: ${state.pxPerSec}px/s`;
   updateFooterStats();
 }
 
@@ -295,8 +280,8 @@ function selectClip(key) {
   $("propEmpty").hidden = true;
   $("propDetails").hidden = false;
   $("propTitle").textContent = clip.matched
-    ? `Clip ${String(clip.index).padStart(2, "0")}`
-    : `Narration ${clip.narration_index} · skipped`;
+    ? `Scene_${String(clip.scene_id ?? clip.index).padStart(3, "0")}`
+    : `Narration_${clip.narration_index} (skipped)`;
   $("propStart").textContent =
     clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
   $("propEnd").textContent = clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
@@ -371,7 +356,7 @@ function applyPlanResult(data, opts = {}) {
   if (data.settings) writeSettingsToUi(data.settings);
   if (data.project_name) {
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = state.projectName;
+    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
   }
   if (data.subtitle_count != null) $("statSubs").textContent = String(data.subtitle_count);
 
@@ -604,7 +589,7 @@ async function saveProject() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save fail");
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = state.projectName;
+    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
     showOk(`Saved ${data.filename}`);
   } catch (err) {
     showError(err.message || String(err));
