@@ -67,6 +67,8 @@ app = Flask(
     template_folder=str(RESOURCE_DIR / "templates"),
     static_folder=str(RESOURCE_DIR / "static"),
 )
+# Large movie uploads (Railway / desktop). Override with SCENECUT_MAX_UPLOAD_MB.
+app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("SCENECUT_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 
 SESSION = {
     "movie": None,
@@ -383,12 +385,21 @@ def index():
     return render_template("editor.html")
 
 
+@app.errorhandler(413)
+def _too_large(_err):
+    return jsonify(
+        {
+            "error": "File bahut bari hai (max ~2GB). Chhoti movie try karo ya Student Pack desktop app use karo.",
+        }
+    ), 413
+
+
 @app.post("/api/upload")
 def api_upload():
     kind = (request.form.get("kind") or "").strip()
     file = request.files.get("file")
     if not file or not file.filename:
-        return jsonify({"error": "File missing"}), 400
+        return jsonify({"error": "File select nahi hui. Dobara Movie File pe click karke select karo."}), 400
 
     mapping = {
         "movie": "movie",
@@ -399,7 +410,22 @@ def api_upload():
     if kind not in mapping:
         return jsonify({"error": f"Unknown kind: {kind}"}), 400
 
-    suffix = Path(file.filename).suffix or ""
+    suffix = (Path(file.filename).suffix or "").lower()
+    allowed = {
+        "movie": {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ""},
+        "movie_srt": {".srt", ".txt", ""},
+        "narration_audio": {".mp3", ".m4a", ".wav", ".aac", ".ogg", ".flac", ""},
+        "narration_srt": {".srt", ".txt", ""},
+    }
+    if suffix and suffix not in allowed[kind]:
+        hints = {
+            "movie": "Movie ke liye MP4/MOV/MKV select karo (SRT nahi).",
+            "movie_srt": "Movie SRT ke liye .srt file select karo.",
+            "narration_audio": "Narration audio ke liye MP3/M4A/WAV select karo.",
+            "narration_srt": "Narration timestamps ke liye .srt file select karo.",
+        }
+        return jsonify({"error": hints[kind]}), 400
+
     filename = {
         "movie": f"movie_upload{suffix or '.mp4'}",
         "movie_srt": "movie_upload.srt",
@@ -407,8 +433,26 @@ def api_upload():
         "narration_srt": "narration_upload.srt",
     }[kind]
 
-    path = _save_upload(file, filename)
-    SESSION[mapping[kind]] = str(path)
+    try:
+        path = _save_upload(file, filename)
+        if not path.exists() or path.stat().st_size <= 0:
+            return jsonify({"error": "Upload path failed — file save nahi hui. Disk full ya permission issue."}), 500
+        SESSION[mapping[kind]] = str(path)
+    except OSError as exc:
+        return jsonify({"error": f"Upload path failed: {exc}"}), 500
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": f"Upload fail: {exc}"}), 500
+
+    tip = None
+    if kind == "movie":
+        tip = "Movie OK. Ab Movie SRT + Narration SRT bhi select karo, phir Export dabao."
+    elif kind in ("movie_srt", "narration_srt") and SESSION.get("movie"):
+        need = []
+        if not SESSION.get("movie_srt"):
+            need.append("Movie SRT")
+        if not SESSION.get("narration_srt"):
+            need.append("Narration SRT")
+        tip = ("Ab Export dabao." if not need else f"Ab {', '.join(need)} bhi select karo.")
 
     return jsonify(
         {
@@ -416,6 +460,7 @@ def api_upload():
             "filename": file.filename,
             "meta": _file_meta(path),
             "kind": kind,
+            "tip": tip,
         }
     )
 
@@ -467,9 +512,28 @@ def api_auto_cut():
     run_async = bool(payload.get("async", False))
 
     try:
-        if use_sample or not SESSION.get("movie_srt") or not SESSION.get("movie"):
-            if use_sample or not SESSION.get("movie_srt"):
+        has_movie = bool(SESSION.get("movie") and Path(SESSION["movie"]).exists())
+        has_movie_srt = bool(SESSION.get("movie_srt") and Path(SESSION["movie_srt"]).exists())
+        has_narr_srt = bool(
+            SESSION.get("narration_srt") and Path(SESSION["narration_srt"]).exists()
+        )
+
+        # use_sample=true only from Load Sample flow. Never silently replace a user's movie.
+        if use_sample:
+            if not (has_movie and has_movie_srt and has_narr_srt):
                 _load_sample_into_session()
+        elif not has_movie or not has_movie_srt:
+            return jsonify(
+                {
+                    "error": "Pehle Movie File + Movie SRT select karo (Project Files pe click). Sample ke liye ⋯ → Load Sample.",
+                }
+            ), 400
+        elif not has_narr_srt:
+            return jsonify(
+                {
+                    "error": "Narration Timestamps (.srt) missing hai. Project Files se Narration SRT select karo.",
+                }
+            ), 400
 
         settings = _merge_settings_from_payload(payload)
 

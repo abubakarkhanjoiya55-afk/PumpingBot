@@ -127,12 +127,12 @@ function resetStatus() {
 function readSettingsFromUi() {
   state.settings = {
     ...state.settings,
-    quality: $("setQuality").value,
-    transition: $("setTransition").value,
-    max_clip_duration: Number($("setMaxClip").value) || 5,
-    burn_subs: !!$("setBurnSubs").checked,
+    quality: $("setQuality")?.value || state.settings.quality,
+    transition: $("setTransition")?.value || state.settings.transition,
+    max_clip_duration: Number($("setMaxClip")?.value) || state.settings.max_clip_duration || 5,
+    burn_subs: $("setBurnSubs") ? !!$("setBurnSubs").checked : state.settings.burn_subs,
   };
-  $("statQuality").textContent = state.settings.quality;
+  if ($("statQuality")) $("statQuality").textContent = state.settings.quality;
   return state.settings;
 }
 
@@ -177,29 +177,87 @@ function updateFileCard(key, name, meta) {
   state.files[key] = name;
   const save = $("autoSaveLabel");
   if (save) save.textContent = "Auto-saved just now";
+  updateFilesHint();
+}
+
+function updateFilesHint(extraTip) {
+  const el = $("filesHint");
+  if (!el) return;
+  const need = [];
+  if (!state.files.movie) need.push("Movie File");
+  if (!state.files.movie_srt) need.push("Movie SRT");
+  if (!state.files.narration_srt) need.push("Narration SRT");
+  el.classList.remove("ready", "bad");
+  if (!need.length) {
+    el.classList.add("ready");
+    el.innerHTML = "Sab files ready hain. Ab purple <strong>Export</strong> dabao — Auto Cut chalega.";
+  } else {
+    el.classList.add("bad");
+    el.innerHTML = `Abhi missing: <strong>${need.join(", ")}</strong>. Project Files pe click karke select karo.`;
+  }
+  if (extraTip) showOk(extraTip);
+}
+
+async function readJsonSafe(res) {
+  const text = await res.text();
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch (_) {
+    if (res.status === 413)
+      return {
+        error:
+          "File bahut bari hai (path/upload failed). Chhoti movie try karo ya Student Pack use karo.",
+      };
+    return {
+      error: text
+        ? `Upload/path failed (HTTP ${res.status}). Server response parse nahi hui.`
+        : `Upload/path failed (HTTP ${res.status}).`,
+    };
+  }
 }
 
 function bindFileInput(inputId, key, kind) {
-  $(inputId).addEventListener("change", async (e) => {
+  const input = $(inputId);
+  if (!input) return;
+  input.addEventListener("change", async (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+    const card =
+      document.querySelector(`.file-row[data-key="${key}"]`) ||
+      document.querySelector(`.file-card[data-key="${key}"]`);
+    if (card) card.classList.add("uploading");
+    showOk(`Uploading ${file.name}…`);
     const body = new FormData();
     body.append("kind", kind);
     body.append("file", file);
     try {
       const res = await fetch("/api/upload", { method: "POST", body });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Upload fail");
+      const data = await readJsonSafe(res);
+      if (!res.ok) throw new Error(data.error || "Upload/path failed");
       updateFileCard(key, data.filename, data.meta);
       if (kind === "movie") {
         if (state.movieUrl) URL.revokeObjectURL(state.movieUrl);
         state.movieUrl = URL.createObjectURL(file);
-        $("videoPlayer").src = state.movieUrl;
-        $("playerPlaceholder").classList.add("hide");
+        const player = $("videoPlayer");
+        if (player) player.src = state.movieUrl;
+        $("playerPlaceholder")?.classList.add("hide");
       }
-      if (kind === "narration_audio") $("audioWave").classList.add("active");
+      if (kind === "narration_audio") $("audioWave")?.classList.add("active");
+      updateFilesHint(data.tip || `${data.filename} upload ho gayi ✓`);
     } catch (err) {
-      showError(err.message || String(err));
+      const msg = err.message || String(err);
+      // Common network wording → clearer Roman Urdu
+      if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+        showError(
+          "Upload/path failed — internet/server nahi mila. Page refresh karke dobara try karo."
+        );
+      } else {
+        showError(msg);
+      }
+      updateFilesHint();
+    } finally {
+      if (card) card.classList.remove("uploading");
+      e.target.value = "";
     }
   });
 }
@@ -505,7 +563,19 @@ async function pollJobUntilDone() {
   }
 }
 
-async function runAutoCut() {
+async function runAutoCut(opts = {}) {
+  const useSample = !!opts.useSample;
+  if (
+    !useSample &&
+    (!state.files.movie || !state.files.movie_srt || !state.files.narration_srt)
+  ) {
+    updateFilesHint();
+    showError(
+      "Pehle Movie + Movie SRT + Narration SRT select karo. Sample chahiye to ⋯ → Load Sample."
+    );
+    return;
+  }
+
   resetStatus();
   showDownloads(false);
   setBusy(true);
@@ -519,11 +589,11 @@ async function runAutoCut() {
       body: JSON.stringify({
         mode: "full",
         async: true,
-        use_sample: !state.files.movie_srt || !state.files.movie,
+        use_sample: useSample,
         ...settings,
       }),
     });
-    const start = await res.json();
+    const start = await readJsonSafe(res);
     if (!res.ok) throw new Error(start.error || "Auto cut fail");
 
     const job = await pollJobUntilDone();
@@ -792,40 +862,65 @@ function wireControls() {
   bindFileInput("fileNarrationSrt", "narration_srt", "narration_srt");
 
   // Export button runs full auto-cut pipeline (then downloads appear)
-  $("btnAutoCutTop").addEventListener("click", async () => {
-    if (!state.files.movie && !state.files.movie_srt) {
-      $("btnSample").click();
+  $("btnAutoCutTop")?.addEventListener("click", async () => {
+    if (!state.files.movie && !state.files.movie_srt && !state.files.narration_srt) {
+      showOk("Koi file nahi — Sample project load ho raha hai…");
+      $("btnSample")?.click();
       return;
     }
-    await runAutoCut();
+    await runAutoCut({ useSample: false });
     const dl = $("downloadBlock");
     if (dl && !dl.hidden) dl.scrollIntoView({ behavior: "smooth", block: "nearest" });
   });
-  $("btnMenuExport")?.addEventListener("click", () => $("btnAutoCutTop").click());
+  $("btnMenuExport")?.addEventListener("click", () => $("btnAutoCutTop")?.click());
   $("btnMenuFile")?.addEventListener("click", () => {
     const menu = $("moreMenu");
     if (menu) menu.hidden = false;
+    showOk("File menu — Sample / Open / Save yahan se");
   });
-  $("btnMenuEdit")?.addEventListener("click", () => undoLast());
+  $("btnMenuEdit")?.addEventListener("click", () => {
+    undoLast();
+    showOk("Edit → Undo");
+  });
+  $("btnMenuView")?.addEventListener("click", () => {
+    document.querySelector(".panel.left")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    showOk("View → Project Files + timeline");
+  });
+  $("btnMenuHelp")?.addEventListener("click", () => {
+    showOk(
+      "Help: 1) Movie 2) Movie SRT 3) Narration SRT select karo → Export. Sample: ⋯ menu."
+    );
+  });
 
-  $("btnApplyRematch").addEventListener("click", () => {
-    const val = $("sceneSelect").value;
+  $("btnApplyRematch")?.addEventListener("click", () => {
+    const val = $("sceneSelect")?.value;
     rematchSelected(val === "" ? null : Number(val), true);
   });
-  $("btnSkipClip").addEventListener("click", () => rematchSelected(null, true));
-  $("btnToolDel").addEventListener("click", () => rematchSelected(null, true));
-  $("btnUndo").addEventListener("click", () => {
+  $("btnSkipClip")?.addEventListener("click", () => rematchSelected(null, true));
+  $("btnToolDel")?.addEventListener("click", () => rematchSelected(null, true));
+  $("btnUndo")?.addEventListener("click", () => {
     closeMoreMenu();
     undoLast();
   });
   $("btnUndoTool")?.addEventListener("click", () => undoLast());
-  $("btnSaveProject").addEventListener("click", () => {
+  $("btnSaveProject")?.addEventListener("click", () => {
     closeMoreMenu();
     saveProject();
   });
-  $("btnOpenProject").addEventListener("click", () => {
+  $("btnOpenProject")?.addEventListener("click", () => {
     closeMoreMenu();
     openProjectModal();
+  });
+  $("btnResetProps")?.addEventListener("click", () => {
+    if (!state.selectedClipKey) {
+      showError("Pehle timeline se clip select karo.");
+      return;
+    }
+    undoLast();
+    showOk("Last edit undo / reset");
+  });
+  $("sceneSelect")?.addEventListener("change", () => {
+    showOk("Scene option select hui — ab Apply Scene dabao.");
   });
 
   $("btnMoreMenu")?.addEventListener("click", (e) => {
@@ -839,6 +934,7 @@ function wireControls() {
     if (box) {
       box.open = true;
       box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showOk("Settings open");
     }
   };
   $("btnToggleAdvanced")?.addEventListener("click", openAdvanced);
@@ -865,55 +961,108 @@ function wireControls() {
   });
   $("btnImportSample")?.addEventListener("click", () => {
     closeImportModal();
-    $("btnSample").click();
+    $("btnSample")?.click();
   });
   document.querySelectorAll(".file-row[data-input]").forEach((row) => {
     row.addEventListener("click", () => {
       const id = row.getAttribute("data-input");
       if (id && $(id)) $(id).click();
+      else showError("File picker open nahi hua — page refresh karo.");
     });
   });
+  const railActions = {
+    media: () => {
+      document.querySelector(".panel.left")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showOk("Media — Project Files se movie/SRT select karo");
+    },
+    import: () => openImportModal(),
+    subs: () => {
+      document.querySelector('.file-row[data-key="movie_srt"]')?.click();
+      showOk("Subtitles — Movie SRT select karo");
+    },
+    scenes: () => {
+      document.querySelector(".timeline")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showOk("Scenes — timeline pe clip click karke edit karo");
+    },
+    audio: () => {
+      document.querySelector('.file-row[data-key="narration_audio"]')?.click();
+      showOk("Audio — Narration Audio select karo");
+    },
+    text: () => {
+      document.querySelector('.ptab[data-tab="subs"]')?.click();
+      document.querySelector(".panel.right")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showOk("Text / Subtitles panel");
+    },
+    trans: () => {
+      openAdvanced();
+      const tr = $("setTransition");
+      if (tr) tr.focus();
+      showOk("Transitions — Settings mein Transition choose karo");
+    },
+    fx: () => showOk("Effects next update mein aayenge — abhi Auto Cut use karo"),
+    tools: () => {
+      document.querySelector(".edit-tools")?.setAttribute("open", "");
+      document.querySelector(".panel.right")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      showOk("Tools — pehle timeline clip select karo, phir Edit Tools");
+    },
+  };
   document.querySelectorAll(".rail-btn[data-rail]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-      if (btn.dataset.rail === "import") openImportModal();
+      const action = railActions[btn.dataset.rail];
+      if (action) action();
+      else showOk(btn.dataset.rail || "Tool");
     });
   });
   document.querySelectorAll(".ptab").forEach((tab) => {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".ptab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
+      showOk(`${tab.textContent.trim()} tab`);
+    });
+  });
+  document.querySelectorAll(".timeline-toolbar .tool:not([id])").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".timeline-toolbar .tool").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      showOk(`${btn.title || "Tool"} selected`);
+    });
+  });
+  // Disabled transform sliders — explain instead of silent no-op
+  document.querySelectorAll(".prop-card input:disabled, .prop-card select:disabled").forEach((el) => {
+    el.parentElement?.addEventListener("click", () => {
+      showOk("Yeh control Auto Cut ke baad fixed hai — Trim / Rematch Edit Tools se use karo.");
     });
   });
   $("btnAddTrack")?.addEventListener("click", () => {
-    showOk("Extra tracks coming in next update");
+    showOk("Extra tracks next update mein — abhi Narration + Scenes tracks kaafi hain");
   });
   document.addEventListener("click", (e) => {
     const wrap = document.querySelector(".menu-wrap");
     if (wrap && !wrap.contains(e.target)) closeMoreMenu();
   });
-  $("btnCloseOpen").addEventListener("click", closeOpenModal);
-  $("btnCloseOpen2").addEventListener("click", closeOpenModal);
-  $("btnBrowseProject").addEventListener("click", () => $("fileProject").click());
-  $("fileProject").addEventListener("change", (e) => {
+  $("btnCloseOpen")?.addEventListener("click", closeOpenModal);
+  $("btnCloseOpen2")?.addEventListener("click", closeOpenModal);
+  $("btnBrowseProject")?.addEventListener("click", () => $("fileProject")?.click());
+  $("fileProject")?.addEventListener("change", (e) => {
     const file = e.target.files && e.target.files[0];
     if (file) loadProjectFromFile(file);
     e.target.value = "";
   });
-  $("openModal").addEventListener("click", (e) => {
+  $("openModal")?.addEventListener("click", (e) => {
     if (e.target === $("openModal")) closeOpenModal();
   });
 
-  $("btnTrimInMinus").addEventListener("click", () => trimSelected(0.25, 0));
-  $("btnTrimInPlus").addEventListener("click", () => trimSelected(-0.25, 0));
-  $("btnTrimOutMinus").addEventListener("click", () => trimSelected(0, -0.25));
-  $("btnTrimOutPlus").addEventListener("click", () => trimSelected(0, 0.25));
-  $("btnMoveLeft").addEventListener("click", () => moveSelected(-1));
-  $("btnMoveRight").addEventListener("click", () => moveSelected(1));
+  $("btnTrimInMinus")?.addEventListener("click", () => trimSelected(0.25, 0));
+  $("btnTrimInPlus")?.addEventListener("click", () => trimSelected(-0.25, 0));
+  $("btnTrimOutMinus")?.addEventListener("click", () => trimSelected(0, -0.25));
+  $("btnTrimOutPlus")?.addEventListener("click", () => trimSelected(0, 0.25));
+  $("btnMoveLeft")?.addEventListener("click", () => moveSelected(-1));
+  $("btnMoveRight")?.addEventListener("click", () => moveSelected(1));
 
   ["setQuality", "setTransition", "setMaxClip", "setBurnSubs"].forEach((id) => {
-    $(id).addEventListener("change", async () => {
+    $(id)?.addEventListener("change", async () => {
       const settings = readSettingsFromUi();
       try {
         await fetch("/api/settings", {
@@ -921,6 +1070,7 @@ function wireControls() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(settings),
         });
+        showOk("Setting saved");
       } catch (_) {
         /* ignore */
       }
@@ -933,7 +1083,7 @@ function wireControls() {
     closeMoreMenu();
     try {
       const res = await fetch("/api/load-sample", { method: "POST" });
-      const data = await res.json();
+      const data = await readJsonSafe(res);
       if (!res.ok) throw new Error(data.error || "Sample load fail");
       updateFileCard("movie", data.files.movie, data.files.movie_meta);
       updateFileCard("movie_srt", data.files.movie_srt, data.files.movie_srt_meta);
@@ -948,26 +1098,28 @@ function wireControls() {
           data.files.narration_audio,
           data.files.narration_audio_meta || ""
         );
-        $("audioWave").classList.add("active");
+        $("audioWave")?.classList.add("active");
       }
       if (data.settings) writeSettingsToUi(data.settings);
-      $("videoPlayer").src = data.files.movie_url;
-      $("playerPlaceholder").classList.add("hide");
+      if ($("videoPlayer") && data.files.movie_url)
+        $("videoPlayer").src = data.files.movie_url;
+      $("playerPlaceholder")?.classList.add("hide");
       const pl = $("projectNameLabel");
       if (pl) pl.textContent = "My Project 01";
-      await runAutoCut();
+      updateFilesHint("Sample files ready");
+      await runAutoCut({ useSample: true });
     } catch (err) {
       showError(err.message || String(err));
     }
   };
-  $("btnSample").addEventListener("click", loadSampleAndCut);
+  $("btnSample")?.addEventListener("click", loadSampleAndCut);
   $("btnRerunCut")?.addEventListener("click", () => {
     closeMoreMenu();
-    runAutoCut();
+    runAutoCut({ useSample: false });
   });
   $("btnRerunCutMain")?.addEventListener("click", () => {
     if (!state.files.movie && !state.files.movie_srt) loadSampleAndCut();
-    else runAutoCut();
+    else runAutoCut({ useSample: false });
   });
 
   const video = $("videoPlayer");
@@ -1197,6 +1349,7 @@ async function boot() {
   wireControls();
   wireMobileUi();
   renderTimeline();
+  updateFilesHint();
 }
 
 boot();
