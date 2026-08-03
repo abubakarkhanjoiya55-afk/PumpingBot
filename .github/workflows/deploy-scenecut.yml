@@ -1,0 +1,47 @@
+name: Deploy SceneCut Pro
+
+on:
+  push:
+    branches:
+      - main
+      - cursor/scenecut-pro-plus-ccb5
+    paths:
+      - 'auto_scene_cutter/**'
+      - 'scripts/railway-deploy-scenecut.sh'
+      - '.github/workflows/deploy-scenecut.yml'
+  workflow_dispatch:
+
+env:
+  RAILWAY_PROJECT_ID: c2f246da-a5ec-4432-ad4e-925438b85982
+  SCENECUT_RAILWAY_SERVICE: scenecut
+
+jobs:
+  railway-scenecut:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+
+      - name: Deploy SceneCut Pro to Railway
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          SCENECUT_RAILWAY_SERVICE: ${{ env.SCENECUT_RAILWAY_SERVICE }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::RAILWAY_TOKEN secret missing — permanent SceneCut URL deploy nahi ho sakta"
+            exit 1
+          fi
+          chmod +x scripts/railway-deploy-scenecut.sh auto_scene_cutter/start_web.sh auto_scene_cutter/desktop/build_student_pack.sh
+          ./scripts/railway-deploy-scenecut.sh
+
+      - name: Print live links
+        if: always()
+        run: |
+          echo "After deploy, open Railway → service 'scenecut' → Networking domain"
+          echo "Expected paths:"
+          echo "  /           editor"
+          echo "  /download   student pack"
+          echo "  /health     health check"

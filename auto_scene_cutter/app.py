@@ -842,5 +842,12 @@ def health():
 
 if __name__ == "__main__":
     _ensure_dirs()
-    print("SceneCut Pro+: http://127.0.0.1:5000")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    port = int(os.environ.get("PORT", "5000"))
+    host = "0.0.0.0"
+    print(f"SceneCut Pro+: http://127.0.0.1:{port}")
+    if os.environ.get("SCENECUT_WEB") == "1":
+        from waitress import serve
+
+        serve(app, host=host, port=port, threads=8)
+    else:
+        app.run(host=host, port=port, debug=False)
