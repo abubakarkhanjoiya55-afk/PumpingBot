@@ -7,15 +7,14 @@ Bot: https://web-production-c78a0.up.railway.app/api
 
 Chaahiye:
 ```json
-{"message":"PumpingBot Smart API","version":"3.28.x","trading_backend":"agent","use_metaapi":false}
+{"message":"PumpingBot Smart API","version":"3.28.3","trading_backend":"agent","use_metaapi":false}
 ```
 
-## Railway vars (optional — defaults already in code)
+## VPS secret (fixed)
 ```
-TRADING_BACKEND=agent
-USE_METAAPI=0
 VPS_SECRET=pumpingbot-vps-live-2026
 ```
+Windows `config.bat` mein yahi likho.
 
 ## Windows VPS (owner — required for live copy)
 1. Monthly Windows VPS + RDP  

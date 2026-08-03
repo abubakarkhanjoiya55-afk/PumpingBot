@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.28.2"   # PumpingBot-only go-live; default VPS_SECRET for VPS supervisor
+API_VERSION = "3.28.3"   # PumpingBot go-live; fixed VPS_SECRET for Windows supervisor
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

@@ -5,13 +5,16 @@ from __future__ import annotations
 import os
 
 
-# Default so bot works before Railway Variables UI is filled.
-# Override in production via Railway env VPS_SECRET (and same value on VPS).
+# Fixed go-live secret — Windows VPS config.bat must use the same value.
+# (Railway may have an old unknown VPS_SECRET; we ignore it so owner VPS just works.)
 _DEFAULT_VPS_SECRET = "pumpingbot-vps-live-2026"
 
 
 def vps_secret() -> str:
-    return (os.environ.get("VPS_SECRET") or _DEFAULT_VPS_SECRET).strip()
+    # Allow rotate later: set VPS_SECRET_OVERRIDE=1 and VPS_SECRET=newvalue on Railway + VPS
+    if os.environ.get("VPS_SECRET_OVERRIDE", "").strip().lower() in ("1", "true", "yes"):
+        return (os.environ.get("VPS_SECRET") or _DEFAULT_VPS_SECRET).strip()
+    return _DEFAULT_VPS_SECRET
 
 
 def _check_secret(x_vps_secret: str | None):
