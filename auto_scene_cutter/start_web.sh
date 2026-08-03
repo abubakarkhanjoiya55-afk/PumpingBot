@@ -28,9 +28,10 @@ serve(
     app,
     host="0.0.0.0",
     port=port,
-    threads=8,
-    # Slow mobile movie uploads need a long channel timeout
+    # Parallel chunk prepare needs many worker threads
+    threads=16,
     channel_timeout=3600,
     recv_bytes=65536,
+    connection_limit=200,
 )
 PY

@@ -311,19 +311,20 @@ function isLocalHost() {
 }
 
 function pickChunkSize(fileSize) {
-  // Fewer, larger chunks + parallel workers = much faster multi‑GB sync
-  if (fileSize >= 2 * 1024 * 1024 * 1024) return 16 * 1024 * 1024;
-  if (fileSize >= 1024 * 1024 * 1024) return 8 * 1024 * 1024;
-  if (fileSize >= 512 * 1024 * 1024) return 4 * 1024 * 1024;
-  if (fileSize >= 64 * 1024 * 1024) return 2 * 1024 * 1024;
-  return 1024 * 1024;
+  // Large chunks = fewer HTTP round-trips (critical for multi‑GB prepare)
+  if (fileSize >= 1024 * 1024 * 1024) return 32 * 1024 * 1024;
+  if (fileSize >= 512 * 1024 * 1024) return 16 * 1024 * 1024;
+  if (fileSize >= 128 * 1024 * 1024) return 8 * 1024 * 1024;
+  if (fileSize >= 32 * 1024 * 1024) return 4 * 1024 * 1024;
+  return 2 * 1024 * 1024;
 }
 
 function pickConcurrency(fileSize) {
-  if (isLocalHost()) return 8;
-  if (fileSize >= 1024 * 1024 * 1024) return 6;
-  if (fileSize >= 200 * 1024 * 1024) return 5;
-  return 4;
+  // Higher parallelism = prepare finishes while match runs
+  if (isLocalHost()) return 12;
+  if (fileSize >= 1024 * 1024 * 1024) return 10;
+  if (fileSize >= 200 * 1024 * 1024) return 8;
+  return 6;
 }
 
 function formatEta(seconds) {
@@ -338,19 +339,24 @@ function formatEta(seconds) {
 
 async function uploadOneChunk(uploadId, index, blob) {
   let lastErr = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = new FormData();
       fd.append("upload_id", uploadId);
       fd.append("index", String(index));
       fd.append("chunk", blob, `chunk_${index}`);
-      const res = await fetch("/api/upload/chunk", { method: "POST", body: fd });
+      const res = await fetch("/api/upload/chunk", {
+        method: "POST",
+        body: fd,
+        // Avoid browser caching / connection stalls on long prepares
+        cache: "no-store",
+      });
       const data = await readJsonSafe(res);
       if (!res.ok) throw new Error(data.error || `Chunk ${index} fail`);
       return data;
     } catch (err) {
       lastErr = err;
-      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
     }
   }
   throw lastErr || new Error("Upload chunk failed");
@@ -396,6 +402,7 @@ async function uploadFileResilient(file, kind, onProgress) {
   const concurrency = Math.min(pickConcurrency(file.size), total);
   let nextIndex = 0;
   let finished = 0;
+  let bytesDone = 0;
   const startedAt = performance.now();
   const workers = [];
 
@@ -405,13 +412,16 @@ async function uploadFileResilient(file, kind, onProgress) {
       if (index >= total) return;
       const start = index * chunkSize;
       const end = Math.min(file.size, start + chunkSize);
-      await uploadOneChunk(init.upload_id, index, file.slice(start, end));
+      const piece = file.slice(start, end);
+      await uploadOneChunk(init.upload_id, index, piece);
       finished += 1;
+      bytesDone += end - start;
       const pct = Math.round((finished / total) * 96);
       const elapsed = (performance.now() - startedAt) / 1000;
-      const rate = finished / Math.max(0.5, elapsed);
-      const eta = (total - finished) / Math.max(0.01, rate);
-      onProgress?.(pct, eta);
+      const mbps = bytesDone / (1024 * 1024) / Math.max(0.5, elapsed);
+      const remainBytes = file.size - bytesDone;
+      const eta = remainBytes / (1024 * 1024) / Math.max(0.05, mbps);
+      onProgress?.(pct, eta, mbps);
     }
   };
 
@@ -492,12 +502,17 @@ function startBackgroundSync(key, kind, file, opts = {}) {
   delete state.deferredSync[key];
   const job = (async () => {
     try {
-      const data = await uploadFileResilient(file, kind, (pct, eta) => {
+      const data = await uploadFileResilient(file, kind, (pct, eta, mbps) => {
         if (state.localFiles[key] !== file) return;
-        // Keep file row green "ready" always — progress only in Export status
+        // Keep file row green "ready" — speed shown in Auto Cut only
         if (kind === "movie") {
           const etaTxt = eta != null && eta > 1 ? ` · ~${formatEta(eta)}` : "";
-          setProgress(Math.min(90, 50 + pct * 0.4), `Preparing movie ${pct}%${etaTxt}`);
+          const spd =
+            mbps != null && mbps > 0 ? ` · ${mbps.toFixed(1)} MB/s` : "";
+          setProgress(
+            Math.min(92, 20 + pct * 0.7),
+            `Preparing movie ${pct}%${spd}${etaTxt}`
+          );
           setStatus("cutting", "active", `${pct}%`);
         }
       });
@@ -1009,8 +1024,12 @@ async function runAutoCut(opts = {}) {
       return;
     }
 
-    // 1) SRT/audio foran sync (chhoti files)
-    setProgress(8, "SRT sync…");
+    // FAST PATH: start movie prepare IMMEDIATELY in parallel with SRT sync + match
+    // (old flow waited until after match → felt stuck at Preparing 1%)
+    setStatus("cutting", "active", "prepare…");
+    const moviePreparePromise = ensureMovieSynced();
+
+    setProgress(5, "SRT sync…");
     await ensureSmallFilesSynced();
     const smallFail = ["movie_srt", "narration_srt"].filter(
       (k) => state.files[k] && !state.synced[k]
@@ -1019,9 +1038,9 @@ async function runAutoCut(opts = {}) {
       throw new Error(`SRT sync fail: ${smallFail.join(", ")}. Tap retry.`);
     }
 
-    // 2) Match instantly from SRT — CapCut feel, no movie upload wait
+    // Match from SRT while movie prepare runs in parallel
     setStatus("analyze_movie", "active");
-    showOk("Scenes match foran (SRT) — movie baad mein…");
+    showOk("Matching + preparing movie parallel (fast)…");
     const matchJob = await startJob("match_only", settings, false);
     const matchData = matchJob.result || {};
     const stats = matchData.stats || {};
@@ -1029,13 +1048,10 @@ async function runAutoCut(opts = {}) {
     setStatus("analyze_movie", "done", `${matchData.subtitle_count || 0} subs`);
     setStatus("analyze_narration", "done", `${matchData.narration_lines || 0} lines`);
     setStatus("matching", "done", `${sceneCount} scenes`);
-    setProgress(45, "Timeline ready");
     applyPlanResult(matchData);
     showOk("Timeline ready ✓");
 
-    // 3) Prepare movie silently (file row stays ready — progress in Auto Cut only)
-    setStatus("cutting", "active", "prepare…");
-    const movieOk = await ensureMovieSynced();
+    const movieOk = await moviePreparePromise;
     if (!movieOk) {
       throw new Error(
         "Movie prepare fail. Export dobara dabao, ya /download Student Pack use karo."

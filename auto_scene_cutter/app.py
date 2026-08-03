@@ -580,13 +580,13 @@ def api_upload_init():
     upload_id = uuid.uuid4().hex
     dest_name = _upload_dest_name(kind, suffix or "")
     part_path = UPLOAD_DIR / f".part_{upload_id}"
-    # Bigger chunks for multi‑GB movies (faster, fewer requests)
-    if size >= 2 * 1024 * 1024 * 1024:
+    # Bigger chunks for multi‑GB movies (faster prepare — fewer round-trips)
+    if size >= 1024 * 1024 * 1024:
+        default_chunk = 32 * 1024 * 1024
+    elif size >= 512 * 1024 * 1024:
         default_chunk = 16 * 1024 * 1024
-    elif size >= 1024 * 1024 * 1024:
-        default_chunk = 8 * 1024 * 1024
     else:
-        default_chunk = 4 * 1024 * 1024
+        default_chunk = 8 * 1024 * 1024
     chunk_size = int(payload.get("chunk_size") or default_chunk)
     chunk_size = max(256 * 1024, min(chunk_size, 32 * 1024 * 1024))
     total_chunks = (size + chunk_size - 1) // chunk_size
