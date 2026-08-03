@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 title SceneCut Pro+
 cd /d "%~dp0\.."
 
@@ -10,10 +10,18 @@ if exist ".venv\Scripts\activate.bat" (
   call ".venv\Scripts\activate.bat"
 )
 
+REM Prefer bundled portable ffmpeg if present
+if exist "%CD%\tools\ffmpeg\bin\ffmpeg.exe" (
+  set "PATH=%CD%\tools\ffmpeg\bin;%PATH%"
+)
+if exist "%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin\ffmpeg.exe" (
+  set "PATH=%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin;%PATH%"
+)
+
 where ffmpeg >nul 2>&1
 if errorlevel 1 (
-  echo WARNING: ffmpeg not found in PATH. Cutting may fail.
-  echo Install: winget install Gyan.FFmpeg
+  echo WARNING: ffmpeg nahi mila — Auto Cut fail ho sakta hai.
+  echo INSTALL_WINDOWS.bat dobara chalao (ffmpeg auto install karega).
   echo.
 )
 
@@ -21,7 +29,7 @@ set SCENECUT_DESKTOP=1
 python desktop_app.py
 if errorlevel 1 (
   echo.
-  echo App exit with error.
+  echo App error — window band mat karo, yeh message padho.
   pause
 )
 endlocal

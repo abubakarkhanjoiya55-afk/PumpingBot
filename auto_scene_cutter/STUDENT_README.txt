@@ -3,60 +3,40 @@
   AI Movie Scene Cutter
 ========================================
 
-Yeh pack aap PC pe install karke use kar sakte ho.
-Phone pe sirf LIVE DEMO chalega (browser link).
-
-
-A) LIVE DEMO (browser — install ki zaroorat nahi)
-------------------------------------------------
-Teacher / cloud link open karo, phir:
-  1) Load Sample
-  2) Auto Cut Scenes
-Mobile pe bhi same link chalega.
-
-
-B) WINDOWS PC PE INSTALL (students ke liye)
+BOHOT AASAAN (confused ho to SIRF YE PADHO)
 ------------------------------------------
-Zaroori:
-  • Python 3.10+   https://www.python.org/downloads/
-    Install ke dauran "Add python.exe to PATH" CHECK karo
-  • ffmpeg         terminal mein:
-                   winget install Gyan.FFmpeg
+1) Python 3.10+ install kar lo (Add to PATH CHECK)
+2) Is ZIP ko extract karo
+3) START_HERE.bat pe DOUBLE-CLICK karo
+4) Wait karo — baaki sab AUTOMATIC
+5) Browser khul jayega / Desktop pe "SceneCut Pro+" shortcut
 
-Phir:
-  1) Is zip ko extract karo
-  2) INSTALL_WINDOWS.bat par double-click
-  3) Desktop pe "SceneCut Pro+" shortcut aa jayegi
-  4) Shortcut open karo → Load Sample → Auto Cut
+Bas. Aur kuch mat karo.
 
 
-C) BINAA INSTALL (quick test)
------------------------------
-  1) Python + ffmpeg install hon
-  2) Folder mein command open karke:
-       pip install -r requirements.txt
-       python app.py
-  3) Browser: http://127.0.0.1:5000
+LIVE DEMO (browser — optional)
+------------------------------
+https://scenecut-production.up.railway.app/
 
 
-D) FILES
---------
-  INSTALL_WINDOWS.bat     ← Windows install (recommended)
-  desktop\INSTALL.bat     ← same installer
-  desktop\UNINSTALL.bat   ← remove
-  start.bat / start.sh    ← quick launch
-  sample_*.*              ← demo movie + narration
-  STUDENT_README.txt      ← yeh file
+WINDOWS INSTALL DETAIL
+----------------------
+START_HERE.bat / INSTALL_WINDOWS.bat khud karega:
+  • app copy
+  • pip packages
+  • ffmpeg (winget ya portable download)
+  • Desktop shortcut
+  • app launch
 
 
-E) UNINSTALL
-------------
+UNINSTALL
+---------
   desktop\UNINSTALL.bat
-  ya Start Menu → SceneCut Pro+ → Uninstall
 
 
-Support tip:
-  Video cut ke liye ffmpeg PATH pe hona zaroori hai.
-  Agar Auto Cut fail ho: ffmpeg -version check karo.
+TIP
+---
+Desktop pe 2GB+ movie CapCut jaisi tez hoti hai
+(kyunki file local hoti hai, web upload nahi).
 
 ========================================
