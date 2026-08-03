@@ -1,5 +1,20 @@
 # PumpingBot Deployment Guide
 
+## My Signals — alag Railway service
+
+Full steps: [`my_signals_service/README.md`](my_signals_service/README.md)
+
+1. Railway pe naya service banao: **`my-signals`**
+2. Dockerfile: `my_signals_service/Dockerfile` (repo root context)
+3. PumpingBot `web` variables:
+   ```
+   MY_SIGNALS_URL=https://my-signals-....up.railway.app
+   EMBED_MY_SIGNALS=0
+   ```
+4. Jab tak `MY_SIGNALS_URL` set nahi → My Signals purane `/my-signals` pe hi chalta rahega
+
+---
+
 ## Trading backend (recommended): Windows VPS hosted agents — NO MetaAPI
 
 **Owner checklist (VPS buy → go live):** [`OWNER_GO_LIVE.md`](OWNER_GO_LIVE.md)

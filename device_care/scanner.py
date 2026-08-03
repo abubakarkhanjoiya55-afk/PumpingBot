@@ -35,7 +35,13 @@ from device_care.trendlines import (
 from device_care.chart_render import attach_chart
 
 APP_NAME = "My Signals"
-APP_PREFIX = "/my-signals"
+# Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
+# Embedded in PumpingBot: default "/my-signals".
+_raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
+if _raw_prefix in ("", "/"):
+    APP_PREFIX = ""
+else:
+    APP_PREFIX = "/" + _raw_prefix.strip("/")
 LEGACY_PREFIX = "/device-care"
 
 STATIC = Path(__file__).parent / "static"

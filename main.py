@@ -86,22 +86,67 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-from device_care.scanner import router as device_care_router, legacy_router as my_signals_legacy_router, start_device_care_scanner
+# My Signals: alag Railway service preferred.
+# EMBED_MY_SIGNALS=1 → embedded on PumpingBot
+# EMBED_MY_SIGNALS=0 → redirect /my-signals → MY_SIGNALS_URL
+# unset → auto: embed jab tak MY_SIGNALS_URL set na ho (zero-downtime split)
+MY_SIGNALS_URL = (os.environ.get("MY_SIGNALS_URL") or "").rstrip("/")
+_embed_flag = os.environ.get("EMBED_MY_SIGNALS", "").strip().lower()
+if _embed_flag in ("1", "true", "yes", "on"):
+    EMBED_MY_SIGNALS = True
+elif _embed_flag in ("0", "false", "no", "off"):
+    EMBED_MY_SIGNALS = False
+else:
+    EMBED_MY_SIGNALS = not bool(MY_SIGNALS_URL)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="PumpingBot Platform")
-app.include_router(device_care_router)
-app.include_router(my_signals_legacy_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+
+if EMBED_MY_SIGNALS:
+    from device_care.scanner import (
+        router as device_care_router,
+        legacy_router as my_signals_legacy_router,
+        start_device_care_scanner,
+    )
+    app.include_router(device_care_router)
+    app.include_router(my_signals_legacy_router)
+else:
+    from fastapi.responses import RedirectResponse
+
+    def _my_signals_target(path: str = "") -> str:
+        base = MY_SIGNALS_URL or "https://my-signals-production.up.railway.app"
+        if not path:
+            return base + "/"
+        return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+    @app.get("/my-signals")
+    @app.get("/my-signals/")
+    async def my_signals_redirect_root():
+        return RedirectResponse(url=_my_signals_target(), status_code=307)
+
+    @app.get("/my-signals/{path:path}")
+    async def my_signals_redirect_path(path: str):
+        return RedirectResponse(url=_my_signals_target(path), status_code=307)
+
+    @app.get("/device-care")
+    @app.get("/device-care/")
+    @app.get("/device-care/{path:path}")
+    async def device_care_legacy_redirect(path: str = ""):
+        return RedirectResponse(url=_my_signals_target(path), status_code=307)
+
+    def start_device_care_scanner():
+        print("[STARTUP] My Signals embedded OFF — "
+              f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
     "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.26.0"   # VPS-hosted agents: mobile MT5 login → auto copy (no MetaAPI)
+API_VERSION = "3.27.0"   # My Signals split to standalone Railway service
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -191,12 +236,14 @@ def ensure_referral_code(user, db: Session) -> str:
 
 
 def build_invite_url(request, code: str) -> str:
-    """Public invite link for My Signals register prefill."""
+    """Public invite link for My Signals (standalone URL preferred)."""
     if not code:
         return ""
+    # Prefer dedicated My Signals service
+    if MY_SIGNALS_URL:
+        return f"{MY_SIGNALS_URL}/?ref={code}"
     base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
     if not base and request is not None:
-        # Prefer proxy HTTPS (Railway terminates TLS in front)
         proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip()
         host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
         if host:
@@ -211,7 +258,9 @@ def build_invite_url(request, code: str) -> str:
         return f"/my-signals/?ref={code}"
     if base.startswith("http://") and "railway.app" in base:
         base = "https://" + base[len("http://"):]
-    return f"{base}/my-signals/?ref={code}"
+    if EMBED_MY_SIGNALS:
+        return f"{base}/my-signals/?ref={code}"
+    return f"{base}/my-signals/?ref={code}"  # redirects to standalone when embed off
 
 
 def activate_subscription(user, days=SUBSCRIPTION_DAYS):
