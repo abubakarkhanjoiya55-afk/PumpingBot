@@ -213,9 +213,27 @@ print((edges[0].get("node") or {}).get("status") or "")
     echo "Download page: $PUBLIC_URL/download"
     exit 0
   fi
+  # Only fail after the latest deploy has been FAILED for multiple polls
   if printf '%s' "$STATUS" | grep -Eqi 'FAILED|CRASHED|REMOVED'; then
-    echo "::error::Railway deployment $STATUS — open build logs in Railway dashboard for service scenecut"
-    exit 1
+    FAIL_COUNT="${FAIL_COUNT:-0}"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+    if [ "$FAIL_COUNT" -ge 3 ]; then
+      echo "::error::Railway deployment $STATUS — open build logs:"
+      echo "https://railway.com/project/${PROJECT_ID}/service/${SERVICE_ID}"
+      DEP_ID="$(printf '%s' "$DEP_STATUS" | python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+edges=((d.get("data") or {}).get("deployments") or {}).get("edges") or []
+print((edges[0].get("node") or {}).get("id","") if edges else "")
+' 2>/dev/null || true)"
+      if [ -n "$DEP_ID" ]; then
+        LOGS="$(gql "{\"query\":\"query { deployment(id: \\\"$DEP_ID\\\") { id status } }\"}")" || true
+        echo "deployment detail: $LOGS"
+      fi
+      exit 1
+    fi
+  else
+    FAIL_COUNT=0
   fi
   sleep 15
 done
