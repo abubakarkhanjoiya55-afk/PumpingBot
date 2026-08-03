@@ -226,10 +226,43 @@ body {
   display: grid; place-items: center;
   color: #fff; font-size: 0.62rem; font-weight: 800;
 }
-.file-row.uploading {
-  border-color: rgba(139, 92, 255, 0.7);
-  box-shadow: 0 0 0 1px rgba(139, 92, 255, 0.25);
+.file-row.uploading,
+.file-row.syncing {
+  border-color: rgba(139, 92, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(139, 92, 255, 0.28);
   opacity: 1;
+}
+.file-row.syncing .fcheck {
+  border-color: transparent;
+  background: conic-gradient(var(--accent) 30%, #2a2a32 0);
+  animation: syncspin 0.8s linear infinite;
+  box-shadow: none;
+}
+.file-row.syncing .fcheck::after { content: none; }
+.file-row.ready:not(.syncing):not(.sync-error) .fcheck {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.file-row.sync-error {
+  border-color: rgba(248, 113, 113, 0.7);
+  box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.25);
+}
+.file-row.sync-error .fcheck {
+  border-color: #f87171;
+  background: #7f1d1d;
+  box-shadow: none;
+}
+.file-row.sync-error .fcheck::after {
+  content: "!";
+  color: #fecaca;
+}
+@keyframes syncspin { to { transform: rotate(1turn); } }
+.project-files.drop-hot,
+.player-frame.drop-hot,
+.panel.left.drop-hot {
+  outline: 2px dashed rgba(139, 92, 255, 0.7);
+  outline-offset: -4px;
+  background: rgba(139, 92, 255, 0.06);
 }
 .files-hint {
   margin-top: 10px;

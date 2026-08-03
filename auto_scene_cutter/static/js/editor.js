@@ -7,6 +7,20 @@ const state = {
     narration_audio: null,
     narration_srt: null,
   },
+  // CapCut-style: keep local File instantly; sync to server in background
+  localFiles: {
+    movie: null,
+    movie_srt: null,
+    narration_audio: null,
+    narration_srt: null,
+  },
+  synced: {
+    movie: false,
+    movie_srt: false,
+    narration_audio: false,
+    narration_srt: false,
+  },
+  uploadJobs: {},
   clips: [],
   scenes: [],
   matchPlan: [],
@@ -147,12 +161,35 @@ function writeSettingsToUi(settings) {
   $("statQuality").textContent = state.settings.quality;
 }
 
-function updateFileCard(key, name, meta) {
-  const card =
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function formatBytes(size) {
+  const n = Number(size) || 0;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
+function fileCardEl(key) {
+  return (
     document.querySelector(`.file-row[data-key="${key}"]`) ||
-    document.querySelector(`.file-card[data-key="${key}"]`);
+    document.querySelector(`.file-card[data-key="${key}"]`)
+  );
+}
+
+function updateFileCard(key, name, meta, flags = {}) {
+  const card = fileCardEl(key);
   if (!card) return;
   card.classList.remove("empty");
+  card.classList.toggle("syncing", !!flags.syncing);
+  card.classList.toggle("sync-error", !!flags.error);
+  card.classList.toggle("ready", !!flags.ready && !flags.syncing && !flags.error);
   const kind =
     key === "movie" ? "movie" : key.includes("audio") ? "audio" : "srt";
   const label =
@@ -163,21 +200,33 @@ function updateFileCard(key, name, meta) {
         : key === "narration_srt"
           ? "Narration Timestamps"
           : "Movie SRT";
+  const safeName = escapeHtml(name);
+  const safeMeta = escapeHtml(meta || label);
   if (card.classList.contains("file-row")) {
     card.innerHTML = `
       <span class="fico ${kind}" aria-hidden="true"></span>
       <span class="fname">
-        <strong title="${name}">${name}</strong>
-        <em>${meta || label}</em>
+        <strong title="${safeName}">${safeName}</strong>
+        <em>${safeMeta}</em>
       </span>
       <span class="fcheck" aria-hidden="true"></span>`;
   } else {
-    card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
+    card.innerHTML = `<strong>${safeName}</strong><div class="meta">${safeMeta}</div>`;
   }
   state.files[key] = name;
   const save = $("autoSaveLabel");
   if (save) save.textContent = "Auto-saved just now";
   updateFilesHint();
+}
+
+function setCardSyncMeta(key, meta, flags = {}) {
+  const card = fileCardEl(key);
+  if (!card) return;
+  card.classList.toggle("syncing", !!flags.syncing);
+  card.classList.toggle("sync-error", !!flags.error);
+  card.classList.toggle("ready", !!flags.ready && !flags.syncing && !flags.error);
+  const em = card.querySelector(".fname em") || card.querySelector(".meta");
+  if (em) em.textContent = meta;
 }
 
 function updateFilesHint(extraTip) {
@@ -187,13 +236,19 @@ function updateFilesHint(extraTip) {
   if (!state.files.movie) need.push("Movie File");
   if (!state.files.movie_srt) need.push("Movie SRT");
   if (!state.files.narration_srt) need.push("Narration SRT");
+  const syncing = Object.keys(state.synced).some(
+    (k) => state.files[k] && !state.synced[k] && state.uploadJobs[k]
+  );
   el.classList.remove("ready", "bad");
-  if (!need.length) {
+  if (!need.length && !syncing) {
     el.classList.add("ready");
-    el.innerHTML = "Sab files ready hain. Ab purple <strong>Export</strong> dabao — Auto Cut chalega.";
+    el.innerHTML =
+      "Files ready — CapCut jaisa select ho chuka. Ab <strong>Export</strong> dabao.";
+  } else if (!need.length && syncing) {
+    el.innerHTML = "Files select ho gayi ✓ — background sync chal raha hai…";
   } else {
     el.classList.add("bad");
-    el.innerHTML = `Abhi missing: <strong>${need.join(", ")}</strong>. Project Files pe click karke select karo.`;
+    el.innerHTML = `Click / drag-drop se select karo: <strong>${need.join(", ")}</strong>`;
   }
   if (extraTip) showOk(extraTip);
 }
@@ -227,15 +282,6 @@ function formatUploadError(err) {
   return msg || "Upload/path failed";
 }
 
-function setUploadProgress(label) {
-  const hint = $("filesHint");
-  if (hint) {
-    hint.classList.remove("ready", "bad");
-    hint.textContent = label;
-  }
-  showOk(label);
-}
-
 async function ensureServerUp() {
   try {
     const res = await fetch("/health", { cache: "no-store" });
@@ -254,7 +300,7 @@ async function fetchWithRetry(url, options, tries = 3) {
       return res;
     } catch (err) {
       lastErr = err;
-      await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+      await new Promise((r) => setTimeout(r, 350 * (i + 1)));
     }
   }
   throw lastErr || new Error("failed to fetch");
@@ -262,21 +308,23 @@ async function fetchWithRetry(url, options, tries = 3) {
 
 async function uploadFileResilient(file, kind, onProgress) {
   await ensureServerUp();
-  const CHUNK = 2 * 1024 * 1024; // 2MB — mobile-friendly
-  const useChunks = file.size > 6 * 1024 * 1024;
+  // Smaller chunks = CapCut-like smooth progress on phone nets
+  const CHUNK = 1024 * 1024;
+  const useChunks = file.size > 3 * 1024 * 1024;
 
   if (!useChunks) {
-    onProgress?.(`Uploading ${file.name}…`);
+    onProgress?.(35);
     const body = new FormData();
     body.append("kind", kind);
     body.append("file", file);
     const res = await fetchWithRetry("/api/upload", { method: "POST", body }, 3);
     const data = await readJsonSafe(res);
     if (!res.ok) throw new Error(data.error || "Upload/path failed");
+    onProgress?.(100);
     return data;
   }
 
-  onProgress?.(`Upload start: ${file.name} (${(file.size / (1024 * 1024)).toFixed(1)} MB)`);
+  onProgress?.(2);
   const initRes = await fetchWithRetry(
     "/api/upload/init",
     {
@@ -314,12 +362,11 @@ async function uploadFileResilient(file, kind, onProgress) {
         ok = true;
       } catch (err) {
         lastErr = err;
-        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       }
     }
     if (!ok) throw lastErr || new Error("Upload chunk failed");
-    const pct = Math.round(((index + 1) / total) * 100);
-    onProgress?.(`Uploading… ${pct}% (${index + 1}/${total})`);
+    onProgress?.(Math.round(((index + 1) / total) * 96));
   }
 
   const doneRes = await fetchWithRetry(
@@ -333,43 +380,170 @@ async function uploadFileResilient(file, kind, onProgress) {
   );
   const done = await readJsonSafe(doneRes);
   if (!doneRes.ok) throw new Error(done.error || "Upload complete fail");
+  onProgress?.(100);
   return done;
+}
+
+function previewLocalMedia(kind, file) {
+  if (kind === "movie") {
+    if (state.movieUrl) URL.revokeObjectURL(state.movieUrl);
+    state.movieUrl = URL.createObjectURL(file);
+    const player = $("videoPlayer");
+    if (player) {
+      player.src = state.movieUrl;
+      player.load();
+      // CapCut-like: show first frame ASAP
+      player.muted = true;
+      const kick = () => {
+        player.currentTime = 0.05;
+        player.pause();
+      };
+      player.addEventListener("loadeddata", kick, { once: true });
+    }
+    $("playerPlaceholder")?.classList.add("hide");
+  }
+  if (kind === "narration_audio") $("audioWave")?.classList.add("active");
+}
+
+function applyLocalFileInstant(key, kind, file) {
+  state.localFiles[key] = file;
+  state.synced[key] = false;
+  // Instant CapCut feel — UI + preview before any network
+  updateFileCard(key, file.name, `${formatBytes(file.size)} · added`, {
+    syncing: true,
+  });
+  previewLocalMedia(kind, file);
+  showOk(`${file.name} add ho gaya ✓`);
+  $("importModal") && ($("importModal").hidden = true);
+}
+
+function startBackgroundSync(key, kind, file) {
+  const job = (async () => {
+    try {
+      const data = await uploadFileResilient(file, kind, (pct) => {
+        // Ignore stale job if user re-selected another file
+        if (state.localFiles[key] !== file) return;
+        setCardSyncMeta(key, `${formatBytes(file.size)} · sync ${pct}%`, {
+          syncing: true,
+        });
+        updateFilesHint();
+      });
+      if (state.localFiles[key] !== file) return data;
+      state.synced[key] = true;
+      updateFileCard(key, data.filename || file.name, `${data.meta || formatBytes(file.size)} · ready`, {
+        ready: true,
+      });
+      return data;
+    } catch (err) {
+      if (state.localFiles[key] !== file) throw err;
+      state.synced[key] = false;
+      setCardSyncMeta(key, `${formatBytes(file.size)} · sync fail — tap retry`, {
+        error: true,
+      });
+      showError(formatUploadError(err));
+      updateFilesHint();
+      throw err;
+    }
+  })();
+  state.uploadJobs[key] = job;
+  job.finally(() => {
+    if (state.uploadJobs[key] === job) delete state.uploadJobs[key];
+  });
+  return job;
+}
+
+async function waitForPendingUploads() {
+  const jobs = Object.values(state.uploadJobs).filter(Boolean);
+  if (!jobs.length) return;
+  showOk("Files sync ho rahi hain… ek second");
+  await Promise.all(
+    jobs.map((j) =>
+      j.catch(() => {
+        /* surfaced on card */
+      })
+    )
+  );
+}
+
+function acceptFileForKind(kind, file) {
+  const name = (file.name || "").toLowerCase();
+  if (kind === "movie")
+    return /\.(mp4|mov|mkv|webm|avi|m4v)$/i.test(name) || file.type.startsWith("video/");
+  if (kind === "narration_audio")
+    return /\.(mp3|m4a|wav|aac|ogg|flac)$/i.test(name) || file.type.startsWith("audio/");
+  if (kind === "movie_srt" || kind === "narration_srt")
+    return /\.(srt|txt)$/i.test(name) || file.type === "application/x-subrip" || !file.type;
+  return true;
+}
+
+function ingestSelectedFile(key, kind, file) {
+  if (!file) return;
+  if (!acceptFileForKind(kind, file)) {
+    showError(
+      kind === "movie"
+        ? "Movie ke liye MP4/MOV select karo."
+        : kind.includes("srt")
+          ? "SRT file select karo (.srt)."
+          : "Sahi audio file select karo."
+    );
+    return;
+  }
+  applyLocalFileInstant(key, kind, file);
+  // Non-blocking sync — CapCut style
+  startBackgroundSync(key, kind, file);
 }
 
 function bindFileInput(inputId, key, kind) {
   const input = $(inputId);
   if (!input) return;
-  input.addEventListener("change", async (e) => {
+  input.addEventListener("change", (e) => {
     const file = e.target.files && e.target.files[0];
+    // Reset so same file can be re-picked instantly
+    e.target.value = "";
     if (!file) return;
-    const card =
-      document.querySelector(`.file-row[data-key="${key}"]`) ||
-      document.querySelector(`.file-card[data-key="${key}"]`);
-    if (card) card.classList.add("uploading");
-    try {
-      if (kind === "movie" && file.size > 400 * 1024 * 1024) {
-        showOk(
-          "Bari movie hai — upload slow ho sakti hai. Best: /download Student Pack (desktop)."
-        );
-      }
-      const data = await uploadFileResilient(file, kind, setUploadProgress);
-      updateFileCard(key, data.filename, data.meta);
-      if (kind === "movie") {
-        if (state.movieUrl) URL.revokeObjectURL(state.movieUrl);
-        state.movieUrl = URL.createObjectURL(file);
-        const player = $("videoPlayer");
-        if (player) player.src = state.movieUrl;
-        $("playerPlaceholder")?.classList.add("hide");
-      }
-      if (kind === "narration_audio") $("audioWave")?.classList.add("active");
-      updateFilesHint(data.tip || `${data.filename} upload ho gayi ✓`);
-    } catch (err) {
-      showError(formatUploadError(err));
-      updateFilesHint();
-    } finally {
-      if (card) card.classList.remove("uploading");
-      e.target.value = "";
-    }
+    ingestSelectedFile(key, kind, file);
+  });
+}
+
+function wireInstantImportDrop() {
+  const zones = [
+    document.querySelector(".project-files"),
+    document.querySelector(".player-frame"),
+    document.querySelector(".panel.left"),
+  ].filter(Boolean);
+
+  const onDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.classList.add("drop-hot");
+  };
+  const onLeave = (e) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove("drop-hot");
+  };
+  const onDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.classList.remove("drop-hot");
+    const files = [...(e.dataTransfer?.files || [])];
+    if (!files.length) return;
+    files.forEach((file) => {
+      const name = (file.name || "").toLowerCase();
+      if (acceptFileForKind("movie", file)) ingestSelectedFile("movie", "movie", file);
+      else if (acceptFileForKind("narration_audio", file))
+        ingestSelectedFile("narration_audio", "narration_audio", file);
+      else if (/\.srt$/i.test(name)) {
+        // Prefer empty SRT slot; default movie_srt then narration
+        if (!state.files.movie_srt) ingestSelectedFile("movie_srt", "movie_srt", file);
+        else ingestSelectedFile("narration_srt", "narration_srt", file);
+      } else showError(`Ye file type support nahi: ${file.name}`);
+    });
+  };
+  zones.forEach((z) => {
+    z.addEventListener("dragenter", onDrag);
+    z.addEventListener("dragover", onDrag);
+    z.addEventListener("dragleave", onLeave);
+    z.addEventListener("drop", onDrop);
   });
 }
 
@@ -685,6 +859,20 @@ async function runAutoCut(opts = {}) {
       "Pehle Movie + Movie SRT + Narration SRT select karo. Sample chahiye to ⋯ → Load Sample."
     );
     return;
+  }
+
+  // CapCut flow: user already sees files; wait for background sync before engine runs
+  if (!useSample) {
+    await waitForPendingUploads();
+    const unsynced = ["movie", "movie_srt", "narration_srt"].filter(
+      (k) => state.files[k] && !state.synced[k]
+    );
+    if (unsynced.length) {
+      showError(
+        `Sync fail: ${unsynced.join(", ")}. Red file pe tap karke retry, phir Export.`
+      );
+      return;
+    }
   }
 
   resetStatus();
@@ -1082,11 +1270,27 @@ function wireControls() {
   });
   document.querySelectorAll(".file-row[data-input]").forEach((row) => {
     row.addEventListener("click", () => {
+      const key = row.getAttribute("data-key");
+      // CapCut-like retry: failed sync → tap retries instantly (no picker)
+      if (row.classList.contains("sync-error") && key && state.localFiles[key]) {
+        const kind =
+          key === "movie"
+            ? "movie"
+            : key === "movie_srt"
+              ? "movie_srt"
+              : key === "narration_audio"
+                ? "narration_audio"
+                : "narration_srt";
+        showOk("Dobara sync…");
+        startBackgroundSync(key, kind, state.localFiles[key]);
+        return;
+      }
       const id = row.getAttribute("data-input");
       if (id && $(id)) $(id).click();
       else showError("File picker open nahi hua — page refresh karo.");
     });
   });
+  wireInstantImportDrop();
   const railActions = {
     media: () => {
       document.querySelector(".panel.left")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1202,15 +1406,22 @@ function wireControls() {
       const res = await fetch("/api/load-sample", { method: "POST" });
       const data = await readJsonSafe(res);
       if (!res.ok) throw new Error(data.error || "Sample load fail");
-      updateFileCard("movie", data.files.movie, data.files.movie_meta);
-      updateFileCard("movie_srt", data.files.movie_srt, data.files.movie_srt_meta);
-      updateFileCard(
+      const markReady = (key, name, meta) => {
+        state.synced[key] = true;
+        state.localFiles[key] = null;
+        updateFileCard(key, name, `${meta || ""} · ready`.replace(/^ ·/, ""), {
+          ready: true,
+        });
+      };
+      markReady("movie", data.files.movie, data.files.movie_meta);
+      markReady("movie_srt", data.files.movie_srt, data.files.movie_srt_meta);
+      markReady(
         "narration_srt",
         data.files.narration_srt,
         data.files.narration_srt_meta
       );
       if (data.files.narration_audio) {
-        updateFileCard(
+        markReady(
           "narration_audio",
           data.files.narration_audio,
           data.files.narration_audio_meta || ""
@@ -1223,7 +1434,7 @@ function wireControls() {
       $("playerPlaceholder")?.classList.add("hide");
       const pl = $("projectNameLabel");
       if (pl) pl.textContent = "My Project 01";
-      updateFilesHint("Sample files ready");
+      updateFilesHint("Sample files ready ✓");
       await runAutoCut({ useSample: true });
     } catch (err) {
       showError(err.message || String(err));
@@ -1453,14 +1664,19 @@ async function syncSessionFromServer() {
     Object.keys(map).forEach((key) => {
       const info = data.files[key];
       if (info && info.filename) {
-        updateFileCard(key, info.filename, info.meta);
+        state.synced[key] = true;
+        state.localFiles[key] = null;
+        updateFileCard(key, info.filename, `${info.meta || ""} · ready`, {
+          ready: true,
+        });
         if (key === "movie" && info.url) {
           $("videoPlayer").src = info.url + "?t=" + Date.now();
           $("playerPlaceholder")?.classList.add("hide");
         }
         if (key === "narration_audio") $("audioWave")?.classList.add("active");
-      } else {
+      } else if (!state.localFiles[key]) {
         state.files[key] = null;
+        state.synced[key] = false;
       }
     });
     if (data.project_name && $("projectNameLabel")) {
