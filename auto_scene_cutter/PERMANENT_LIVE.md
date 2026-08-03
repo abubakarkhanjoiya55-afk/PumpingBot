@@ -1,6 +1,15 @@
 # SceneCut Pro — Permanent Live (Railway)
 
-App already packaged for Railway. Permanent URL ke liye **ek dafa** yeh setup chahiye.
+## LIVE NOW
+- Editor: https://scenecut-production.up.railway.app/
+- Download: https://scenecut-production.up.railway.app/download
+- Health: https://scenecut-production.up.railway.app/health
+
+Service: `scenecut` (Railway project)
+
+---
+
+Redeploy / repair ke liye **ek dafa** yeh setup helpful hai:
 
 ## Aapke sath 2-minute setup
 
