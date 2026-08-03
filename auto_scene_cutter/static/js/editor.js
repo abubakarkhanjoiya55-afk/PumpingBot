@@ -617,7 +617,13 @@ async function runAutoCut(opts = {}) {
         if (li && !li.classList.contains("done")) setStatus(s, "error", "fail");
       }
     );
-    showError(err.message || String(err));
+    const msg = err.message || String(err);
+    if (/Movie File \+ Movie SRT|Narration Timestamps|missing/i.test(msg)) {
+      await syncSessionFromServer();
+      showError(msg + " — Files dobara Project Files se select karo.");
+    } else {
+      showError(msg);
+    }
   } finally {
     setBusy(false);
   }
@@ -1322,6 +1328,39 @@ function wireMobileUi() {
   });
 }
 
+async function syncSessionFromServer() {
+  try {
+    const res = await fetch("/api/session");
+    const data = await readJsonSafe(res);
+    if (!res.ok || !data.files) return;
+    const map = {
+      movie: "movie",
+      movie_srt: "movie_srt",
+      narration_audio: "narration_audio",
+      narration_srt: "narration_srt",
+    };
+    Object.keys(map).forEach((key) => {
+      const info = data.files[key];
+      if (info && info.filename) {
+        updateFileCard(key, info.filename, info.meta);
+        if (key === "movie" && info.url) {
+          $("videoPlayer").src = info.url + "?t=" + Date.now();
+          $("playerPlaceholder")?.classList.add("hide");
+        }
+        if (key === "narration_audio") $("audioWave")?.classList.add("active");
+      } else {
+        state.files[key] = null;
+      }
+    });
+    if (data.project_name && $("projectNameLabel")) {
+      $("projectNameLabel").textContent = data.project_name;
+    }
+    updateFilesHint();
+  } catch (_) {
+    /* first paint without session is fine */
+  }
+}
+
 async function boot() {
   try {
     const res = await fetch("/api/settings");
@@ -1349,6 +1388,7 @@ async function boot() {
   wireControls();
   wireMobileUi();
   renderTimeline();
+  await syncSessionFromServer();
   updateFilesHint();
 }
 

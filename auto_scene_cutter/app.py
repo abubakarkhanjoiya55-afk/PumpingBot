@@ -474,6 +474,40 @@ def api_load_sample():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.get("/api/session")
+def api_session():
+    """Return which project files the server still has (survives UI refresh, not redeploy)."""
+
+    def _one(key: str) -> dict | None:
+        raw = SESSION.get(key)
+        if not raw:
+            return None
+        path = Path(raw)
+        if not path.exists():
+            SESSION[key] = None
+            return None
+        return {
+            "filename": path.name,
+            "meta": _file_meta(path),
+            "url": "/api/movie" if key == "movie" else None,
+        }
+
+    files = {
+        "movie": _one("movie"),
+        "movie_srt": _one("movie_srt"),
+        "narration_audio": _one("narration_audio"),
+        "narration_srt": _one("narration_srt"),
+    }
+    return jsonify(
+        {
+            "ok": True,
+            "files": files,
+            "project_name": SESSION.get("project_name") or "scenecut_project",
+            "ready": bool(files["movie"] and files["movie_srt"] and files["narration_srt"]),
+        }
+    )
+
+
 @app.get("/api/settings")
 def api_get_settings():
     return jsonify(
