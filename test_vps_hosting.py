@@ -14,6 +14,18 @@ class TestVpsAuth(unittest.TestCase):
         from vps_auth import vps_secret
         self.assertEqual(vps_secret(), "test-secret-123")
 
+    def test_default_secret_when_env_empty(self):
+        import importlib
+        import vps_auth
+        with patch.dict(os.environ, {"VPS_SECRET": ""}, clear=False):
+            # empty string → fall back to built-in default
+            os.environ.pop("VPS_SECRET", None)
+            importlib.reload(vps_auth)
+            self.assertEqual(vps_auth.vps_secret(), "pumpingbot-vps-live-2026")
+        # restore test secret for other tests
+        os.environ["VPS_SECRET"] = "test-secret-123"
+        importlib.reload(vps_auth)
+
     def test_migrate_file_lists_vps_columns(self):
         text = Path("db_migrate.py").read_text(encoding="utf-8")
         for col in ("vps_desired", "vps_status", "vps_ready", "vps_balance",

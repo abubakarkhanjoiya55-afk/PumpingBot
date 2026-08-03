@@ -1,32 +1,11 @@
 name: Deploy My Signals (standalone)
 
+# Disabled for now — focus is PumpingBot. Manual only if needed later.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "device_care/**"
-      - "my_signals_service/**"
-      - ".github/workflows/my-signals-deploy.yml"
-      - "scripts/railway-deploy-my-signals.sh"
   workflow_dispatch:
 
 jobs:
-  railway:
+  skip:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Railway CLI
-        run: npm install -g @railway/cli@5.2.0
-
-      - name: Deploy My Signals → reasonable-essence web
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || 'c2f246da-a5ec-4432-ad4e-925438b85982' }}
-        run: |
-          if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "::warning::RAILWAY_TOKEN missing — skip My Signals deploy"
-            exit 0
-          fi
-          chmod +x scripts/railway-deploy-my-signals.sh
-          ./scripts/railway-deploy-my-signals.sh
+      - run: echo "My Signals auto-deploy paused — PumpingBot only"

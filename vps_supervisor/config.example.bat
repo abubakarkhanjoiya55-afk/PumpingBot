@@ -2,8 +2,8 @@
 REM Copy this file to config.bat and fill values, then run setup_vps.ps1 / start_supervisor.bat
 
 REM ===== REQUIRED (tum fill karo) =====
-set SERVER_URL=https://YOUR-APP.up.railway.app
-set VPS_SECRET=same-secret-as-railway-VPS_SECRET
+set SERVER_URL=https://web-production-c78a0.up.railway.app
+set VPS_SECRET=pumpingbot-vps-live-2026
 
 REM ===== USUALLY KEEP AS-IS =====
 set REPO_DIR=C:\PumpingBot\PumpingBot
