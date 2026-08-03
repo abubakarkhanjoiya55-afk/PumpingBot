@@ -153,13 +153,24 @@ function updateFileCard(key, name, meta) {
     document.querySelector(`.file-card[data-key="${key}"]`);
   if (!card) return;
   card.classList.remove("empty");
+  const kind =
+    key === "movie" ? "movie" : key.includes("audio") ? "audio" : "srt";
+  const label =
+    key === "movie"
+      ? "Movie File"
+      : key === "narration_audio"
+        ? "Narration Audio"
+        : key === "narration_srt"
+          ? "Narration Timestamps"
+          : "Movie SRT";
   if (card.classList.contains("file-row")) {
-    const type =
-      key === "movie" ? "MOV" : key.includes("audio") ? "AUD" : "SRT";
     card.innerHTML = `
-      <span class="ftype">${type}</span>
-      <div class="fname">${name}<span class="fmeta">${meta || ""}</span></div>
-      <span class="fcheck"></span>`;
+      <span class="fico ${kind}" aria-hidden="true"></span>
+      <span class="fname">
+        <strong title="${name}">${name}</strong>
+        <em>${meta || label}</em>
+      </span>
+      <span class="fcheck" aria-hidden="true"></span>`;
   } else {
     card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
   }
@@ -303,18 +314,22 @@ function renderTimeline() {
 
   clips.forEach((clip) => {
     const left = clip.timeline_start * state.pxPerSec;
-    const w = Math.max(44, clip.clip_duration * state.pxPerSec - 4);
+    const w = Math.max(52, clip.clip_duration * state.pxPerSec - 3);
     const block = document.createElement("button");
     block.type = "button";
     block.className =
       "scene-block" + (state.selectedClipKey === clip.key ? " selected" : "");
     block.style.left = `${left}px`;
     block.style.width = `${w}px`;
+    const n = String(clip.index).padStart(2, "0");
     const id = String(clip.scene_id ?? clip.index).padStart(3, "0");
+    const durLabel = fmtTime(clip.clip_duration).slice(3, 8); // MM:SS
     block.innerHTML = `
-      <div class="sid">SC_${id}</div>
-      <div class="sidx">#${clip.index}</div>
-      <div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
+      <span class="handle left"></span>
+      <span class="badge">${n}</span>
+      <span class="sid">SC_${id}</span>
+      <span class="sdur">${durLabel}</span>
+      <span class="handle right"></span>`;
     block.title = clip.scene_text || clip.narration_text || "";
     block.addEventListener("click", () => selectClip(clip.key));
     track.appendChild(block);
@@ -333,30 +348,48 @@ function selectClip(key) {
 
   $("propEmpty").hidden = true;
   $("propDetails").hidden = false;
-  $("propTitle").textContent = clip.matched
-    ? `Scene_${String(clip.scene_id ?? clip.index).padStart(3, "0")}`
-    : `Narration_${clip.narration_index} (skipped)`;
-  if ($("propFile")) $("propFile").textContent = state.files.movie || "movie.mp4";
-  $("propStart").textContent =
-    clip.timeline_start != null ? fmtTime(clip.timeline_start) : "—";
-  $("propEnd").textContent =
-    clip.timeline_end != null ? fmtTime(clip.timeline_end) : "—";
-  $("propDur").textContent = clip.matched ? fmtTime(clip.clip_duration) : "—";
-  if ($("propSourceIn"))
-    $("propSourceIn").textContent =
-      clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
-  if ($("propSourceOut"))
-    $("propSourceOut").textContent =
-      clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
+  if ($("propTitle")) {
+    $("propTitle").textContent = clip.matched
+      ? `Scene_${String(clip.scene_id ?? clip.index).padStart(3, "0")}`
+      : `Narration_${clip.narration_index} (skipped)`;
+  }
+  const setVal = (id, val) => {
+    const el = $(id);
+    if (!el) return;
+    if ("value" in el) el.value = val;
+    else el.textContent = val;
+  };
+  setVal("propFile", state.files.movie || "movie.mp4");
+  setVal(
+    "propStart",
+    clip.timeline_start != null ? fmtTime(clip.timeline_start) : "—"
+  );
+  setVal(
+    "propEnd",
+    clip.timeline_end != null ? fmtTime(clip.timeline_end) : "—"
+  );
+  setVal("propDur", clip.matched ? fmtTime(clip.clip_duration) : "—");
+  setVal(
+    "propSourceIn",
+    clip.clip_start != null ? fmtTime(clip.clip_start) : "—"
+  );
+  setVal(
+    "propSourceOut",
+    clip.clip_end != null ? fmtTime(clip.clip_end) : "—"
+  );
 
   const subText = clip.scene_text || clip.narration_text || "";
-  $("propSubs").textContent = String(countSubtitleLines(subText));
-  $("propNote").textContent = subText || "—";
+  if ($("propSubs")) $("propSubs").textContent = String(countSubtitleLines(subText));
+  if ($("propNote")) {
+    $("propNote").hidden = !subText;
+    $("propNote").textContent = subText || "";
+  }
 
-  $("propScore").textContent =
-    clip.score != null ? Number(clip.score).toFixed(3) : "—";
-  $("propSceneId").textContent =
-    clip.scene_id != null ? String(clip.scene_id) : "—";
+  setVal(
+    "propScore",
+    clip.score != null ? Number(clip.score).toFixed(3) : "—"
+  );
+  setVal("propSceneId", clip.scene_id != null ? String(clip.scene_id) : "—");
 
   fillSceneSelect(clip.scene_id);
   const video = $("videoPlayer");
@@ -397,6 +430,8 @@ function updatePlayhead() {
   $("timecode").textContent = `${fmtTime(t)} / ${fmtTime(dur)}`;
   const scrub = $("scrubBar");
   if (scrub && dur > 0) scrub.value = String(Math.round((t / dur) * 1000));
+  const fill = $("playerProgressFill");
+  if (fill && dur > 0) fill.style.width = `${Math.min(100, (t / dur) * 100)}%`;
 }
 
 function showDownloads(show, reportUrl) {
@@ -808,13 +843,41 @@ function wireControls() {
   };
   $("btnToggleAdvanced")?.addEventListener("click", openAdvanced);
   $("btnRailSettings")?.addEventListener("click", openAdvanced);
-  $("btnRailImport")?.addEventListener("click", () => {
-    $("fileMovie")?.click();
+  const openImportModal = () => {
+    const m = $("importModal");
+    if (m) m.hidden = false;
+  };
+  const closeImportModal = () => {
+    const m = $("importModal");
+    if (m) m.hidden = true;
+  };
+  $("btnRailImport")?.addEventListener("click", openImportModal);
+  $("btnCloseImport")?.addEventListener("click", closeImportModal);
+  $("importModal")?.addEventListener("click", (e) => {
+    if (e.target === $("importModal")) closeImportModal();
+  });
+  document.querySelectorAll(".import-item[data-input]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-input");
+      closeImportModal();
+      if (id && $(id)) $(id).click();
+    });
+  });
+  $("btnImportSample")?.addEventListener("click", () => {
+    closeImportModal();
+    $("btnSample").click();
+  });
+  document.querySelectorAll(".file-row[data-input]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.getAttribute("data-input");
+      if (id && $(id)) $(id).click();
+    });
   });
   document.querySelectorAll(".rail-btn[data-rail]").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
+      if (btn.dataset.rail === "import") openImportModal();
     });
   });
   document.querySelectorAll(".ptab").forEach((tab) => {
@@ -822,6 +885,9 @@ function wireControls() {
       document.querySelectorAll(".ptab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
     });
+  });
+  $("btnAddTrack")?.addEventListener("click", () => {
+    showOk("Extra tracks coming in next update");
   });
   document.addEventListener("click", (e) => {
     const wrap = document.querySelector(".menu-wrap");
@@ -911,10 +977,10 @@ function wireControls() {
     if (!video.src) return;
     if (video.paused) {
       video.play();
-      $("btnPlay").textContent = "Pause";
+      $("btnPlay").textContent = "❚❚";
     } else {
       video.pause();
-      $("btnPlay").textContent = "Play";
+      $("btnPlay").textContent = "▶";
     }
   });
   $("btnSeekBack").addEventListener("click", () => {
@@ -923,11 +989,21 @@ function wireControls() {
   $("btnSeekFwd").addEventListener("click", () => {
     video.currentTime = video.currentTime + 5;
   });
-  $("btnSeekBack1")?.addEventListener("click", () => {
-    video.currentTime = Math.max(0, video.currentTime - 1);
+  $("btnSeekStart")?.addEventListener("click", () => {
+    video.currentTime = 0;
   });
-  $("btnSeekFwd1")?.addEventListener("click", () => {
-    video.currentTime = video.currentTime + 1;
+  $("btnSeekEnd")?.addEventListener("click", () => {
+    if (video.duration && Number.isFinite(video.duration))
+      video.currentTime = Math.max(0, video.duration - 0.05);
+  });
+  $("volSlider")?.addEventListener("input", (e) => {
+    video.volume = Math.max(0, Math.min(1, Number(e.target.value) / 100));
+  });
+  $("btnFullscreen")?.addEventListener("click", () => {
+    const frame = document.querySelector(".player-frame");
+    if (!frame) return;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else frame.requestFullscreen?.();
   });
   $("scrubBar")?.addEventListener("input", (e) => {
     const dur =

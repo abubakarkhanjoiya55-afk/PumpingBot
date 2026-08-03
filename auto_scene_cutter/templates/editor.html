@@ -3,17 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-  <meta name="theme-color" content="#0e0e12" />
+  <meta name="theme-color" content="#0e0e10" />
   <title>SceneCut Pro — AI Movie Explanation Editor</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}" />
 </head>
 <body>
   <div class="app">
-    <!-- Top bar — reference #2 -->
     <header class="topbar">
       <div class="top-left">
         <div class="brand">
-          <div class="brand-mark" aria-hidden="true">✂</div>
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2.2">
+              <path d="M4 7h10l6 5-6 5H4V7z"/><path d="M9 7v10"/>
+            </svg>
+          </div>
           <div class="brand-text">
             <strong>SceneCut Pro</strong>
             <span>AI Movie Explanation Editor</span>
@@ -32,7 +35,7 @@
       <div class="top-center">
         <span class="proj-dot" aria-hidden="true"></span>
         <strong id="projectNameLabel">My Project 01</strong>
-        <span class="autosave" id="autoSaveLabel">Ready</span>
+        <span class="autosave" id="autoSaveLabel">Auto-saved 2m ago</span>
       </div>
 
       <div class="top-actions top-actions-desktop">
@@ -60,65 +63,65 @@
     </header>
 
     <div class="workspace-shell">
-      <!-- Left icon rail -->
+      <!-- Labeled icon rail (reference) -->
       <aside class="icon-rail" aria-label="Tools">
-        <button type="button" class="rail-btn active" data-rail="media" title="Media">▣</button>
-        <button type="button" class="rail-btn" data-rail="import" title="Import" id="btnRailImport">⬇</button>
-        <button type="button" class="rail-btn" data-rail="subs" title="Subtitles">Aa</button>
-        <button type="button" class="rail-btn" data-rail="scenes" title="Scenes">▦</button>
-        <button type="button" class="rail-btn" data-rail="audio" title="Audio">♪</button>
-        <button type="button" class="rail-btn" data-rail="text" title="Text">T</button>
-        <button type="button" class="rail-btn" data-rail="fx" title="Effects">✦</button>
-        <button type="button" class="rail-btn" data-rail="settings" title="Settings" id="btnRailSettings">⚙</button>
+        <button type="button" class="rail-btn active" data-rail="media"><span class="ri">▣</span><span class="rl">Media</span></button>
+        <button type="button" class="rail-btn" data-rail="import" id="btnRailImport"><span class="ri">⬇</span><span class="rl">Import</span></button>
+        <button type="button" class="rail-btn" data-rail="subs"><span class="ri">Aa</span><span class="rl">Subtitles</span></button>
+        <button type="button" class="rail-btn" data-rail="scenes"><span class="ri">▦</span><span class="rl">Scenes</span></button>
+        <button type="button" class="rail-btn" data-rail="audio"><span class="ri">♪</span><span class="rl">Audio</span></button>
+        <button type="button" class="rail-btn" data-rail="text"><span class="ri">T</span><span class="rl">Text</span></button>
+        <button type="button" class="rail-btn" data-rail="trans"><span class="ri">⇄</span><span class="rl">Transitions</span></button>
+        <button type="button" class="rail-btn" data-rail="fx"><span class="ri">✦</span><span class="rl">Effects</span></button>
+        <button type="button" class="rail-btn" data-rail="tools"><span class="ri">⚒</span><span class="rl">Tools</span></button>
         <div class="rail-spacer"></div>
-        <button type="button" class="rail-btn" title="Collapse" id="btnRailCollapse">«</button>
+        <button type="button" class="rail-btn" id="btnRailSettings"><span class="ri">⚙</span><span class="rl">Settings</span></button>
       </aside>
 
       <main class="workspace">
-        <!-- Left: Project Files + Auto Cut Status -->
+        <!-- Left panel -->
         <aside class="panel left">
           <div class="panel-head">Project Files</div>
           <div class="panel-body">
-            <div class="upload-row compact">
-              <label class="file-pick">
-                <span>Movie</span>
-                <input id="fileMovie" type="file" accept="video/*" />
-              </label>
-              <label class="file-pick">
-                <span>Movie SRT</span>
-                <input id="fileMovieSrt" type="file" accept=".srt" />
-              </label>
-              <label class="file-pick">
-                <span>Narration</span>
-                <input id="fileNarrationAudio" type="file" accept="audio/*" />
-              </label>
-              <label class="file-pick">
-                <span>Narration SRT</span>
-                <input id="fileNarrationSrt" type="file" accept=".srt" />
-              </label>
-            </div>
+            <!-- Hidden native inputs — Import / row click opens these -->
+            <input id="fileMovie" type="file" accept="video/*" hidden />
+            <input id="fileMovieSrt" type="file" accept=".srt" hidden />
+            <input id="fileNarrationAudio" type="file" accept="audio/*" hidden />
+            <input id="fileNarrationSrt" type="file" accept=".srt" hidden />
 
             <div id="fileCards" class="project-files">
-              <div class="file-row empty" data-key="movie">
-                <span class="ftype">MOV</span>
-                <div class="fname">Movie File — not loaded</div>
-                <span class="fcheck"></span>
-              </div>
-              <div class="file-row empty" data-key="movie_srt">
-                <span class="ftype">SRT</span>
-                <div class="fname">Movie SRT — not loaded</div>
-                <span class="fcheck"></span>
-              </div>
-              <div class="file-row empty" data-key="narration_audio">
-                <span class="ftype">AUD</span>
-                <div class="fname">Narration Audio — not loaded</div>
-                <span class="fcheck"></span>
-              </div>
-              <div class="file-row empty" data-key="narration_srt">
-                <span class="ftype">SRT</span>
-                <div class="fname">Narration Timestamps — not loaded</div>
-                <span class="fcheck"></span>
-              </div>
+              <button type="button" class="file-row empty" data-key="movie" data-input="fileMovie">
+                <span class="fico movie" aria-hidden="true"></span>
+                <span class="fname">
+                  <strong>Movie File</strong>
+                  <em>Click to import video</em>
+                </span>
+                <span class="fcheck" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="file-row empty" data-key="narration_audio" data-input="fileNarrationAudio">
+                <span class="fico audio" aria-hidden="true"></span>
+                <span class="fname">
+                  <strong>Narration Audio</strong>
+                  <em>Click to import audio</em>
+                </span>
+                <span class="fcheck" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="file-row empty" data-key="narration_srt" data-input="fileNarrationSrt">
+                <span class="fico srt" aria-hidden="true"></span>
+                <span class="fname">
+                  <strong>Narration Timestamps</strong>
+                  <em>Click to import SRT</em>
+                </span>
+                <span class="fcheck" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="file-row empty" data-key="movie_srt" data-input="fileMovieSrt">
+                <span class="fico srt" aria-hidden="true"></span>
+                <span class="fname">
+                  <strong>Movie SRT</strong>
+                  <em>Click to import SRT</em>
+                </span>
+                <span class="fcheck" aria-hidden="true"></span>
+              </button>
             </div>
 
             <div class="panel-head subhead">Auto Cut Status</div>
@@ -127,11 +130,11 @@
               <div class="progress-msg" id="progressMsg">Idle</div>
             </div>
             <ul class="status-list" id="statusList">
-              <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time">—</div></li>
-              <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time">—</div></li>
-              <li data-step="matching"><div class="check">✓</div><div>Matching Scenes</div><div class="time">—</div></li>
-              <li data-step="cutting"><div class="check">✓</div><div>Cutting Scenes (Max 5s)</div><div class="time">—</div></li>
-              <li data-step="export"><div class="check">✓</div><div>Placing on Timeline</div><div class="time">—</div></li>
+              <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time"></div></li>
+              <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time"></div></li>
+              <li data-step="matching"><div class="check">✓</div><div>Matching Scenes</div><div class="time"></div></li>
+              <li data-step="cutting"><div class="check">✓</div><div>Cutting Scenes (Max 5s)</div><div class="time"></div></li>
+              <li data-step="export"><div class="check">✓</div><div>Placing on Timeline</div><div class="time"></div></li>
             </ul>
 
             <button class="btn btn-primary btn-rerun" id="btnRerunCutMain" type="button">
@@ -141,23 +144,20 @@
             <details class="advanced-box" id="advancedBox">
               <summary>Pro Settings</summary>
               <div class="settings-grid">
-                <label>
-                  Quality
+                <label>Quality
                   <select id="setQuality">
                     <option value="fast">Fast</option>
                     <option value="balanced" selected>Balanced</option>
                     <option value="high">High</option>
                   </select>
                 </label>
-                <label>
-                  Transition
+                <label>Transition
                   <select id="setTransition">
                     <option value="none">None</option>
                     <option value="fade" selected>Fade</option>
                   </select>
                 </label>
-                <label>
-                  Max Clip (s)
+                <label>Max Clip (s)
                   <input id="setMaxClip" type="number" min="0.5" max="30" step="0.5" value="5" />
                 </label>
                 <label class="check-row">
@@ -179,33 +179,38 @@
           </div>
         </aside>
 
-        <!-- Center preview -->
+        <!-- Center -->
         <section class="center">
           <div class="player-stage">
             <div class="player-frame">
               <video id="videoPlayer"></video>
               <div class="player-placeholder" id="playerPlaceholder">
-                Movie load karo — preview yahan dikhega
+                Load a movie or use File → Load Sample
               </div>
+              <div class="player-progress"><div class="player-progress-fill" id="playerProgressFill"></div></div>
             </div>
           </div>
           <div class="transport">
             <div class="transport-time" id="timecode">00:00:00:00 / 00:00:00:00</div>
             <div class="transport-controls">
-              <button class="tbtn" id="btnSeekBack" type="button" title="-5s">&lt;&lt;</button>
-              <button class="tbtn" type="button" title="-1s" id="btnSeekBack1">&lt;</button>
-              <button class="tbtn tbtn-play" id="btnPlay" type="button" title="Play / Pause">Play</button>
-              <button class="tbtn" type="button" title="+1s" id="btnSeekFwd1">&gt;</button>
-              <button class="tbtn" id="btnSeekFwd" type="button" title="+5s">&gt;&gt;</button>
+              <button class="tbtn" id="btnSeekStart" type="button" title="Start">|<</button>
+              <button class="tbtn" id="btnSeekBack" type="button" title="-5s"><<</button>
+              <button class="tbtn tbtn-play" id="btnPlay" type="button" title="Play / Pause">▶</button>
+              <button class="tbtn" id="btnSeekFwd" type="button" title="+5s">>></button>
+              <button class="tbtn" id="btnSeekEnd" type="button" title="End">>|</button>
             </div>
             <div class="transport-right">
-              <label class="fit-label">Fit
+              <label class="vol-label" title="Volume">
+                ♪ <input type="range" id="volSlider" min="0" max="100" value="80" />
+              </label>
+              <label class="fit-label">
                 <select id="fitSelect" aria-label="Fit">
                   <option>Fit</option>
                   <option>100%</option>
                   <option>50%</option>
                 </select>
               </label>
+              <button class="tbtn" id="btnFullscreen" type="button" title="Fullscreen">⛶</button>
             </div>
           </div>
           <div class="scrub-wrap">
@@ -213,62 +218,79 @@
           </div>
         </section>
 
-        <!-- Right: Clip / Audio / Subs tabs -->
+        <!-- Right properties -->
         <aside class="panel right">
           <div class="prop-tabs" role="tablist">
             <button type="button" class="ptab active" data-tab="clip">Clip</button>
             <button type="button" class="ptab" data-tab="audio">Audio</button>
             <button type="button" class="ptab" data-tab="subs">Subtitles</button>
           </div>
-          <div class="panel-body">
+          <div class="panel-body prop-body">
             <div class="prop-card" id="propCard">
               <div class="prop-empty" id="propEmpty">
-                Timeline se koi scene select karo — yahan start/end/duration dikhega.
+                Select a scene on the timeline to edit clip properties.
               </div>
               <div id="propDetails" hidden>
                 <div class="prop-section-title">Clip Properties</div>
-                <div class="prop-title" id="propTitle">Scene_001</div>
-                <div class="prop-grid fields">
-                  <div class="prop-row"><span>File Name</span><strong id="propFile">—</strong></div>
-                  <div class="prop-row"><span>Start Time</span><strong id="propStart">—</strong></div>
-                  <div class="prop-row"><span>End Time</span><strong id="propEnd">—</strong></div>
-                  <div class="prop-row"><span>Duration</span><strong class="accent" id="propDur">—</strong></div>
-                  <div class="prop-row"><span>Source In</span><strong id="propSourceIn">—</strong></div>
-                  <div class="prop-row"><span>Source Out</span><strong id="propSourceOut">—</strong></div>
-                  <div class="prop-row"><span>Subtitle Lines</span><strong id="propSubs">—</strong></div>
-                </div>
+                <label class="field">
+                  <span>File Name</span>
+                  <input type="text" id="propFile" readonly value="—" />
+                </label>
+                <label class="field">
+                  <span>Start Time</span>
+                  <input type="text" id="propStart" readonly value="—" />
+                </label>
+                <label class="field">
+                  <span>End Time</span>
+                  <input type="text" id="propEnd" readonly value="—" />
+                </label>
+                <label class="field">
+                  <span>Duration</span>
+                  <input type="text" id="propDur" class="accent-input" readonly value="—" />
+                </label>
+                <label class="field">
+                  <span>Source In</span>
+                  <input type="text" id="propSourceIn" readonly value="—" />
+                </label>
+                <label class="field">
+                  <span>Source Out</span>
+                  <input type="text" id="propSourceOut" readonly value="—" />
+                </label>
+                <span id="propTitle" hidden></span>
+                <span id="propSubs" hidden></span>
 
                 <div class="prop-section-title">Transform</div>
-                <label class="slider-row">Scale
+                <label class="slider-row">
+                  <span>Scale</span>
                   <input type="range" min="10" max="200" value="100" disabled />
-                  <span>100%</span>
+                  <em>100%</em>
                 </label>
                 <div class="xy-row">
-                  <label>X <input type="text" value="0" disabled /></label>
-                  <label>Y <input type="text" value="0" disabled /></label>
+                  <label><span>X</span><input type="text" value="0" disabled /></label>
+                  <label><span>Y</span><input type="text" value="0" disabled /></label>
                 </div>
 
                 <div class="prop-section-title">Other</div>
-                <label class="slider-row">Speed
+                <label class="slider-row">
+                  <span>Speed</span>
                   <input type="range" min="25" max="200" value="100" disabled />
-                  <span>100%</span>
+                  <em>100%</em>
                 </label>
-                <label class="slider-row">Opacity
+                <label class="slider-row">
+                  <span>Opacity</span>
                   <input type="range" min="0" max="100" value="100" disabled />
-                  <span>100%</span>
+                  <em>100%</em>
                 </label>
 
-                <div class="prop-note" id="propNote">—</div>
+                <div class="prop-note" id="propNote" hidden>—</div>
 
-                <details class="edit-tools" open>
+                <details class="edit-tools">
                   <summary>Edit Tools</summary>
                   <div class="rematch-box">
                     <div class="rematch-label">Manual Rematch</div>
                     <div class="prop-meta">
-                      <span>Match Score</span>
-                      <strong id="propScore">—</strong>
-                      <span>Scene ID</span>
-                      <strong id="propSceneId">—</strong>
+                      <span>Match Score</span><strong id="propScore">—</strong>
+                      <span>Scene ID</span><strong id="propSceneId">—</strong>
                     </div>
                     <select id="sceneSelect"></select>
                     <div class="rematch-actions">
@@ -307,10 +329,12 @@
         <button class="tool" type="button" title="Split">◫</button>
         <button class="tool" id="btnToolDel" type="button" title="Delete">🗑</button>
         <button class="tool" id="btnUndoTool" type="button" title="Undo">↶</button>
+        <button class="tool" type="button" title="Redo">↷</button>
         <span class="tool-sep"></span>
         <button class="tool" id="btnZoomOut" type="button">−</button>
         <input type="range" id="zoomSlider" min="8" max="80" value="24" />
         <button class="tool" id="btnZoomIn" type="button">+</button>
+        <button class="tool" type="button" title="Snap">🧲</button>
         <span class="timecode" id="timelineScaleLabel">Scale: 24px/s</span>
       </div>
       <div class="timeline-body">
@@ -318,11 +342,14 @@
           <div class="ruler-gutter"></div>
           <div class="track-label">
             <span>Narration Audio</span>
-            <span class="tmeta">👁 🔒</span>
+            <span class="tmeta"><span title="Visible">👁</span> <span title="Lock">🔒</span></span>
           </div>
           <div class="track-label">
             <span>Auto Cut Scenes</span>
-            <span class="tmeta">👁 🔒</span>
+            <span class="tmeta"><span title="Visible">👁</span> <span title="Lock">🔒</span></span>
+          </div>
+          <div class="track-label add-track-label">
+            <button type="button" class="add-track" id="btnAddTrack">+ Add Track</button>
           </div>
         </div>
         <div class="tracks-wrap">
@@ -349,7 +376,6 @@
       <div class="footer-path">📁 Save Location: <strong>auto_scene_cutter/output</strong></div>
     </footer>
 
-    <!-- CapCut-style mobile dock -->
     <nav class="m-dock" aria-label="Mobile tools">
       <button type="button" class="m-dock-item" data-sheet="media"><span class="m-ico">▣</span><span>Media</span></button>
       <button type="button" class="m-dock-item m-dock-main" data-sheet="auto" id="btnMobileAuto"><span class="m-ico">✦</span><span>Auto Cut</span></button>
@@ -377,7 +403,7 @@
         <h3>Open project</h3>
         <button class="btn" id="btnCloseOpen" type="button">✕</button>
       </div>
-      <p class="modal-hint">Recent SceneCut project choose karo, ya file browse karo.</p>
+      <p class="modal-hint">Choose a recent SceneCut project, or browse a file.</p>
       <div class="recent-list" id="recentProjects"></div>
       <div class="btn-row">
         <button class="btn" id="btnBrowseProject" type="button">Browse file…</button>
@@ -386,9 +412,24 @@
     </div>
   </div>
 
-  <!-- hidden alias for subtitle count footer -->
-  <span id="statSubs" hidden>0</span>
+  <div class="modal" id="importModal" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>Import media</h3>
+        <button class="btn" id="btnCloseImport" type="button">✕</button>
+      </div>
+      <p class="modal-hint">Choose what to import into Project Files.</p>
+      <div class="import-grid">
+        <button type="button" class="import-item" data-input="fileMovie">Movie File</button>
+        <button type="button" class="import-item" data-input="fileMovieSrt">Movie SRT</button>
+        <button type="button" class="import-item" data-input="fileNarrationAudio">Narration Audio</button>
+        <button type="button" class="import-item" data-input="fileNarrationSrt">Narration SRT</button>
+        <button type="button" class="import-item primary" id="btnImportSample">Load Sample Project</button>
+      </div>
+    </div>
+  </div>
 
+  <span id="statSubs" hidden>0</span>
   <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
 </body>
 </html>
