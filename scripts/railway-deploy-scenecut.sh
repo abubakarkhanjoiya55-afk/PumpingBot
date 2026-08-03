@@ -208,10 +208,19 @@ print((edges[0].get("node") or {}).get("status") or "")
   code="$(curl -s -o /tmp/scenecut_health.json -w '%{http_code}' --max-time 12 "$PUBLIC_URL/health" || true)"
   body="$(cat /tmp/scenecut_health.json 2>/dev/null || true)"
   echo "  health try $i: HTTP $code $body"
-  if [ "$code" = "200" ]; then
+  # Wait until THE NEW deploy is SUCCESS — old container can still answer /health while BUILDING
+  if printf '%s' "$STATUS" | grep -Eqi 'SUCCESS' && [ "$code" = "200" ]; then
+    # Confirm new JS is live when we just shipped editor changes (best-effort)
+    js_ok="$(curl -s --max-time 12 "$PUBLIC_URL/static/js/editor.js" | grep -c 'ensureFilesSynced\|pickConcurrency\|deferredSync' || true)"
+    echo "  live js markers=$js_ok"
     echo "Healthy permanent URL: $PUBLIC_URL"
     echo "Download page: $PUBLIC_URL/download"
     exit 0
+  fi
+  if printf '%s' "$STATUS" | grep -Eqi 'BUILDING|QUEUED|INITIALIZING|WAITING|DEPLOYING'; then
+    echo "  waiting for deploy to leave $STATUS ..."
+    sleep 15
+    continue
   fi
   # Only fail after the latest deploy has been FAILED for multiple polls
   if printf '%s' "$STATUS" | grep -Eqi 'FAILED|CRASHED|REMOVED'; then
