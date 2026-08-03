@@ -1,11 +1,12 @@
 @echo off
-REM Agar install ho chuka ho to app seedha kholo
+REM App open - agar install ho chuka ho
 setlocal
 set "LAUNCH=%LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat"
 if exist "%LAUNCH%" (
   start "" "%LAUNCH%"
   exit /b 0
 )
-echo Pehle START_HERE.bat chalao install ke liye.
+echo Install abhi nahi hua.
+echo Pehle 1_DOUBLE_CLICK.bat chalao.
 pause
 endlocal

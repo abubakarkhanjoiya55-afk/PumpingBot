@@ -5,13 +5,17 @@
 
 BOHOT AASAAN (confused ho to SIRF YE PADHO)
 ------------------------------------------
-1) Python 3.10+ install kar lo (Add to PATH CHECK)
+1) Python 3.10+ install kar lo (Add to PATH CHECK) - tumne kar liya
 2) Is ZIP ko extract karo
-3) START_HERE.bat pe DOUBLE-CLICK karo
-4) Wait karo — baaki sab AUTOMATIC
+3) 1_DOUBLE_CLICK.bat pe DOUBLE-CLICK karo
+4) Wait karo - baaki sab AUTOMATIC
 5) Browser khul jayega / Desktop pe "SceneCut Pro+" shortcut
 
 Bas. Aur kuch mat karo.
+
+Agar pehle install ho chuka ho:
+  Win+R dabao, yeh paste karo, Enter:
+  %LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat
 
 
 LIVE DEMO (browser — optional)

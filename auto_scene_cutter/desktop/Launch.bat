@@ -20,8 +20,8 @@ if exist "%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin\ffmpeg.exe" (
 
 where ffmpeg >nul 2>&1
 if errorlevel 1 (
-  echo WARNING: ffmpeg nahi mila — Auto Cut fail ho sakta hai.
-  echo INSTALL_WINDOWS.bat dobara chalao (ffmpeg auto install karega).
+  echo WARNING: ffmpeg nahi mila - Auto Cut fail ho sakta hai.
+  echo 1_DOUBLE_CLICK.bat dobara chalao (ffmpeg auto install karega).
   echo.
 )
 
@@ -29,7 +29,7 @@ set SCENECUT_DESKTOP=1
 python desktop_app.py
 if errorlevel 1 (
   echo.
-  echo App error — window band mat karo, yeh message padho.
+  echo App error - window band mat karo, yeh message padho.
   pause
 )
 endlocal
