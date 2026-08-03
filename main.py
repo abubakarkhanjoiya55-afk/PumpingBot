@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.28.1"   # Start Bot gates VPS; long-lived agent JWT; ready from heartbeat
+API_VERSION = "3.28.2"   # PumpingBot-only go-live; default VPS_SECRET for VPS supervisor
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
