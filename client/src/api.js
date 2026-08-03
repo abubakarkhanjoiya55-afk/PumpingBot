@@ -1,6 +1,7 @@
 import axios from 'axios';
 
-const RAILWAY_API = 'https://web-production-26ef9.up.railway.app';
+// proactive-healing = PumpingBot (not My Signals / 26ef9)
+const RAILWAY_API = 'https://web-production-c78a0.up.railway.app';
 
 function resolveApiUrl() {
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;

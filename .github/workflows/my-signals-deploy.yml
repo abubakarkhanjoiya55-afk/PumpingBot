@@ -1,0 +1,40 @@
+name: Deploy My Signals (standalone)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "device_care/**"
+      - "my_signals_service/**"
+      - ".github/workflows/my-signals-deploy.yml"
+  workflow_dispatch:
+
+jobs:
+  railway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+
+      - name: Deploy My Signals service
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID || 'c2f246da-a5ec-4432-ad4e-925438b85982' }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN missing — skip My Signals deploy"
+            exit 0
+          fi
+          # Repo-root context (Dockerfile copies device_care + my_signals_service)
+          railway up \
+            --service my-signals \
+            --detach \
+            -m "My Signals standalone deploy" \
+            2>&1 || \
+          railway up \
+            --service my_signals \
+            --detach \
+            2>&1 || \
+          echo "::warning::Create Railway service named 'my-signals' once, then re-run"

@@ -332,7 +332,8 @@ export default function App() {
   const isAdmin = me?.is_admin || me?.username === 'admin';
   const isFollower = me?.role === 'follower';
   const subActive = isAdmin || me?.subscription_status === 'active' || me?.subscription_status === 'trial';
-  const canStartBot = me?.mt5_connected && (me?.mt5_ready || isFollower) && subActive;
+  const mt5Live = !!(me?.mt5_ready || me?.vps_ready);
+  const canStartBot = me?.mt5_connected && subActive && (mt5Live || isFollower || me?.trading_backend === 'vps_agent');
 
   const posProfit = (trade) => {
     const byTicket = positions.find(x => x.ticket === trade.mt5_ticket);
@@ -381,8 +382,8 @@ export default function App() {
           <>
             <h1>Dashboard</h1>
             <div style={{ display: 'flex', gap: '.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-              <span className={me?.mt5_ready ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
-                {me?.mt5_ready ? 'MT5 Live' : me?.mt5_connected ? 'MT5 Syncing…' : 'MT5 Not Connected'}
+              <span className={mt5Live ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
+                {mt5Live ? 'MT5 Live' : me?.mt5_connected ? (me?.vps_status === 'starting' ? 'VPS Connecting…' : 'MT5 Syncing…') : 'MT5 Not Connected'}
               </span>
               <span className={subActive ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
                 Sub: {me?.subscription_status || 'expired'}
@@ -575,25 +576,34 @@ export default function App() {
           <>
             <h1>MT5 Connection</h1>
             <p className="mt5-hint">
-              Multiple accounts? <strong>Disconnect</strong> karo, phir naya login connect karo.
+              Mobile se MT5 login save karo, phir Dashboard pe <strong>Start Bot</strong> —
+              trading VPS pe auto start hogi. Multiple accounts? <strong>Disconnect</strong> → naya login.
             </p>
 
             {me?.mt5_connected ? (
               <div className="mt5-status-card">
                 <div className="mt5-status-header">
-                  <span className="mt5-status-icon">{me.mt5_ready ? '✅' : '⏳'}</span>
-                  <strong className={me.mt5_ready ? 'green' : ''}>
-                    {me.mt5_ready ? 'MT5 Connected' : 'MT5 Syncing…'}
+                  <span className="mt5-status-icon">{mt5Live ? '✅' : '⏳'}</span>
+                  <strong className={mt5Live ? 'green' : ''}>
+                    {mt5Live ? 'MT5 Connected (VPS)' : (me?.bot_active ? 'VPS Connecting…' : 'Saved — Start Bot')}
                   </strong>
                 </div>
                 <div className="mt5-status-details">
                   <p><span>Login:</span> {me.mt5_login}</p>
                   <p><span>Server:</span> {me.mt5_server}</p>
                   <p><span>Balance:</span> {fmt(me.balance)}</p>
+                  {me.vps_status && <p><span>VPS:</span> {me.vps_status}</p>}
                 </div>
-                {!me.mt5_ready && (
+                {!mt5Live && me?.bot_active && (
                   <p className="mt5-sync-note">
-                    MetaApi connecting — balance $0 ho sakta hai 1–2 minute tak.
+                    VPS pe account connect ho raha hai — usually 30–90 sec.
+                    PC pe kuch install/chalane ki zarurat nahi.
+                  </p>
+                )}
+                {!mt5Live && !me?.bot_active && (
+                  <p className="mt5-sync-note">
+                    Account save ho gaya. Dashboard pe <strong>Start Bot</strong> dabao —
+                    VPS agent tabhi start hoga.
                   </p>
                 )}
                 <button
@@ -619,7 +629,10 @@ export default function App() {
             ) : (
               <div className="mt5-status-card mt5-status-off">
                 <strong>MT5 Not Connected</strong>
-                <p className="mt5-sync-note">Neeche credentials daal kar connect karo.</p>
+                <p className="mt5-sync-note">
+                  Neeche login/password/server daalo — mobile se bas itna.
+                  Phir Dashboard → Start Bot.
+                </p>
               </div>
             )}
 

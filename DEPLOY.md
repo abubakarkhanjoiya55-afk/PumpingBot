@@ -1,90 +1,75 @@
 # PumpingBot Deployment Guide
 
-## ⚠️ IMPORTANT: Railway abhi GitHub se connected NAHI hai
-
-Production abhi bhi purana code chala raha hai:
-```
-https://web-production-6a35f.up.railway.app/  →  "PumpingBot Smart API v2"
-```
-
-Naya code deploy hone ke baad yeh dikhega:
-```json
-{"message":"PumpingBot Smart API","version":"3.3.0",...}
-```
-
-Build ab **Dockerfile** se hota hai (nixpacks `pip: not found` fix).
-
-GitHub pe sab push ho chuka hai — ab Railway + Vercel connect karna hai.
+Owner go-live (VPS): [`OWNER_GO_LIVE.md`](OWNER_GO_LIVE.md)  
+Railway projects: [`RAILWAY_PROJECTS.md`](RAILWAY_PROJECTS.md)
 
 ---
 
-## Step 1 — Railway Backend (5 min)
+## Layout
 
-1. [railway.app](https://railway.app) → Login
-2. Apna **PumpingBot** project kholo
-3. **Settings** → **Source** → **Connect GitHub**
-4. Repo select karo: `abubakarkhanjoiya55-afk/PumpingBot`
-5. Branch: **`main`**
-6. **Deploy** / **Redeploy** dabao
-7. Verify: `https://web-production-6a35f.up.railway.app/` → `"version":"3.3.0"`
+| Railway project | Role |
+|-----------------|------|
+| **`proactive-healing`** | MT5 PumpingBot |
+| **`reasonable-essence`** | My Signals (+ Voltix) |
 
-Railway ab automatically:
-- Python backend install karega
-- React frontend build karega (`client/`)
-- Dono ek saath serve karega
+Merge first: https://github.com/abubakarkhanjoiya55-afk/PumpingBot/pull/47
 
 ---
 
-## Step 2 — Vercel Frontend (5 min)
+## A) PumpingBot (`proactive-healing`)
 
-### Option A — Existing project update (recommended)
+1. Service `web` → branch **`main`** → root `Dockerfile`
+2. Variables from `.env.bot.example`:
+   ```
+   TRADING_BACKEND=agent
+   USE_METAAPI=0
+   VPS_SECRET=long-random-secret
+   EMBED_MY_SIGNALS=0
+   MY_SIGNALS_URL=https://<my-signals-url>
+   SECRET_KEY=...
+   ```
+3. Check `GET /api`:
+   - `"version": "3.28.1"`
+   - `"use_metaapi": false`
+   - `"trading_backend": "agent"`
 
-1. [vercel.com](https://vercel.com) → `pumping-bot-frontend-two` project
-2. **Settings** → **General** → **Root Directory** → set to: `client`
-3. **Settings** → **Environment Variables**:
-   - `VITE_API_URL` = `https://web-production-6a35f.up.railway.app`
-4. **Deployments** → **Redeploy**
-
-### Option B — GitHub auto-deploy (new push se automatic)
-
-1. Vercel → **Add New Project** → Import `PumpingBot` from GitHub
-2. Root Directory: `client`
-3. Env: `VITE_API_URL` = `https://web-production-6a35f.up.railway.app`
-4. Deploy
-
-Root `vercel.json` already configured hai repo mein.
-
----
-
-## Step 3 — Verify frontend fix
-
-Dashboard pe yeh dikhna chahiye:
-- **OPEN TRADES:** 6 (ya jitni chal rahi hon)
-- **FLOATING P/L:** ~-$4.93 (red) — equity minus balance
-- **Open Trades** page pe har trade ka P&L
+Windows VPS: `vps_supervisor/START_HERE.bat` (see `OWNER_GO_LIVE.md`).
 
 ---
 
-## Optional — GitHub Actions auto-deploy
+## B) My Signals (`reasonable-essence`)
 
-Repo secrets add karo (GitHub → Settings → Secrets):
+Full steps: [`my_signals_service/README.md`](my_signals_service/README.md)
 
-| Secret | Kahan se milega |
-|--------|----------------|
-| `VERCEL_TOKEN` | vercel.com → Account → Tokens |
-| `VERCEL_ORG_ID` | Vercel project settings |
-| `VERCEL_PROJECT_ID` | Vercel project settings |
-| `RAILWAY_TOKEN` | railway.app → Account → Tokens |
+1. Service **`web`** (rename optional → `my-signals`)
+2. Dockerfile path: `my_signals_service/Dockerfile`
+3. Variables:
+   ```
+   MY_SIGNALS_PREFIX=
+   NTFY_TOPIC=pumpingbot-signals
+   PORT=8000
+   ```
+4. Confirm `GET /api` → `"message": "My Signals API"`
 
-Phir har `main` push pe automatic deploy hoga.
+**`voltix`** service mat chhero.
 
 ---
 
-## Kya fix hua (v3.2.0)
+## C) Optional — Vercel frontend
 
-| Fix | Detail |
-|-----|--------|
-| DB sync | Live MT5 positions → DB `open` trades sync |
-| Floating P/L | `equity - balance` calculate hota hai |
-| Open positions | Saari live MT5 positions return hoti hain |
-| New React UI | `client/` — Vercel ke liye fixed frontend |
+Agar Railway same-origin UI use kar rahe ho → Vercel zaroori nahi.
+
+Agar alag Vercel frontend:
+
+1. Root Directory: `client`
+2. Env: `VITE_API_URL` = **proactive-healing** bot URL  
+   (example: `https://web-production-c78a0.up.railway.app`)  
+   **My Signals URL (26ef9) mat dalo**
+
+---
+
+## Verify bot
+
+1. Admin → MT5 connect → **Start Bot**
+2. `GET /me/vps-status` → `vps_ready: true` (supervisor + agent up)
+3. Follower same → master trade copies

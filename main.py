@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -17,12 +17,26 @@ import asyncio
 import smtplib
 import uuid
 import shutil
+import json
 from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
-from copy_trading import copy_trade_to_followers, start_copy_watcher
+from agent_hub import agent_hub, AgentSession
+from vps_auth import require_vps_secret
+from copy_trading import (
+    copy_trade_to_followers,
+    start_copy_watcher,
+    schedule_close_followers,
+    parallel_open_master_and_followers,
+    warmup_followers,
+    agent_mode_enabled,
+    USE_METAAPI,
+    TRADING_BACKEND,
+    fanout_open_via_agents,
+    fanout_close_via_agents,
+)
 from trading_engine import (
     DAILY_MAX_LOSS_PCT, DAILY_PROFIT_TARGET, DAILY_TRAIL_START, DAILY_TRAIL_GAP,
     RISK_PER_TRADE_PCT, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL, MIN_SCORE, STRONG_SCORE,
@@ -72,22 +86,67 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-from device_care.scanner import router as device_care_router, legacy_router as my_signals_legacy_router, start_device_care_scanner
+# My Signals: alag Railway service preferred.
+# EMBED_MY_SIGNALS=1 → embedded on PumpingBot
+# EMBED_MY_SIGNALS=0 → redirect /my-signals → MY_SIGNALS_URL
+# unset → auto: embed jab tak MY_SIGNALS_URL set na ho (zero-downtime split)
+MY_SIGNALS_URL = (os.environ.get("MY_SIGNALS_URL") or "").rstrip("/")
+_embed_flag = os.environ.get("EMBED_MY_SIGNALS", "").strip().lower()
+if _embed_flag in ("1", "true", "yes", "on"):
+    EMBED_MY_SIGNALS = True
+elif _embed_flag in ("0", "false", "no", "off"):
+    EMBED_MY_SIGNALS = False
+else:
+    EMBED_MY_SIGNALS = not bool(MY_SIGNALS_URL)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="PumpingBot Platform")
-app.include_router(device_care_router)
-app.include_router(my_signals_legacy_router)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+
+if EMBED_MY_SIGNALS:
+    from device_care.scanner import (
+        router as device_care_router,
+        legacy_router as my_signals_legacy_router,
+        start_device_care_scanner,
+    )
+    app.include_router(device_care_router)
+    app.include_router(my_signals_legacy_router)
+else:
+    from fastapi.responses import RedirectResponse
+
+    def _my_signals_target(path: str = "") -> str:
+        base = MY_SIGNALS_URL or "https://my-signals-production.up.railway.app"
+        if not path:
+            return base + "/"
+        return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+    @app.get("/my-signals")
+    @app.get("/my-signals/")
+    async def my_signals_redirect_root():
+        return RedirectResponse(url=_my_signals_target(), status_code=307)
+
+    @app.get("/my-signals/{path:path}")
+    async def my_signals_redirect_path(path: str):
+        return RedirectResponse(url=_my_signals_target(path), status_code=307)
+
+    @app.get("/device-care")
+    @app.get("/device-care/")
+    @app.get("/device-care/{path:path}")
+    async def device_care_legacy_redirect(path: str = ""):
+        return RedirectResponse(url=_my_signals_target(path), status_code=307)
+
+    def start_device_care_scanner():
+        print("[STARTUP] My Signals embedded OFF — "
+              f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
     "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.24.0"   # Simple candle charts; Doji@support / S/R retest / triangle break
+API_VERSION = "3.28.1"   # Start Bot gates VPS; long-lived agent JWT; ready from heartbeat
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -177,12 +236,14 @@ def ensure_referral_code(user, db: Session) -> str:
 
 
 def build_invite_url(request, code: str) -> str:
-    """Public invite link for My Signals register prefill."""
+    """Public invite link for My Signals (standalone URL preferred)."""
     if not code:
         return ""
+    # Prefer dedicated My Signals service
+    if MY_SIGNALS_URL:
+        return f"{MY_SIGNALS_URL}/?ref={code}"
     base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
     if not base and request is not None:
-        # Prefer proxy HTTPS (Railway terminates TLS in front)
         proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip()
         host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
         if host:
@@ -197,7 +258,9 @@ def build_invite_url(request, code: str) -> str:
         return f"/my-signals/?ref={code}"
     if base.startswith("http://") and "railway.app" in base:
         base = "https://" + base[len("http://"):]
-    return f"{base}/my-signals/?ref={code}"
+    if EMBED_MY_SIGNALS:
+        return f"{base}/my-signals/?ref={code}"
+    return f"{base}/my-signals/?ref={code}"  # redirects to standalone when embed off
 
 
 def activate_subscription(user, days=SUBSCRIPTION_DAYS):
@@ -283,6 +346,13 @@ class User(Base):
     # Referral credit: $3 per referred sub — accrue then withdraw (admin pays BEP20)
     referral_balance        = Column(Float, default=0.0)
     referral_wallet         = Column(String, nullable=True)  # user USDT BEP20
+    # Hosted on admin Windows VPS (users only login from mobile)
+    vps_desired         = Column(Boolean, default=False)
+    vps_status          = Column(String, default="stopped")  # stopped/starting/running/error
+    vps_ready           = Column(Boolean, default=False)
+    vps_balance         = Column(Float, default=0.0)
+    vps_last_error      = Column(String, nullable=True)
+    vps_last_seen       = Column(DateTime, nullable=True)
     created_at          = Column(DateTime, default=datetime.utcnow)
 
 class ReferralWithdraw(Base):
@@ -422,9 +492,10 @@ def get_password_hash(password):
 def verify_password(plain, hashed):
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
-def create_access_token(data: dict):
+def create_access_token(data: dict, expires_minutes: int | None = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    minutes = ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else int(expires_minutes)
+    expire = datetime.utcnow() + timedelta(minutes=minutes)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -447,10 +518,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 # ─── Position management (indicators in trading_engine.py) ─────────────────────
 
-def close_pos(pos, reason=""):
+def close_pos_master_only(pos, reason=""):
+    """Close master position only (no follower fan-out)."""
     try:
         tick = mt5_manager.symbol_info_tick(pos.symbol)
-        if tick is None: return False, 0
+        if tick is None:
+            return False, 0
         price = tick.bid if pos.type == 0 else tick.ask
         request = {
             "action":       mt5_manager.TRADE_ACTION_DEAL,
@@ -459,7 +532,7 @@ def close_pos(pos, reason=""):
             "type":         mt5_manager.ORDER_TYPE_SELL if pos.type == 0 else mt5_manager.ORDER_TYPE_BUY,
             "position":     pos.ticket,
             "price":        price,
-            "deviation":    50,
+            "deviation":    80,
             "magic":        888888,
             "comment":      f"PB_{reason}",
             "type_time":    mt5_manager.ORDER_TIME_GTC,
@@ -469,11 +542,26 @@ def close_pos(pos, reason=""):
         if result.retcode != mt5_manager.TRADE_RETCODE_DONE:
             return False, 0
         ticket = _as_int_ticket(pos.ticket)
-        conn = mt5_manager
-        profit, _ = fetch_position_closed_profit(conn, ticket)
+        profit, _ = fetch_position_closed_profit(mt5_manager, ticket)
         return True, profit if profit is not None else pos.profit
-    except:
+    except Exception:
         return False, 0
+
+
+def close_pos(pos, reason=""):
+    """
+    Close master and kick ALL follower closes in the same instant.
+    Followers are submitted to the copy executor BEFORE master close awaits,
+    so users are not left open after master exits.
+    """
+    ticket = _as_int_ticket(getattr(pos, "ticket", 0))
+    symbol = getattr(pos, "symbol", "")
+    if ticket and symbol:
+        try:
+            schedule_close_followers(ticket, symbol)
+        except Exception as e:
+            print(f"[SYNC CLOSE] schedule followers failed: {e}")
+    return close_pos_master_only(pos, reason)
 
 def update_trade_closed(user_id, symbol, profit, close_price, ticket=None):
     db = SessionLocal()
@@ -1120,15 +1208,18 @@ def run_user_bot(user_id, login, password, server):
                     elif reason == "no_data":
                         print(f"[NO DATA] {symbol}")
                     elif reason == "no_candles":
-                        print(f"[NO CANDLES] {symbol} — M15/H1 data nahi mili, MetaApi check karo")
+                        print(f"[NO CANDLES] {symbol} — M1 data nahi mili, MetaApi check karo")
+                    elif reason == "no_pattern":
+                        print(f"[NO PATTERN] {symbol} M1 — waiting for candle setup")
+                    elif reason == "no_confirm":
+                        print(f"[NO CONFIRM] {symbol} "
+                              f"{analysis.get('pattern_name')} "
+                              f"dir={analysis.get('pattern_dir')} "
+                              f"({analysis.get('confirm')})")
                     elif reason == "no_breakout":
-                        ah = analysis.get("m15_high")
-                        al = analysis.get("m15_low")
-                        if ah and al:
-                            print(f"[NO BO] {symbol} M15 range {al:.5f}-{ah:.5f} "
-                                  f"bid={analysis.get('bid', 0):.5f} ask={analysis.get('ask', 0):.5f}")
+                        print(f"[NO SETUP] {symbol}")
                     else:
-                        print(f"[NO TICK] {symbol}")
+                        print(f"[SKIP RAW] {symbol} reason={reason}")
                     continue
 
                 trend = analysis["trend"]
@@ -1142,18 +1233,16 @@ def run_user_bot(user_id, login, password, server):
                 closes15 = analysis.get("closes15") or []
                 price = closes15[-1] if closes15 else tick.ask
 
-                pinfo = f"| {bname}" if bname else ""
-                if pname:
-                    pinfo += f" | {pname}"
-                print(f"[{now.strftime('%H:%M')}] {symbol} {trend} {trade_mode} "
-                      f"BreakoutScore:{score} HTF:{analysis['htf_aligned']} "
-                      f"M15:{analysis.get('m15_breakout')} "
-                      f"H1:{analysis.get('h1_breakout')} H4:{analysis.get('h4_breakout')} {pinfo}")
+                print(f"[{now.strftime('%H:%M:%S')}] {symbol} {trend} {trade_mode} "
+                      f"M1Score:{score} pattern={pname or bname} "
+                      f"confirm={analysis.get('m1_confirm')}")
 
                 ok, skip_reason = trade_eligible(analysis)
 
                 if ok:
-                    print(f"[BREAKOUT!] {symbol} {trend} score={score} — trade lag rahi hai")
+                    print(f"[M1 PATTERN!] {symbol} {trend} score={score} "
+                          f"{analysis.get('pattern_name')} "
+                          f"confirm={analysis.get('m1_confirm')} — sync open")
 
                 db = SessionLocal()
                 sig = Signal(
@@ -1189,15 +1278,23 @@ def run_user_bot(user_id, login, password, server):
                                     else mt5_manager.ORDER_TYPE_SELL,
                     "price":        entry,
                     "sl":           sl,
-                    "deviation":    50,
+                    "deviation":    80,
                     "magic":        888888,
-                    "comment":      f"BO_{trade_mode}_S{score}",
+                    "comment":      f"M1_{trade_mode}_S{score}",
                     "type_time":    mt5_manager.ORDER_TIME_GTC,
                     "type_filling": mt5_manager.ORDER_FILLING_IOC,
                 }
 
-                result = mt5_manager.order_send(request)
-                if result.retcode == mt5_manager.TRADE_RETCODE_DONE:
+                # Master + all followers open together (parallel fan-out)
+                if user_id == MASTER_USER_ID:
+                    result, _follower_results = parallel_open_master_and_followers(
+                        user_id, symbol, trend, score, atr, lot, balance,
+                        entry, sl, trade_mode, request, source="BOT",
+                    )
+                else:
+                    result = mt5_manager.order_send(request)
+
+                if result and result.retcode == mt5_manager.TRADE_RETCODE_DONE:
                     target = get_breakout_profit_target(
                         entry, trend, levels, lot, symbol, mt5_manager, score)
                     print(f"[{trade_mode}] TRADE PLACED! {symbol} {trend} "
@@ -1209,22 +1306,13 @@ def run_user_bot(user_id, login, password, server):
                         mt5_ticket=result.order, master_ticket=result.order,
                         status="open")
                     db.add(trade); db.commit(); db.close()
-
-                    if user_id == MASTER_USER_ID:
-                        threading.Thread(
-                            target=copy_trade_to_followers,
-                            args=(user_id, symbol, trend, score, atr,
-                                  lot, balance, entry, sl, trade_mode,
-                                  result.order, "BOT"),
-                            daemon=True
-                        ).start()
-
                     bot_pos = get_bot_positions(user_id, mt5_manager)
                 else:
-                    print(f"[FAIL] {symbol}: retcode={result.retcode}")
+                    ret = getattr(result, "retcode", None)
+                    print(f"[FAIL] {symbol}: retcode={ret}")
                     _set_symbol_cooldown(user_id, symbol, now, lost_money=False)
 
-                time.sleep(1)
+                time.sleep(0.2)
 
             time.sleep(SCAN_INTERVAL_SEC)
 
@@ -1927,13 +2015,32 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     db.commit()
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
+def _agent_session_ready(user_id: int) -> bool:
+    for a in agent_hub.list_agents():
+        if a["user_id"] == user_id and a.get("ready") and a.get("online"):
+            return True
+    return False
+
+
+def _user_trading_ready(user) -> bool:
+    """MT5 ready for UI — VPS/agent hub first, MetaAPI fallback."""
+    if agent_mode_enabled() and not USE_METAAPI:
+        if bool(getattr(user, "vps_ready", False)):
+            return True
+        return _agent_session_ready(user.id)
+    if is_master_user(user):
+        return bool(mt5_manager._ready)
+    return pool_is_ready(user.id)
+
+
 @app.get("/me")
 def get_me(request: Request,
            current_user: User = Depends(get_current_user),
            db: Session = Depends(get_db)):
     conn = user_connection(current_user)
-    reconcile_trades_with_mt5(current_user.id, conn)
-    info = conn.account_info() if conn and conn._ready else None
+    if USE_METAAPI:
+        reconcile_trades_with_mt5(current_user.id, conn)
+    info = conn.account_info() if conn and getattr(conn, "_ready", False) else None
     role = "master" if is_master_user(current_user) else "follower"
     sub_status = refresh_subscription_status(current_user)
     ref_code = ensure_referral_code(current_user, db)
@@ -1942,14 +2049,28 @@ def get_me(request: Request,
     if sub_status not in ("active", "trial") and amount_owed <= 0:
         amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
-    balance = info.balance if info else 0
-    equity  = info.equity  if info else 0
-    floating_pl = round(equity - balance, 2) if info else 0
+    # Prefer live MetaAPI info; else VPS-reported balance
+    if info:
+        balance = info.balance
+        equity = info.equity
+        floating_pl = round(equity - balance, 2)
+    else:
+        balance = float(current_user.vps_balance or 0)
+        equity = balance
+        floating_pl = 0.0
+        for a in agent_hub.list_agents():
+            if a["user_id"] == current_user.id:
+                balance = float(a.get("balance") or balance)
+                equity = float(a.get("equity") or balance)
+                floating_pl = round(equity - balance, 2)
+                break
+
+    mt5_ready = _user_trading_ready(current_user)
 
     open_trades_db = db.query(Trade).filter(
         Trade.user_id == current_user.id, Trade.status == "open"
     ).count()
-    live_positions = get_live_positions(current_user.id, conn) if conn else []
+    live_positions = get_live_positions(current_user.id, conn) if conn and USE_METAAPI else []
     open_trades_count = max(open_trades_db, len(live_positions))
 
     expires_at = current_user.subscription_expires_at
@@ -1966,7 +2087,10 @@ def get_me(request: Request,
         "is_admin":          is_master_user(current_user),
         "role":              role,
         "mt5_connected":     current_user.mt5_login is not None,
-        "mt5_ready":         mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id),
+        "mt5_ready":         mt5_ready,
+        "vps_ready":         bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
+        "vps_status":        current_user.vps_status or "stopped",
+        "trading_backend":   "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
         "bot_active":        current_user.bot_active,
@@ -2188,16 +2312,51 @@ async def connect_mt5(creds: MT5Credentials,
                       current_user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
     """
-    Master (admin): existing MetaApi account use karta hai
-    Follower: MetaApi mein unka account dhundta hai ya naya banata hai
-    Har bar file update karne ki zaroorat nahi!
+    Default (agent mode): sirf credentials save — trading local Windows agent se.
+    Legacy MetaAPI: USE_METAAPI=1 pe cloud terminal setup.
     """
-    print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login}")
+    print(f"[CONNECT] User {current_user.username} connecting login={creds.mt5_login} "
+          f"backend={TRADING_BACKEND} metaapi={USE_METAAPI}")
 
     if current_user.mt5_login and current_user.mt5_login != creds.mt5_login:
         active_bots[current_user.id] = False
         current_user.bot_active = False
         print(f"[CONNECT] Switching account {current_user.mt5_login} → {creds.mt5_login}")
+
+    # ── Preferred path: VPS-hosted agents (mobile login only) ─────────
+    if agent_mode_enabled() and not USE_METAAPI:
+        current_user.mt5_login = creds.mt5_login
+        current_user.mt5_password = creds.mt5_password
+        current_user.mt5_server = creds.mt5_server
+        # Credentials only — VPS agent starts on /bot/start (Start Bot)
+        if current_user.bot_active:
+            current_user.vps_desired = True
+            current_user.vps_status = "starting"
+            current_user.vps_ready = False
+        else:
+            current_user.vps_desired = False
+            current_user.vps_status = "idle"
+            current_user.vps_ready = False
+        current_user.vps_last_error = None
+        db.commit()
+        role = "master" if is_master_user(current_user) else "follower"
+        online = (
+            bool(current_user.vps_ready)
+            or any(a["user_id"] == current_user.id and a.get("ready")
+                   for a in agent_hub.list_agents())
+        )
+        return {
+            "message": (
+                "MT5 account saved. Ab Start Bot dabao — VPS pe agent auto chalega. "
+                "Mobile se bas itna; PC pe kuch install nahi."
+            ),
+            "balance": float(current_user.vps_balance or 0),
+            "mt5_ready": online,
+            "role": role,
+            "trading_backend": "vps_agent",
+            "agent_online": online,
+            "vps_status": current_user.vps_status or "idle",
+        }
 
     if is_master_user(current_user):
         # ── Master: existing connection use karo ──────────────────────────
@@ -2278,6 +2437,9 @@ def disconnect_mt5(current_user: User = Depends(get_current_user),
 
     active_bots[current_user.id] = False
     current_user.bot_active = False
+    current_user.vps_desired = False
+    current_user.vps_status = "stopped"
+    current_user.vps_ready = False
 
     if is_master_user(current_user):
         metaapi_ready_event.clear()
@@ -2316,7 +2478,36 @@ def start_bot(current_user: User = Depends(get_current_user),
 
     active_bots[current_user.id] = True
     current_user.bot_active = True
+    current_user.vps_desired = True
+    if not current_user.vps_ready:
+        current_user.vps_status = current_user.vps_status or "starting"
     db.commit()
+
+    # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
+    if agent_mode_enabled() and not USE_METAAPI:
+        online = bool(current_user.vps_ready) or any(
+            a["user_id"] == current_user.id and a.get("ready")
+            for a in agent_hub.list_agents()
+        )
+        if is_master_user(current_user):
+            return {
+                "message": (
+                    "Master bot ON. VPS pe master agent auto chalega — "
+                    "group users sirf mobile se MT5 login karein, trades copy ho jayengi."
+                ),
+                "trading_backend": "vps_agent",
+                "agent_online": online,
+                "vps_status": current_user.vps_status,
+            }
+        return {
+            "message": (
+                "Copy trading ON. Aapka account VPS pe connect ho raha hai — "
+                "mobile se bas itna kaafi. Jab status ready ho, master trades mirror hongi."
+            ),
+            "trading_backend": "vps_agent",
+            "agent_online": online,
+            "vps_status": current_user.vps_status,
+        }
 
     if is_master_user(current_user):
         if not mt5_manager._ready:
@@ -2342,8 +2533,11 @@ def stop_bot(current_user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     active_bots[current_user.id] = False
     current_user.bot_active = False
+    current_user.vps_desired = False
+    current_user.vps_status = "stopped"
+    current_user.vps_ready = False
     db.commit()
-    return {"message": "Bot stopped"}
+    return {"message": "Bot stopped — VPS agent bhi band ho jayega"}
 
 @app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
@@ -2391,15 +2585,22 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
 @app.get("/status")
 def get_status(current_user: User = Depends(get_current_user)):
     conn = user_connection(current_user)
-    ready = mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id)
-    info = conn.account_info() if conn and ready else None
+    meta_ready = mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id)
+    ready = _user_trading_ready(current_user)
+    info = conn.account_info() if conn and meta_ready else None
+    balance = info.balance if info else float(current_user.vps_balance or 0)
     return {
-        "metaapi_ready":    ready,
+        "metaapi_ready":    meta_ready,
         "event_set":        metaapi_ready_event.is_set(),
-        "bot_active":       active_bots.get(current_user.id, False),
-        "account_info_ok":  info is not None,
-        "balance":          info.balance if info else None,
+        "bot_active":       active_bots.get(current_user.id, False) or bool(current_user.bot_active),
+        "account_info_ok":  info is not None or bool(current_user.vps_ready),
+        "balance":          balance,
         "role":             "master" if is_master_user(current_user) else "follower",
+        "trading_backend":  "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
+        "vps_ready":        bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
+        "vps_status":       current_user.vps_status or "stopped",
+        "mt5_ready":        ready,
+        "agents_online":    len(agent_hub.list_agents()),
     }
 
 
@@ -2407,10 +2608,13 @@ def get_status(current_user: User = Depends(get_current_user)):
 @app.on_event("startup")
 async def startup_event():
     migrate_schema(engine)
+    agent_hub.bind_loop(asyncio.get_running_loop())
     threading.Thread(target=daily_scheduler, daemon=True).start()
-    start_copy_watcher()
+    if USE_METAAPI:
+        start_copy_watcher()
     start_device_care_scanner()
-    print("[STARTUP] Daily scheduler + copy watcher + My Signals started")
+    print(f"[STARTUP] backend={TRADING_BACKEND} USE_METAAPI={USE_METAAPI} "
+          f"agent_hub ready; copy_watcher={'on' if USE_METAAPI else 'off'}")
 
     db = SessionLocal()
     try:
@@ -2486,76 +2690,76 @@ async def startup_event():
         # Expire any packages that ended while server was down
         pause_expired_subscriptions()
 
-        # FIX: Get admin user and pass credentials to initialize()
-        # (previously called with no args — this was the root cause!)
-        user = db.query(User).filter(User.username == "admin").first()
-        if user and user.mt5_login:
-            print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
-            mt5_manager.initialize(
-                login=user.mt5_login,
-                password=user.mt5_password,
-                server=user.mt5_server
-            )
+        if not USE_METAAPI:
+            print("[STARTUP] MetaAPI disabled — using local MT5 agents "
+                  "(Windows local_agent). No cloud terminal init.")
+            print("[STARTUP] Master/followers: Start Bot → VPS supervisor hosts agents")
         else:
-            print("[STARTUP] No credentials found — calling initialize() without args")
-            mt5_manager.initialize()
+            # Legacy MetaAPI cloud terminals
+            user = db.query(User).filter(User.username == "admin").first()
+            if user and user.mt5_login:
+                print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
+                mt5_manager.initialize(
+                    login=user.mt5_login,
+                    password=user.mt5_password,
+                    server=user.mt5_server
+                )
+            else:
+                print("[STARTUP] No credentials found — calling initialize() without args")
+                mt5_manager.initialize()
 
-        # FIX: Wait up to 90 seconds (was 45 iterations of 2s = 90s)
-        print("[STARTUP] Waiting for MetaApi _ready...")
-        for i in range(45):
+            print("[STARTUP] Waiting for MetaApi _ready...")
+            for i in range(45):
+                if mt5_manager._ready:
+                    break
+                await asyncio.sleep(2)
+                if i % 5 == 0:
+                    print(f"[STARTUP] Still waiting... {i*2}s elapsed")
+
+            print(f"[STARTUP] MetaApi _ready = {mt5_manager._ready}")
+
             if mt5_manager._ready:
-                break
-            await asyncio.sleep(2)
-            if i % 5 == 0:
-                print(f"[STARTUP] Still waiting... {i*2}s elapsed")
+                metaapi_ready_event.set()
+                print("[STARTUP] metaapi_ready_event SET ✓")
+                try:
+                    warmup_followers()
+                except Exception as e:
+                    print(f"[STARTUP] follower warmup: {e}")
+            else:
+                print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
 
-        print(f"[STARTUP] MetaApi _ready = {mt5_manager._ready}")
+            user = db.query(User).filter(User.username == "admin").first()
+            if user and mt5_manager._ready and not active_bots.get(user.id):
+                active_bots[user.id] = True
+                user.bot_active = True
+                db.commit()
+                threading.Thread(
+                    target=run_user_bot_watchdog,
+                    args=(user.id, user.mt5_login,
+                          user.mt5_password, user.mt5_server),
+                    daemon=True).start()
+                print("[STARTUP] PumpingBot auto-started!")
 
-        if mt5_manager._ready:
-            # FIX: Set the threading.Event so bot thread can proceed
-            metaapi_ready_event.set()
-            print("[STARTUP] metaapi_ready_event SET ✓")
-        else:
-            print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
-            print("[STARTUP] Go to MT5 page → Connect → then Start Bot manually")
+            followers = db.query(User).filter(
+                User.bot_active == True,
+                User.username != "admin",
+                User.metaapi_account_id != None,
+                User.subscription_status == "active",
+            ).all()
 
-        # Auto-start bot only when MetaApi is confirmed ready
-        user = db.query(User).filter(User.username == "admin").first()
-        if user and mt5_manager._ready and not active_bots.get(user.id):
-            active_bots[user.id] = True
-            user.bot_active = True
+            for follower in followers:
+                if not has_active_subscription(follower):
+                    follower.bot_active = False
+                    active_bots[follower.id] = False
+                    continue
+                try:
+                    print(f"[STARTUP] Reconnecting follower: {follower.username}")
+                    conn = create_user_manager(follower.metaapi_account_id)
+                    pool_add(follower.id, conn)
+                    print(f"[STARTUP] Follower {follower.username} reconnected ✅")
+                except Exception as fe:
+                    print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
             db.commit()
-            threading.Thread(
-                target=run_user_bot_watchdog,
-                args=(user.id, user.mt5_login,
-                      user.mt5_password, user.mt5_server),
-                daemon=True).start()
-            print("[STARTUP] PumpingBot auto-started!")
-        elif not mt5_manager._ready:
-            print("[STARTUP] Auto-start skipped — MetaApi not ready")
-            print("[STARTUP] Use /connect-mt5 then /bot/start after deployment")
-
-        # ── Followers ko bhi reconnect karo (sirf active subscription) ─────
-        followers = db.query(User).filter(
-            User.bot_active == True,
-            User.username != "admin",
-            User.metaapi_account_id != None,
-            User.subscription_status == "active",
-        ).all()
-
-        for follower in followers:
-            if not has_active_subscription(follower):
-                follower.bot_active = False
-                active_bots[follower.id] = False
-                continue
-            try:
-                print(f"[STARTUP] Reconnecting follower: {follower.username}")
-                conn = create_user_manager(follower.metaapi_account_id)
-                pool_add(follower.id, conn)
-                print(f"[STARTUP] Follower {follower.username} reconnected ✅")
-            except Exception as fe:
-                print(f"[STARTUP] Follower {follower.username} reconnect failed: {fe}")
-        db.commit()
 
     except Exception as e:
         import traceback
@@ -2565,11 +2769,359 @@ async def startup_event():
         db.close()
 
 
+def _user_from_token(token: str, db: Session):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            return None
+        return db.query(User).filter(
+            or_(User.username == username, User.email == username)
+        ).first()
+    except Exception:
+        return None
+
+
+def _handle_master_trade_open(user: "User", msg: dict):
+    """Master agent opened a trade locally — fan-out to follower agents + DB."""
+    symbol = msg.get("symbol")
+    side = msg.get("side")
+    ticket = int(msg.get("master_ticket") or 0)
+    lot = float(msg.get("lot") or 0.01)
+    balance = float(msg.get("balance") or 0)
+    entry = float(msg.get("entry") or 0)
+    sl = float(msg.get("sl") or 0)
+    score = float(msg.get("score") or 50)
+    atr = float(msg.get("atr") or 0)
+    source = msg.get("source") or "BOT"
+
+    db = SessionLocal()
+    try:
+        existing = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.mt5_ticket == ticket,
+            Trade.status == "open",
+        ).first()
+        if not existing and ticket:
+            db.add(Trade(
+                user_id=user.id,
+                symbol=symbol,
+                trade_type=side,
+                lot=lot,
+                open_price=entry,
+                score=score,
+                mt5_ticket=ticket,
+                master_ticket=ticket,
+                status="open",
+            ))
+            db.commit()
+    finally:
+        db.close()
+
+    threading.Thread(
+        target=fanout_open_via_agents,
+        args=(symbol, side, score, atr, lot, balance, entry, sl, ticket, source),
+        daemon=True,
+    ).start()
+    print(f"[AGENT HUB] master_trade_open {symbol} {side} ticket={ticket}")
+
+
+def _handle_master_trade_close(user: "User", msg: dict):
+    ticket = int(msg.get("master_ticket") or 0)
+    symbol = msg.get("symbol") or ""
+    profit = msg.get("profit")
+
+    db = SessionLocal()
+    try:
+        row = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.mt5_ticket == ticket,
+            Trade.status == "open",
+        ).first()
+        if row:
+            row.status = "closed"
+            row.closed_at = datetime.utcnow()
+            if profit is not None:
+                row.profit = float(profit)
+            db.commit()
+    finally:
+        db.close()
+
+    threading.Thread(
+        target=fanout_close_via_agents,
+        args=(ticket, symbol),
+        daemon=True,
+    ).start()
+    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol}")
+
+
+@app.websocket("/ws/agent")
+async def ws_agent(websocket: WebSocket, token: str = Query(...)):
+    """Local Windows MT5 agents connect here (no MetaAPI)."""
+    await websocket.accept()
+    db = SessionLocal()
+    user = _user_from_token(token, db)
+    db.close()
+    if not user:
+        await websocket.send_text(json.dumps({"type": "error", "error": "unauthorized"}))
+        await websocket.close(code=4401)
+        return
+
+    role_default = "master" if is_master_user(user) else "follower"
+    session = AgentSession(
+        user_id=user.id,
+        username=user.username,
+        role=role_default,
+        websocket=websocket,
+        login=user.mt5_login,
+        server=user.mt5_server,
+    )
+    await agent_hub.register(session)
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+
+            mtype = msg.get("type")
+            if mtype == "hello":
+                session.role = (msg.get("role") or role_default).lower()
+                session.login = msg.get("login") or session.login
+                session.server = msg.get("server") or session.server
+                session.balance = float(msg.get("balance") or 0)
+                session.equity = float(msg.get("equity") or 0)
+                session.ready = bool(msg.get("ready"))
+                session.last_seen = time.time()
+                await websocket.send_text(json.dumps({
+                    "type": "welcome",
+                    "user_id": user.id,
+                    "role": session.role,
+                    "backend": TRADING_BACKEND,
+                }))
+                continue
+
+            if mtype in ("heartbeat", "pong"):
+                await agent_hub.touch(
+                    user.id,
+                    balance=msg.get("balance"),
+                    equity=msg.get("equity"),
+                    ready=msg.get("ready"),
+                )
+                # Persist for /me dashboard (mobile) without waiting on supervisor
+                try:
+                    dbh = SessionLocal()
+                    row = dbh.query(User).filter(User.id == user.id).first()
+                    if row:
+                        if msg.get("balance") is not None:
+                            row.vps_balance = float(msg.get("balance") or 0)
+                        row.vps_ready = bool(msg.get("ready"))
+                        row.vps_status = "running" if msg.get("ready") else "starting"
+                        row.vps_last_seen = datetime.utcnow()
+                        row.vps_last_error = None
+                        dbh.commit()
+                    dbh.close()
+                except Exception as e:
+                    print(f"[AGENT HUB] heartbeat db: {e}")
+                continue
+
+            if mtype == "ack":
+                agent_hub.resolve_response(user.id, msg)
+                continue
+
+            if mtype == "master_trade_open":
+                if is_master_user(user) or session.role == "master":
+                    # Only fan-out when master has Start Bot ON
+                    db_chk = SessionLocal()
+                    try:
+                        row = db_chk.query(User).filter(User.id == user.id).first()
+                        master_on = bool(row and row.bot_active)
+                    finally:
+                        db_chk.close()
+                    if master_on:
+                        _handle_master_trade_open(user, msg)
+                    else:
+                        print(f"[AGENT HUB] ignore master_trade_open — bot not started")
+                    await websocket.send_text(json.dumps({
+                        "type": "ack", "req_id": msg.get("req_id"),
+                        "ok": master_on,
+                        "detail": None if master_on else "bot_inactive",
+                    }))
+                continue
+
+            if mtype == "master_trade_close":
+                if is_master_user(user) or session.role == "master":
+                    _handle_master_trade_close(user, msg)
+                    await websocket.send_text(json.dumps({
+                        "type": "ack", "req_id": msg.get("req_id"), "ok": True,
+                    }))
+                continue
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"[AGENT HUB] ws error user={user.id}: {e}")
+    finally:
+        await agent_hub.unregister(user.id, websocket)
+
+
+@app.get("/agents")
+def list_agents(current_user: User = Depends(get_current_user)):
+    """Online local MT5 agents (master + followers)."""
+    agents = agent_hub.list_agents()
+    if not is_master_user(current_user):
+        agents = [a for a in agents if a["user_id"] == current_user.id]
+    return {
+        "trading_backend": TRADING_BACKEND,
+        "use_metaapi": USE_METAAPI,
+        "agents": agents,
+        "online_count": len(agents),
+    }
+
+
+# ─── Windows VPS supervisor APIs (mobile users → hosted agents) ───────────────
+
+class VpsAgentReport(BaseModel):
+    user_id: int
+    status: str = "running"  # starting/running/error/stopped
+    ready: bool = False
+    balance: float = 0.0
+    equity: float = 0.0
+    error: Optional[str] = None
+    pid: Optional[int] = None
+
+
+class VpsReportIn(BaseModel):
+    host: Optional[str] = None
+    agents: list[VpsAgentReport] = []
+
+
+@app.get("/admin/vps/roster")
+def vps_roster(_: bool = Depends(require_vps_secret), db: Session = Depends(get_db)):
+    """
+    Windows VPS supervisor polls this — returns every user that should have
+    a hosted MT5 agent (credentials included; protect with VPS_SECRET).
+    """
+    users = db.query(User).filter(
+        User.vps_desired == True,
+        User.mt5_login != None,
+        User.mt5_password != None,
+        User.mt5_server != None,
+    ).all()
+    out = []
+    for u in users:
+        if not is_master_user(u) and not has_active_subscription(u):
+            # Don't host expired followers
+            if u.vps_desired:
+                u.vps_desired = False
+                u.bot_active = False
+                u.vps_status = "stopped"
+            continue
+        role = "master" if is_master_user(u) else "follower"
+        out.append({
+            "user_id": u.id,
+            "username": u.username,
+            "role": role,
+            "mt5_login": u.mt5_login,
+            "mt5_password": u.mt5_password,
+            "mt5_server": u.mt5_server,
+            "bot_active": bool(u.bot_active),
+            "vps_status": u.vps_status,
+        })
+    db.commit()
+    return {
+        "ok": True,
+        "count": len(out),
+        "users": out,
+        "trading_backend": TRADING_BACKEND,
+    }
+
+
+@app.post("/admin/vps/agent-token/{user_id}")
+def vps_agent_token(
+    user_id: int,
+    _: bool = Depends(require_vps_secret),
+    db: Session = Depends(get_db),
+):
+    """Issue a long-lived JWT so the hosted agent can connect to /ws/agent."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    # 30 days — supervisor refreshes token on each agent (re)start
+    token = create_access_token({"sub": user.username, "scope": "vps_agent"}, expires_minutes=60 * 24 * 30)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user.id,
+        "username": user.username,
+        "role": "master" if is_master_user(user) else "follower",
+        "expires_days": 30,
+    }
+
+
+@app.post("/admin/vps/report")
+def vps_report(
+    body: VpsReportIn,
+    _: bool = Depends(require_vps_secret),
+    db: Session = Depends(get_db),
+):
+    """Supervisor heartbeat — updates per-user VPS agent status for the dashboard."""
+    now = datetime.utcnow()
+    updated = 0
+    for item in body.agents:
+        user = db.query(User).filter(User.id == item.user_id).first()
+        if not user:
+            continue
+        user.vps_status = item.status
+        # Ready truth: agent WS heartbeat owns True; supervisor can only clear
+        # on stop/error, or set True when it has confirmed MT5 ready.
+        if item.status in ("stopped", "error"):
+            user.vps_ready = False
+        elif item.ready:
+            user.vps_ready = True
+        if item.balance:
+            user.vps_balance = float(item.balance or 0)
+        user.vps_last_error = item.error
+        user.vps_last_seen = now
+        updated += 1
+    db.commit()
+    return {"ok": True, "updated": updated, "host": body.host}
+
+
+@app.get("/me/vps-status")
+def my_vps_status(current_user: User = Depends(get_current_user)):
+    """Mobile dashboard: is my hosted agent ready?"""
+    hub_online = any(
+        a["user_id"] == current_user.id and a.get("ready")
+        for a in agent_hub.list_agents()
+    )
+    return {
+        "vps_desired": bool(current_user.vps_desired),
+        "vps_status": current_user.vps_status or "stopped",
+        "vps_ready": bool(current_user.vps_ready) or hub_online,
+        "vps_balance": float(current_user.vps_balance or 0),
+        "vps_last_error": current_user.vps_last_error,
+        "vps_last_seen": (
+            current_user.vps_last_seen.isoformat()
+            if current_user.vps_last_seen else None
+        ),
+        "mt5_login": current_user.mt5_login,
+        "mt5_server": current_user.mt5_server,
+        "bot_active": bool(current_user.bot_active),
+        "trading_backend": "vps_agent" if not USE_METAAPI else "metaapi",
+    }
+
+
 @app.get("/api")
 def api_root():
     return {
         "message":       "PumpingBot Smart API",
         "version":       API_VERSION,
+        "trading_backend": TRADING_BACKEND,
+        "use_metaapi":   USE_METAAPI,
+        "agents_online": len(agent_hub.list_agents()),
         "metaapi_ready": mt5_manager._ready,
         "event_set":     metaapi_ready_event.is_set(),
     }

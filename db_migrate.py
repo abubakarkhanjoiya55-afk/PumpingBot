@@ -17,6 +17,13 @@ USER_COLUMNS = {
     "subscription_fee_owed": "FLOAT DEFAULT 10.0",
     "referral_balance": "FLOAT DEFAULT 0.0",
     "referral_wallet": "VARCHAR",
+    # Windows VPS hosted local agents (mobile users — no PC agent)
+    "vps_desired": "BOOLEAN DEFAULT 0",
+    "vps_status": "VARCHAR DEFAULT 'stopped'",
+    "vps_ready": "BOOLEAN DEFAULT 0",
+    "vps_balance": "FLOAT DEFAULT 0.0",
+    "vps_last_error": "VARCHAR",
+    "vps_last_seen": "DATETIME",
 }
 
 TRADE_COLUMNS = {
