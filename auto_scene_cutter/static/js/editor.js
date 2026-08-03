@@ -21,6 +21,7 @@ const state = {
     narration_srt: false,
   },
   uploadJobs: {},
+  deferredSync: {},
   clips: [],
   scenes: [],
   matchPlan: [],
@@ -309,12 +310,55 @@ async function fetchWithRetry(url, options, tries = 3) {
   throw lastErr || new Error("failed to fetch");
 }
 
+function isLocalHost() {
+  const h = location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
 function pickChunkSize(fileSize) {
-  // Multi‑GB movies need larger chunks or sync takes forever / hits limits
-  if (fileSize >= 2 * 1024 * 1024 * 1024) return 8 * 1024 * 1024;
+  // Fewer, larger chunks + parallel workers = much faster multi‑GB sync
+  if (fileSize >= 2 * 1024 * 1024 * 1024) return 16 * 1024 * 1024;
+  if (fileSize >= 1024 * 1024 * 1024) return 8 * 1024 * 1024;
   if (fileSize >= 512 * 1024 * 1024) return 4 * 1024 * 1024;
   if (fileSize >= 64 * 1024 * 1024) return 2 * 1024 * 1024;
   return 1024 * 1024;
+}
+
+function pickConcurrency(fileSize) {
+  if (isLocalHost()) return 8;
+  if (fileSize >= 1024 * 1024 * 1024) return 6;
+  if (fileSize >= 200 * 1024 * 1024) return 5;
+  return 4;
+}
+
+function formatEta(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return `${m}m ${r}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+async function uploadOneChunk(uploadId, index, blob) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const fd = new FormData();
+      fd.append("upload_id", uploadId);
+      fd.append("index", String(index));
+      fd.append("chunk", blob, `chunk_${index}`);
+      const res = await fetch("/api/upload/chunk", { method: "POST", body: fd });
+      const data = await readJsonSafe(res);
+      if (!res.ok) throw new Error(data.error || `Chunk ${index} fail`);
+      return data;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr || new Error("Upload chunk failed");
 }
 
 async function uploadFileResilient(file, kind, onProgress) {
@@ -323,18 +367,18 @@ async function uploadFileResilient(file, kind, onProgress) {
   const useChunks = file.size > 3 * 1024 * 1024;
 
   if (!useChunks) {
-    onProgress?.(35);
+    onProgress?.(35, null);
     const body = new FormData();
     body.append("kind", kind);
     body.append("file", file);
     const res = await fetchWithRetry("/api/upload", { method: "POST", body }, 3);
     const data = await readJsonSafe(res);
     if (!res.ok) throw new Error(data.error || "Upload/path failed");
-    onProgress?.(100);
+    onProgress?.(100, null);
     return data;
   }
 
-  onProgress?.(2);
+  onProgress?.(1, null);
   const initRes = await fetchWithRetry(
     "/api/upload/init",
     {
@@ -354,30 +398,30 @@ async function uploadFileResilient(file, kind, onProgress) {
 
   const chunkSize = init.chunk_size || CHUNK;
   const total = init.total_chunks || Math.ceil(file.size / chunkSize);
-  for (let index = 0; index < total; index++) {
-    const start = index * chunkSize;
-    const end = Math.min(file.size, start + chunkSize);
-    const blob = file.slice(start, end);
-    let ok = false;
-    let lastErr = null;
-    for (let attempt = 0; attempt < 4 && !ok; attempt++) {
-      try {
-        const fd = new FormData();
-        fd.append("upload_id", init.upload_id);
-        fd.append("index", String(index));
-        fd.append("chunk", blob, `chunk_${index}`);
-        const res = await fetch("/api/upload/chunk", { method: "POST", body: fd });
-        const data = await readJsonSafe(res);
-        if (!res.ok) throw new Error(data.error || `Chunk ${index} fail`);
-        ok = true;
-      } catch (err) {
-        lastErr = err;
-        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-      }
+  const concurrency = Math.min(pickConcurrency(file.size), total);
+  let nextIndex = 0;
+  let finished = 0;
+  const startedAt = performance.now();
+  const workers = [];
+
+  const runWorker = async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= total) return;
+      const start = index * chunkSize;
+      const end = Math.min(file.size, start + chunkSize);
+      await uploadOneChunk(init.upload_id, index, file.slice(start, end));
+      finished += 1;
+      const pct = Math.round((finished / total) * 96);
+      const elapsed = (performance.now() - startedAt) / 1000;
+      const rate = finished / Math.max(0.5, elapsed);
+      const eta = (total - finished) / Math.max(0.01, rate);
+      onProgress?.(pct, eta);
     }
-    if (!ok) throw lastErr || new Error("Upload chunk failed");
-    onProgress?.(Math.round(((index + 1) / total) * 96));
-  }
+  };
+
+  for (let i = 0; i < concurrency; i++) workers.push(runWorker());
+  await Promise.all(workers);
 
   const doneRes = await fetchWithRetry(
     "/api/upload/complete",
@@ -390,7 +434,7 @@ async function uploadFileResilient(file, kind, onProgress) {
   );
   const done = await readJsonSafe(doneRes);
   if (!doneRes.ok) throw new Error(done.error || "Upload complete fail");
-  onProgress?.(100);
+  onProgress?.(100, 0);
   return done;
 }
 
@@ -415,34 +459,65 @@ function previewLocalMedia(kind, file) {
   if (kind === "narration_audio") $("audioWave")?.classList.add("active");
 }
 
-function applyLocalFileInstant(key, kind, file) {
+function kindForKey(key) {
+  if (key === "movie") return "movie";
+  if (key === "movie_srt") return "movie_srt";
+  if (key === "narration_audio") return "narration_audio";
+  return "narration_srt";
+}
+
+function showLargeFileDesktopTip(file) {
+  const el = $("filesHint");
+  if (!el || isLocalHost()) return;
+  const mb = (file.size / (1024 * 1024)).toFixed(0);
+  el.classList.remove("ready", "bad");
+  el.innerHTML =
+    `<strong>${mb}MB</strong> web pe upload slow padega. CapCut jaisi speed ke liye ` +
+    `<a href="/download" style="color:#c4b5fd;font-weight:700">Student Pack desktop</a> use karo — ` +
+    `warna Export dabao, parallel sync tez chalegi.`;
+}
+
+function applyLocalFileInstant(key, kind, file, opts = {}) {
   state.localFiles[key] = file;
   state.synced[key] = false;
+  const defer = !!opts.deferSync;
   // Instant CapCut feel — UI + preview before any network
-  updateFileCard(key, file.name, `${formatBytes(file.size)} · added`, {
-    syncing: true,
-  });
+  updateFileCard(
+    key,
+    file.name,
+    defer
+      ? `${formatBytes(file.size)} · local ✓`
+      : `${formatBytes(file.size)} · added`,
+    defer ? { ready: true } : { syncing: true }
+  );
   previewLocalMedia(kind, file);
   showOk(`${file.name} add ho gaya ✓`);
   $("importModal") && ($("importModal").hidden = true);
 }
 
 function startBackgroundSync(key, kind, file) {
+  delete state.deferredSync[key];
   const job = (async () => {
     try {
-      const data = await uploadFileResilient(file, kind, (pct) => {
+      const data = await uploadFileResilient(file, kind, (pct, eta) => {
         // Ignore stale job if user re-selected another file
         if (state.localFiles[key] !== file) return;
-        setCardSyncMeta(key, `${formatBytes(file.size)} · sync ${pct}%`, {
-          syncing: true,
-        });
+        const etaTxt = eta != null && eta > 1 ? ` · ~${formatEta(eta)}` : "";
+        setCardSyncMeta(
+          key,
+          `${formatBytes(file.size)} · sync ${pct}%${etaTxt}`,
+          { syncing: true }
+        );
         updateFilesHint();
       });
       if (state.localFiles[key] !== file) return data;
       state.synced[key] = true;
-      updateFileCard(key, data.filename || file.name, `${data.meta || formatBytes(file.size)} · ready`, {
-        ready: true,
-      });
+      updateFileCard(
+        key,
+        data.filename || file.name,
+        `${data.meta || formatBytes(file.size)} · ready`,
+        { ready: true }
+      );
       return data;
     } catch (err) {
       if (state.localFiles[key] !== file) throw err;
@@ -465,7 +540,7 @@ function startBackgroundSync(key, kind, file) {
 async function waitForPendingUploads() {
   const jobs = Object.values(state.uploadJobs).filter(Boolean);
   if (!jobs.length) return;
-  showOk("Files sync ho rahi hain… ek second");
+  showOk("Parallel sync chal rahi hai…");
   await Promise.all(
     jobs.map((j) =>
       j.catch(() => {
@@ -473,6 +548,24 @@ async function waitForPendingUploads() {
       })
     )
   );
+}
+
+async function ensureFilesSynced() {
+  // Start any deferred large-movie syncs now (Export time)
+  Object.keys(state.deferredSync).forEach((key) => {
+    const file = state.deferredSync[key];
+    if (!file || state.synced[key]) return;
+    if (state.uploadJobs[key]) return;
+    startBackgroundSync(key, kindForKey(key), file);
+  });
+  // Also sync local files that never started
+  ["movie", "movie_srt", "narration_audio", "narration_srt"].forEach((key) => {
+    const file = state.localFiles[key];
+    if (!file || state.synced[key] || state.uploadJobs[key]) return;
+    if (state.deferredSync[key]) return;
+    startBackgroundSync(key, kindForKey(key), file);
+  });
+  await waitForPendingUploads();
 }
 
 function acceptFileForKind(kind, file) {
@@ -498,13 +591,19 @@ function ingestSelectedFile(key, kind, file) {
     );
     return;
   }
-  applyLocalFileInstant(key, kind, file);
-  if (kind === "movie" && file.size >= 1500 * 1024 * 1024) {
-    showOk(
-      `${(file.size / (1024 * 1024)).toFixed(0)}MB movie — sync background mein chalegi (Wi‑Fi best).`
-    );
+  // CapCut feel: bari movie turant local ready; cloud sync Export pe (parallel + tez)
+  const deferCloud =
+    kind === "movie" && file.size >= 80 * 1024 * 1024 && !isLocalHost();
+  applyLocalFileInstant(key, kind, file, { deferSync: deferCloud });
+  if (deferCloud) {
+    state.deferredSync[key] = file;
+    if (file.size >= 400 * 1024 * 1024) showLargeFileDesktopTip(file);
+    else
+      showOk(
+        "Movie local ready ✓ — Export dabao, sync tab parallel tez chalegi."
+      );
+    return;
   }
-  // Non-blocking sync — CapCut style
   startBackgroundSync(key, kind, file);
 }
 
@@ -876,15 +975,16 @@ async function runAutoCut(opts = {}) {
     return;
   }
 
-  // CapCut flow: user already sees files; wait for background sync before engine runs
+  // CapCut flow: deferred/large uploads start here with parallel chunks
   if (!useSample) {
-    await waitForPendingUploads();
+    showOk("Export: parallel sync start…");
+    await ensureFilesSynced();
     const unsynced = ["movie", "movie_srt", "narration_srt"].filter(
       (k) => state.files[k] && !state.synced[k]
     );
     if (unsynced.length) {
       showError(
-        `Sync fail: ${unsynced.join(", ")}. Red file pe tap karke retry, phir Export.`
+        `Sync fail: ${unsynced.join(", ")}. Red file pe tap = retry. Ya /download desktop pack (2GB+ ke liye tez).`
       );
       return;
     }
@@ -1287,17 +1387,13 @@ function wireControls() {
     row.addEventListener("click", () => {
       const key = row.getAttribute("data-key");
       // CapCut-like retry: failed sync → tap retries instantly (no picker)
-      if (row.classList.contains("sync-error") && key && state.localFiles[key]) {
-        const kind =
-          key === "movie"
-            ? "movie"
-            : key === "movie_srt"
-              ? "movie_srt"
-              : key === "narration_audio"
-                ? "narration_audio"
-                : "narration_srt";
-        showOk("Dobara sync…");
-        startBackgroundSync(key, kind, state.localFiles[key]);
+      if (
+        key &&
+        state.localFiles[key] &&
+        (row.classList.contains("sync-error") || state.deferredSync[key])
+      ) {
+        showOk("Sync start (parallel)…");
+        startBackgroundSync(key, kindForKey(key), state.localFiles[key]);
         return;
       }
       const id = row.getAttribute("data-input");

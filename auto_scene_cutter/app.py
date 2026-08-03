@@ -539,9 +539,14 @@ def api_upload_init():
     dest_name = _upload_dest_name(kind, suffix or "")
     part_path = UPLOAD_DIR / f".part_{upload_id}"
     # Bigger chunks for multi‑GB movies (faster, fewer requests)
-    default_chunk = 8 * 1024 * 1024 if size >= 1024 * 1024 * 1024 else 4 * 1024 * 1024
+    if size >= 2 * 1024 * 1024 * 1024:
+        default_chunk = 16 * 1024 * 1024
+    elif size >= 1024 * 1024 * 1024:
+        default_chunk = 8 * 1024 * 1024
+    else:
+        default_chunk = 4 * 1024 * 1024
     chunk_size = int(payload.get("chunk_size") or default_chunk)
-    chunk_size = max(256 * 1024, min(chunk_size, 16 * 1024 * 1024))
+    chunk_size = max(256 * 1024, min(chunk_size, 32 * 1024 * 1024))
     total_chunks = (size + chunk_size - 1) // chunk_size
     with _UPLOAD_LOCK:
         PENDING_UPLOADS[upload_id] = {
@@ -552,16 +557,20 @@ def api_upload_init():
             "size": size,
             "chunk_size": chunk_size,
             "total_chunks": total_chunks,
-            "next_index": 0,
+            "received": set(),
+            "lock": threading.Lock(),
         }
-    # Append-mode chunks — don't pre-allocate full multi-GB (saves disk pressure)
-    part_path.write_bytes(b"")
+    # Sparse pre-size so parallel workers can seek+write safely
+    with open(part_path, "wb") as fh:
+        if size > 0:
+            fh.truncate(size)
     return jsonify(
         {
             "ok": True,
             "upload_id": upload_id,
             "chunk_size": chunk_size,
             "total_chunks": total_chunks,
+            "parallel": True,
         }
     )
 
@@ -582,24 +591,21 @@ def api_upload_chunk():
     if not meta:
         return jsonify({"error": "Upload session expire — dobara file select karo."}), 400
 
-    # Allow retry of the current expected chunk only (sequential).
-    if index != meta["next_index"]:
-        return jsonify(
-            {
-                "error": f"Chunk order wrong (expected {meta['next_index']}, got {index}).",
-                "next_index": meta["next_index"],
-            }
-        ), 409
+    if index < 0 or index >= int(meta["total_chunks"]):
+        return jsonify({"error": f"Bad chunk index {index}"}), 400
 
     data = chunk.read()
     part_path = Path(meta["part_path"])
+    offset = index * int(meta["chunk_size"])
     try:
-        # Sequential append (matches next_index enforcement)
-        with open(part_path, "ab") as fh:
-            fh.write(data)
-        with _UPLOAD_LOCK:
-            if upload_id in PENDING_UPLOADS:
-                PENDING_UPLOADS[upload_id]["next_index"] = index + 1
+        # Parallel-safe: each chunk writes at its own offset
+        with meta["lock"]:
+            with open(part_path, "r+b") as fh:
+                fh.seek(offset)
+                fh.write(data)
+            received: set = meta["received"]
+            received.add(index)
+            done_count = len(received)
     except OSError as exc:
         msg = str(exc)
         if "No space" in msg or getattr(exc, "errno", None) == 28:
@@ -614,7 +620,7 @@ def api_upload_chunk():
         {
             "ok": True,
             "index": index,
-            "next_index": index + 1,
+            "received": done_count,
             "total_chunks": meta["total_chunks"],
         }
     )
@@ -625,9 +631,19 @@ def api_upload_complete():
     payload = request.get_json(silent=True) or {}
     upload_id = (payload.get("upload_id") or "").strip()
     with _UPLOAD_LOCK:
-        meta = PENDING_UPLOADS.pop(upload_id, None)
-    if not meta:
-        return jsonify({"error": "Upload session expire — dobara file select karo."}), 400
+        meta = PENDING_UPLOADS.get(upload_id)
+        if meta is None:
+            return jsonify({"error": "Upload session expire — dobara file select karo."}), 400
+        received = set(meta.get("received") or [])
+        total = int(meta["total_chunks"])
+        if len(received) != total:
+            missing = sorted(set(range(total)) - received)[:8]
+            return jsonify(
+                {
+                    "error": f"Upload incomplete — {len(received)}/{total} chunks. Missing e.g. {missing}",
+                }
+            ), 400
+        PENDING_UPLOADS.pop(upload_id, None)
 
     part_path = Path(meta["part_path"])
     if not part_path.exists():
