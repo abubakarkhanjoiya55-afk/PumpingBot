@@ -2,35 +2,33 @@
 
 PumpingBot se **alag** deploy. Sirf crypto alert PWA + scanner.
 
-## Railway pe naya service (ek dafa)
+**Tumhara preferred layout:** [`../RAILWAY_PROJECTS.md`](../RAILWAY_PROJECTS.md)
 
-1. Railway project `reasonable-essence` kholo  
-2. **+ New** → **GitHub Repo** (same `PumpingBot` repo) **ya** Empty service  
-3. Service name: **`my-signals`**  
-4. Settings:
-   - **Root Directory:** `/` (repo root)
-   - **Dockerfile path:** `my_signals_service/Dockerfile`
-   - ya Config-as-code: `my_signals_service/railway.toml`
-5. Variables (optional):
+| Project | App |
+|---------|-----|
+| `proactive-healing` | MT5 PumpingBot |
+| `reasonable-essence` → service `web` | **My Signals** (Dockerfile switch) |
+
+## `reasonable-essence` pe My Signals switch (recommended)
+
+1. PR #47 merge → branch `main`  
+2. Service **`web`** → Settings → Dockerfile path: **`my_signals_service/Dockerfile`**  
+3. (Optional) rename service → `my-signals`  
+4. Variables:
    ```
    MY_SIGNALS_PREFIX=
    NTFY_TOPIC=pumpingbot-signals
    PORT=8000
    ```
-6. Deploy → public URL milegi, e.g.  
-   `https://my-signals-production-xxxx.up.railway.app`
+5. Redeploy → `/api` pe `"My Signals API"` aana chahiye
 
-## PumpingBot (`web`) pe ye variables
+## `proactive-healing` (PumpingBot) variables
 
 ```
 EMBED_MY_SIGNALS=0
-MY_SIGNALS_URL=https://my-signals-production-xxxx.up.railway.app
+MY_SIGNALS_URL=https://web-production-26ef9.up.railway.app
 ```
-
-Iske baad:
-- `web-production-.../my-signals/` → My Signals service pe redirect  
-- PumpingBot sirf trading/bot  
-- My Signals alag online/restart
+(URL wo jo My Signals deploy ke baad `/api` pe My Signals dikhaye)
 
 ## Local test
 
