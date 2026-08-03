@@ -29,7 +29,7 @@ function Ensure-Command($name, $wingetId) {
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     winget install --id $wingetId -e --accept-source-agreements --accept-package-agreements
   } else {
-    Write-Host "[!] winget nahi mila. Khud install karo: $name" -ForegroundColor Yellow
+    Write-Host "[!] winget missing. Install manually: $name" -ForegroundColor Yellow
   }
 }
 
@@ -56,7 +56,7 @@ $ConfigExample = Join-Path $Repo "vps_supervisor\config.example.bat"
 $Config = Join-Path $Repo "vps_supervisor\config.bat"
 if (-not (Test-Path $Config)) {
   Copy-Item $ConfigExample $Config
-  Write-Host "[!] config.bat ban gaya — isme SERVER_URL aur VPS_SECRET daalo" -ForegroundColor Yellow
+  Write-Host "[!] config.bat created - set SERVER_URL and VPS_SECRET" -ForegroundColor Yellow
 } else {
   Write-Host "[OK] config.bat already exists"
 }
@@ -73,26 +73,26 @@ $PortableMarker = Join-Path $Root "MT5_Template\portable"
 if (-not (Test-Path $TemplateExe)) {
   Write-Host ""
   Write-Host "========================================" -ForegroundColor Yellow
-  Write-Host " MT5 TEMPLATE ABHI MISSING HAI"
+  Write-Host " MT5 TEMPLATE MISSING"
   Write-Host "========================================" -ForegroundColor Yellow
-  Write-Host "1) Is VPS pe MetaTrader 5 install karo (broker website se)"
-  Write-Host "2) Install folder KO COPY karke yahan rakho:"
+  Write-Host "Step 1: Install MetaTrader 5 on this VPS from your broker site"
+  Write-Host "Step 2: COPY the install folder to:"
   Write-Host "   C:\PumpingBot\MT5_Template\"
-  Write-Host "   (andar terminal64.exe hona chahiye)"
-  Write-Host "3) Us folder mein empty file banao naam: portable (bina extension)"
+  Write-Host "   (must contain terminal64.exe)"
+  Write-Host "Step 3: Create empty file named portable (no extension) in that folder"
   Write-Host ""
 } else {
   if (-not (Test-Path $PortableMarker)) {
     New-Item -ItemType File -Path $PortableMarker -Force | Out-Null
-    Write-Host "[OK] portable marker create kiya"
+    Write-Host "[OK] portable marker created"
   }
   Write-Host "[OK] MT5 template found"
 }
 
 Write-Host ""
 Write-Host "NEXT:" -ForegroundColor Green
-Write-Host " 1) Edit: $Config"
-Write-Host " 2) Set SERVER_URL + VPS_SECRET"
-Write-Host " 3) MT5 template ready ho to run:"
+Write-Host " 1. Edit: $Config"
+Write-Host " 2. Set SERVER_URL + VPS_SECRET"
+Write-Host " 3. When MT5 template is ready, run:"
 Write-Host "    C:\PumpingBot\PumpingBot\vps_supervisor\START_HERE.bat"
 Write-Host ""
