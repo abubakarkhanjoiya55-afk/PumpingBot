@@ -312,8 +312,6 @@ def _run_full_pipeline(settings: dict, mode: str = "full") -> dict:
     narration_srt = SESSION.get("narration_srt")
     narration_audio = SESSION.get("narration_audio")
 
-    if not movie or not Path(movie).exists():
-        raise ValueError("Movie video load karo (ya Load Sample).")
     if not movie_srt or not Path(movie_srt).exists():
         raise ValueError("Movie SRT load karo (ya Load Sample).")
     if not narration_srt or not Path(narration_srt).exists():
@@ -323,6 +321,7 @@ def _run_full_pipeline(settings: dict, mode: str = "full") -> dict:
     JOB.update(stage="analyze_movie", message="Movie SRT parse + cluster", current=1, total=5)
     JOB.update(stage="analyze_narration", message="Narration parse", current=2, total=5)
 
+    # CapCut-style: match from SRT instantly — movie file not required yet
     if mode == "match_only":
         JOB.update(stage="matching", message="Matching scenes", current=3, total=5)
         result = run_stage1_to_stage3(
@@ -344,6 +343,27 @@ def _run_full_pipeline(settings: dict, mode: str = "full") -> dict:
                 "cut_clip_count": result["stats"]["matched"],
             }
         )
+
+    # Cut+export using an existing match plan (movie sync can finish after match)
+    if mode in ("cut_export", "export_only"):
+        if not movie or not Path(movie).exists():
+            raise ValueError("Movie video abhi server pe nahi — sync complete hone do.")
+        if not SESSION.get("last_match_plan"):
+            raise ValueError("Pehle match chalao.")
+        JOB.update(stage="cutting", message="Cutting clips", current=4, total=5)
+        result = _export_from_session_plan(
+            progress_callback=lambda msg, cur, tot: JOB.update(
+                stage="export" if "Subtitle" in msg or "narration" in msg.lower() else "cutting",
+                message=msg,
+                current=5 if "Subtitle" in msg else 4,
+                total=5,
+            )
+        )
+        JOB.update(stage="export", message="Export done", current=5, total=5)
+        return result
+
+    if not movie or not Path(movie).exists():
+        raise ValueError("Movie video load karo (ya Load Sample).")
 
     JOB.update(stage="matching", message="Matching + trim", current=3, total=5)
 
@@ -720,6 +740,22 @@ def api_auto_cut():
         if use_sample:
             if not (has_movie and has_movie_srt and has_narr_srt):
                 _load_sample_into_session()
+        elif mode == "match_only":
+            if not has_movie_srt or not has_narr_srt:
+                return jsonify(
+                    {
+                        "error": "Movie SRT + Narration SRT select karo (video baad mein sync ho sakti hai).",
+                    }
+                ), 400
+        elif mode in ("cut_export", "export_only"):
+            if not has_movie:
+                return jsonify(
+                    {
+                        "error": "Movie abhi sync nahi hui. Thora wait / Export dobara dabao.",
+                    }
+                ), 400
+            if not SESSION.get("last_match_plan"):
+                return jsonify({"error": "Pehle match chalao."}), 400
         elif not has_movie or not has_movie_srt:
             return jsonify(
                 {

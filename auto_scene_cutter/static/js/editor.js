@@ -237,16 +237,11 @@ function updateFilesHint(extraTip) {
   if (!state.files.movie) need.push("Movie File");
   if (!state.files.movie_srt) need.push("Movie SRT");
   if (!state.files.narration_srt) need.push("Narration SRT");
-  const syncing = Object.keys(state.synced).some(
-    (k) => state.files[k] && !state.synced[k] && state.uploadJobs[k]
-  );
   el.classList.remove("ready", "bad");
-  if (!need.length && !syncing) {
+  if (!need.length) {
     el.classList.add("ready");
     el.innerHTML =
-      "Files ready — CapCut jaisa select ho chuka. Ab <strong>Export</strong> dabao.";
-  } else if (!need.length && syncing) {
-    el.innerHTML = "Files select ho gayi ✓ — background sync chal raha hai…";
+      "Files ready ✓ (movie local, SRT jaisi). Ab <strong>Export</strong> — scenes foran, cut baad mein.";
   } else {
     el.classList.add("bad");
     el.innerHTML = `Click / drag-drop se select karo: <strong>${need.join(", ")}</strong>`;
@@ -479,17 +474,18 @@ function showLargeFileDesktopTip(file) {
 
 function applyLocalFileInstant(key, kind, file, opts = {}) {
   state.localFiles[key] = file;
+  const instantReady = !!opts.instantReady;
   state.synced[key] = false;
-  const defer = !!opts.deferSync;
-  // Instant CapCut feel — UI + preview before any network
-  updateFileCard(
-    key,
-    file.name,
-    defer
-      ? `${formatBytes(file.size)} · local ✓`
-      : `${formatBytes(file.size)} · added`,
-    defer ? { ready: true } : { syncing: true }
-  );
+  // CapCut: movie row turns green immediately like SRT (no sync spinner)
+  updateFileCard(key, file.name, `${formatBytes(file.size)} · ready`, {
+    ready: true,
+    syncing: !instantReady && !opts.deferSync,
+  });
+  if (instantReady || opts.deferSync) {
+    const card = fileCardEl(key);
+    card?.classList.remove("syncing");
+    card?.classList.add("ready");
+  }
   previewLocalMedia(kind, file);
   showOk(`${file.name} add ho gaya ✓`);
   $("importModal") && ($("importModal").hidden = true);
@@ -550,22 +546,42 @@ async function waitForPendingUploads() {
   );
 }
 
-async function ensureFilesSynced() {
-  // Start any deferred large-movie syncs now (Export time)
-  Object.keys(state.deferredSync).forEach((key) => {
-    const file = state.deferredSync[key];
-    if (!file || state.synced[key]) return;
-    if (state.uploadJobs[key]) return;
-    startBackgroundSync(key, kindForKey(key), file);
-  });
-  // Also sync local files that never started
-  ["movie", "movie_srt", "narration_audio", "narration_srt"].forEach((key) => {
+async function ensureSmallFilesSynced() {
+  // SRT/audio only — movie stays local until cut (CapCut speed)
+  ["movie_srt", "narration_srt", "narration_audio"].forEach((key) => {
     const file = state.localFiles[key];
     if (!file || state.synced[key] || state.uploadJobs[key]) return;
-    if (state.deferredSync[key]) return;
     startBackgroundSync(key, kindForKey(key), file);
   });
   await waitForPendingUploads();
+}
+
+async function ensureMovieSynced() {
+  const file = state.localFiles.movie || state.deferredSync.movie;
+  if (state.synced.movie) return true;
+  if (!file) return false;
+  if (!state.uploadJobs.movie) {
+    showOk("Movie sync (parallel) — scenes pehle ready ho chuki hain…");
+    startBackgroundSync("movie", "movie", file);
+  }
+  await waitForPendingUploads();
+  return !!state.synced.movie;
+}
+
+async function startJob(mode, settings, useSample) {
+  const res = await fetch("/api/auto-cut", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode,
+      async: true,
+      use_sample: !!useSample,
+      ...settings,
+    }),
+  });
+  const start = await readJsonSafe(res);
+  if (!res.ok) throw new Error(start.error || "Auto cut fail");
+  return pollJobUntilDone();
 }
 
 function acceptFileForKind(kind, file) {
@@ -591,19 +607,24 @@ function ingestSelectedFile(key, kind, file) {
     );
     return;
   }
-  // CapCut feel: bari movie turant local ready; cloud sync Export pe (parallel + tez)
-  const deferCloud =
-    kind === "movie" && file.size >= 80 * 1024 * 1024 && !isLocalHost();
-  applyLocalFileInstant(key, kind, file, { deferSync: deferCloud });
-  if (deferCloud) {
-    state.deferredSync[key] = file;
-    if (file.size >= 400 * 1024 * 1024) showLargeFileDesktopTip(file);
-    else
-      showOk(
-        "Movie local ready ✓ — Export dabao, sync tab parallel tez chalegi."
-      );
+  // Cancel any previous movie sync — never block UI with sync 1%
+  if (kind === "movie" && state.uploadJobs.movie) {
+    delete state.uploadJobs.movie;
+  }
+
+  // Movie = always instant green ready like SRT (no upload on select)
+  if (kind === "movie") {
+    applyLocalFileInstant(key, kind, file, { instantReady: true, deferSync: true });
+    state.deferredSync.movie = file;
+    state.synced.movie = false;
+    if (!isLocalHost() && file.size >= 400 * 1024 * 1024) {
+      showLargeFileDesktopTip(file);
+    }
     return;
   }
+
+  // SRT / audio — tiny, sync foran (same as CapCut import)
+  applyLocalFileInstant(key, kind, file, { instantReady: false });
   startBackgroundSync(key, kind, file);
 }
 
@@ -975,54 +996,69 @@ async function runAutoCut(opts = {}) {
     return;
   }
 
-  // CapCut flow: deferred/large uploads start here with parallel chunks
-  if (!useSample) {
-    showOk("Export: parallel sync start…");
-    await ensureFilesSynced();
-    const unsynced = ["movie", "movie_srt", "narration_srt"].filter(
-      (k) => state.files[k] && !state.synced[k]
-    );
-    if (unsynced.length) {
-      showError(
-        `Sync fail: ${unsynced.join(", ")}. Red file pe tap = retry. Ya /download desktop pack (2GB+ ke liye tez).`
-      );
-      return;
-    }
-  }
-
   resetStatus();
   showDownloads(false);
   setBusy(true);
   const settings = readSettingsFromUi();
 
   try {
+    if (useSample) {
+      setStatus("analyze_movie", "active");
+      const job = await startJob("full", settings, true);
+      const data = job.result || {};
+      const stats = data.stats || {};
+      const sceneCount = (data.scenes || []).length || stats.matched || 0;
+      setStatus("analyze_movie", "done", `${data.subtitle_count || 0} subs`);
+      setStatus("analyze_narration", "done", `${data.narration_lines || 0} lines`);
+      setStatus("matching", "done", `${sceneCount} scenes`);
+      setStatus("cutting", "done", `${data.cut_clip_count || stats.matched || 0} clips`);
+      setStatus("export", "done", "done");
+      setProgress(100, "Done");
+      applyPlanResult(data);
+      showOk("Auto Cut complete");
+      return;
+    }
+
+    // 1) SRT/audio foran sync (chhoti files)
+    setProgress(8, "SRT sync…");
+    await ensureSmallFilesSynced();
+    const smallFail = ["movie_srt", "narration_srt"].filter(
+      (k) => state.files[k] && !state.synced[k]
+    );
+    if (smallFail.length) {
+      throw new Error(`SRT sync fail: ${smallFail.join(", ")}. Tap retry.`);
+    }
+
+    // 2) Match instantly from SRT — CapCut feel, no movie upload wait
     setStatus("analyze_movie", "active");
-    const res = await fetch("/api/auto-cut", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        mode: "full",
-        async: true,
-        use_sample: useSample,
-        ...settings,
-      }),
-    });
-    const start = await readJsonSafe(res);
-    if (!res.ok) throw new Error(start.error || "Auto cut fail");
-
-    const job = await pollJobUntilDone();
-    const data = job.result || {};
-    const stats = data.stats || {};
-
-    const sceneCount = (data.scenes || []).length || stats.matched || 0;
-    setStatus("analyze_movie", "done", `${data.subtitle_count || 0} subs`);
-    setStatus("analyze_narration", "done", `${data.narration_lines || 0} lines`);
+    showOk("Scenes match foran (SRT) — movie baad mein…");
+    const matchJob = await startJob("match_only", settings, false);
+    const matchData = matchJob.result || {};
+    const stats = matchData.stats || {};
+    const sceneCount = (matchData.scenes || []).length || stats.matched || 0;
+    setStatus("analyze_movie", "done", `${matchData.subtitle_count || 0} subs`);
+    setStatus("analyze_narration", "done", `${matchData.narration_lines || 0} lines`);
     setStatus("matching", "done", `${sceneCount} scenes`);
-    setStatus("cutting", "done", `${data.cut_clip_count || stats.matched || 0} clips`);
+    setProgress(45, "Timeline ready");
+    applyPlanResult(matchData);
+    showOk("Timeline ready ✓ — ab movie sync + cut…");
+
+    // 3) Movie sync only now (parallel chunks), then cut/export
+    setStatus("cutting", "active", "movie sync…");
+    const movieOk = await ensureMovieSynced();
+    if (!movieOk) {
+      throw new Error(
+        "Movie sync fail. Red ! pe tap retry, ya /download Student Pack (2GB foran local)."
+      );
+    }
+
+    setStatus("cutting", "active", "cutting…");
+    const cutJob = await startJob("cut_export", settings, false);
+    const cutData = cutJob.result || matchData;
+    setStatus("cutting", "done", `${cutData.cut_clip_count || sceneCount} clips`);
     setStatus("export", "done", "done");
     setProgress(100, "Done");
-
-    applyPlanResult(data);
+    applyPlanResult(cutData);
     showOk("Auto Cut complete");
   } catch (err) {
     ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach(
@@ -1387,12 +1423,9 @@ function wireControls() {
     row.addEventListener("click", () => {
       const key = row.getAttribute("data-key");
       // CapCut-like retry: failed sync → tap retries instantly (no picker)
-      if (
-        key &&
-        state.localFiles[key] &&
-        (row.classList.contains("sync-error") || state.deferredSync[key])
-      ) {
-        showOk("Sync start (parallel)…");
+      // Only retry failed sync — don't kick off movie upload just by tapping (keeps CapCut feel)
+      if (key && state.localFiles[key] && row.classList.contains("sync-error")) {
+        showOk("Sync retry (parallel)…");
         startBackgroundSync(key, kindForKey(key), state.localFiles[key]);
         return;
       }
