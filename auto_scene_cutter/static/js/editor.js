@@ -61,7 +61,6 @@ function showOk(msg) {
 function setBusy(busy) {
   state.busy = busy;
   [
-    "btnAutoCut",
     "btnAutoCutTop",
     "btnApplyRematch",
     "btnSkipClip",
@@ -76,10 +75,24 @@ function setBusy(busy) {
     "btnMoveLeft",
     "btnMoveRight",
     "btnToolDel",
+    "btnMoreMenu",
   ].forEach((id) => {
     const el = $(id);
     if (el) el.disabled = busy;
   });
+}
+
+function countSubtitleLines(text) {
+  if (!text) return 0;
+  return String(text)
+    .split(/[.!?]+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean).length || 1;
+}
+
+function closeMoreMenu() {
+  const menu = $("moreMenu");
+  if (menu) menu.hidden = true;
 }
 
 function setProgress(percent, message) {
@@ -226,13 +239,17 @@ function fillSceneSelect(selectedSceneId) {
 function renderTimeline() {
   const track = $("trackScenes");
   const audioTrack = $("trackAudio");
+  const wave = $("audioWave");
   track.innerHTML = "";
-  audioTrack.querySelectorAll(".vo-block").forEach((n) => n.remove());
 
   const clips = (state.clips || []).filter((c) => c.matched);
   if (!clips.length) {
     track.style.minWidth = "100%";
     audioTrack.style.minWidth = "100%";
+    if (wave) {
+      wave.classList.remove("active");
+      wave.style.width = "";
+    }
     state.outputDuration = 0;
     updateFooterStats();
     return;
@@ -244,30 +261,28 @@ function renderTimeline() {
   track.style.minWidth = `${width}px`;
   audioTrack.style.minWidth = `${width}px`;
 
+  // Reference Track 1: one continuous narration waveform bar
+  if (wave) {
+    wave.classList.add("active");
+    wave.style.width = `${Math.max(40, maxEnd * state.pxPerSec)}px`;
+  }
+
   clips.forEach((clip) => {
     const left = clip.timeline_start * state.pxPerSec;
-    const w = Math.max(28, clip.clip_duration * state.pxPerSec - 4);
+    const w = Math.max(36, clip.clip_duration * state.pxPerSec - 4);
     const block = document.createElement("button");
     block.type = "button";
     block.className =
       "scene-block" + (state.selectedClipKey === clip.key ? " selected" : "");
     block.style.left = `${left}px`;
     block.style.width = `${w}px`;
-    block.innerHTML = `<div class="sid">${String(clip.index).padStart(3, "0")}</div><div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
+    const id = String(clip.index).padStart(3, "0");
+    block.innerHTML = `<div class="sid">Clip ${id}</div><div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
     block.title = clip.scene_text || clip.narration_text || "";
     block.addEventListener("click", () => selectClip(clip.key));
     track.appendChild(block);
-
-    const vo = document.createElement("div");
-    vo.className = "vo-block";
-    vo.style.left = `${left}px`;
-    vo.style.width = `${w}px`;
-    vo.innerHTML = `<div class="sid">VO${String(clip.index).padStart(2, "0")}</div>`;
-    vo.title = clip.narration_text || "";
-    audioTrack.appendChild(vo);
   });
 
-  $("audioWave").classList.toggle("active", clips.length > 0);
   $("timelineScaleLabel").textContent = `Scale: ${state.pxPerSec}px/s`;
   updateFooterStats();
 }
@@ -286,25 +301,16 @@ function selectClip(key) {
     clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
   $("propEnd").textContent = clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
   $("propDur").textContent = clip.matched ? fmtTime(clip.clip_duration) : "—";
+
+  const subText = clip.scene_text || clip.narration_text || "";
+  $("propSubs").textContent = String(countSubtitleLines(subText));
+  // Reference-style purple subtitle box (scene dialogue)
+  $("propNote").textContent = subText || "—";
+
   $("propScore").textContent =
     clip.score != null ? Number(clip.score).toFixed(3) : "—";
   $("propSceneId").textContent =
     clip.scene_id != null ? String(clip.scene_id) : "—";
-
-  const flags = [
-    clip.matched ? null : "skipped",
-    clip.trimmed ? "trimmed" : null,
-    clip.reused_scene ? "reused scene" : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  $("propNote").textContent = [
-    clip.narration_text ? `VO: ${clip.narration_text}` : null,
-    clip.scene_text ? `Scene: ${clip.scene_text}` : null,
-    flags || null,
-  ]
-    .filter(Boolean)
-    .join("\n");
 
   fillSceneSelect(clip.scene_id);
   const video = $("videoPlayer");
@@ -356,7 +362,11 @@ function applyPlanResult(data, opts = {}) {
   if (data.settings) writeSettingsToUi(data.settings);
   if (data.project_name) {
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
+    const pl = $("projectNameLabel");
+    if (pl) {
+      pl.hidden = true;
+      pl.textContent = `Project: ${state.projectName}`;
+    }
   }
   if (data.subtitle_count != null) $("statSubs").textContent = String(data.subtitle_count);
 
@@ -434,19 +444,16 @@ async function runAutoCut() {
     const data = job.result || {};
     const stats = data.stats || {};
 
+    const sceneCount = (data.scenes || []).length || stats.matched || 0;
     setStatus("analyze_movie", "done", `${data.subtitle_count || 0} subs`);
     setStatus("analyze_narration", "done", `${data.narration_lines || 0} lines`);
-    setStatus(
-      "matching",
-      "done",
-      `${stats.matched || 0}/${stats.total_narration_lines || 0}`
-    );
+    setStatus("matching", "done", `${sceneCount} scenes`);
     setStatus("cutting", "done", `${data.cut_clip_count || stats.matched || 0} clips`);
     setStatus("export", "done", "done");
     setProgress(100, "Done");
 
     applyPlanResult(data);
-    showOk("Pro+ export ready");
+    showOk("Auto Cut complete");
   } catch (err) {
     ["analyze_movie", "analyze_narration", "matching", "cutting", "export"].forEach(
       (s) => {
@@ -589,7 +596,11 @@ async function saveProject() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Save fail");
     state.projectName = data.project_name;
-    $("projectNameLabel").textContent = `Project: ${state.projectName}`;
+    const pl = $("projectNameLabel");
+    if (pl) {
+      pl.hidden = true;
+      pl.textContent = `Project: ${state.projectName}`;
+    }
     showOk(`Saved ${data.filename}`);
   } catch (err) {
     showError(err.message || String(err));
@@ -695,7 +706,6 @@ function wireControls() {
   bindFileInput("fileNarrationAudio", "narration_audio", "narration_audio");
   bindFileInput("fileNarrationSrt", "narration_srt", "narration_srt");
 
-  $("btnAutoCut").addEventListener("click", runAutoCut);
   $("btnAutoCutTop").addEventListener("click", runAutoCut);
   $("btnApplyRematch").addEventListener("click", () => {
     const val = $("sceneSelect").value;
@@ -703,9 +713,36 @@ function wireControls() {
   });
   $("btnSkipClip").addEventListener("click", () => rematchSelected(null, true));
   $("btnToolDel").addEventListener("click", () => rematchSelected(null, true));
-  $("btnUndo").addEventListener("click", undoLast);
-  $("btnSaveProject").addEventListener("click", saveProject);
-  $("btnOpenProject").addEventListener("click", openProjectModal);
+  $("btnUndo").addEventListener("click", () => {
+    closeMoreMenu();
+    undoLast();
+  });
+  $("btnSaveProject").addEventListener("click", () => {
+    closeMoreMenu();
+    saveProject();
+  });
+  $("btnOpenProject").addEventListener("click", () => {
+    closeMoreMenu();
+    openProjectModal();
+  });
+
+  $("btnMoreMenu")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const menu = $("moreMenu");
+    if (menu) menu.hidden = !menu.hidden;
+  });
+  $("btnToggleAdvanced")?.addEventListener("click", () => {
+    closeMoreMenu();
+    const box = $("advancedBox");
+    if (box) {
+      box.open = true;
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  });
+  document.addEventListener("click", (e) => {
+    const wrap = document.querySelector(".menu-wrap");
+    if (wrap && !wrap.contains(e.target)) closeMoreMenu();
+  });
   $("btnCloseOpen").addEventListener("click", closeOpenModal);
   $("btnCloseOpen2").addEventListener("click", closeOpenModal);
   $("btnBrowseProject").addEventListener("click", () => $("fileProject").click());
