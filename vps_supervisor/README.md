@@ -1,7 +1,15 @@
 # Windows VPS Supervisor — mobile users, auto MT5 agents
 
+**Owner quick guide:** [`../OWNER_GO_LIVE.md`](../OWNER_GO_LIVE.md)
+
 Users **sirf mobile** se website pe MT5 login karte hain.  
 Tumhara **1 Windows VPS** sabke agents khud start karta hai. MetaAPI nahi.
+
+### Fastest start on a new VPS
+1. `powershell -ExecutionPolicy Bypass -File setup_vps.ps1`
+2. Edit `config.bat` (`SERVER_URL` + `VPS_SECRET`)
+3. Put portable MT5 in `C:\PumpingBot\MT5_Template\`
+4. Run `START_HERE.bat` (keep open)
 
 ```
 Mobile user → website login/MT5 connect

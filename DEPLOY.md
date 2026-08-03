@@ -2,6 +2,8 @@
 
 ## Trading backend (recommended): Windows VPS hosted agents — NO MetaAPI
 
+**Owner checklist (VPS buy → go live):** [`OWNER_GO_LIVE.md`](OWNER_GO_LIVE.md)
+
 **Users sirf mobile se MT5 login karte hain.**  
 Tumhara 1 Windows VPS sabke agents auto chalata hai.
 
@@ -11,7 +13,7 @@ Tumhara 1 Windows VPS sabke agents auto chalata hai.
    USE_METAAPI=0
    VPS_SECRET=long-random-secret
    ```
-2. Windows VPS pe supervisor chalao — full steps: `vps_supervisor/README.md`
+2. Windows VPS: `vps_supervisor/setup_vps.ps1` → `config.bat` → `START_HERE.bat`
 3. Check:
    - `GET /api` → version `3.26.0`, `use_metaapi: false`
    - `GET /me/vps-status` (user token) → `vps_ready: true`
