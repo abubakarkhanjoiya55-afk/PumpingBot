@@ -13,7 +13,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 $Root = "C:\PumpingBot"
 $Repo = Join-Path $Root "PumpingBot"
 $RepoUrl = "https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git"
-$Branch = "cursor/local-mt5-agent-hub-ff4b"
+$Branch = if ($env:PB_BRANCH) { $env:PB_BRANCH } else { "main" }
 
 New-Item -ItemType Directory -Force -Path $Root | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "logs") | Out-Null

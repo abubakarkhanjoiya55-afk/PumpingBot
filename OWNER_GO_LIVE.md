@@ -40,7 +40,8 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 mkdir C:\PumpingBot -Force
 cd C:\PumpingBot
 # Agar git nahi: winget install Git.Git
-git clone -b cursor/local-mt5-agent-hub-ff4b --single-branch https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git
+git clone -b main --single-branch https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git
+REM Agar main pe abhi merge nahi hua: -b cursor/my-signals-separate-service-ff4b
 cd PumpingBot\vps_supervisor
 powershell -ExecutionPolicy Bypass -File .\setup_vps.ps1
 ```

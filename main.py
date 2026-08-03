@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.27.0"   # My Signals split to standalone Railway service
+API_VERSION = "3.28.0"   # Bot go-live: VPS-ready /me + mobile Start Bot
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -2014,13 +2014,32 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     db.commit()
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
+def _agent_session_ready(user_id: int) -> bool:
+    for a in agent_hub.list_agents():
+        if a["user_id"] == user_id and a.get("ready") and a.get("online"):
+            return True
+    return False
+
+
+def _user_trading_ready(user) -> bool:
+    """MT5 ready for UI — VPS/agent hub first, MetaAPI fallback."""
+    if agent_mode_enabled() and not USE_METAAPI:
+        if bool(getattr(user, "vps_ready", False)):
+            return True
+        return _agent_session_ready(user.id)
+    if is_master_user(user):
+        return bool(mt5_manager._ready)
+    return pool_is_ready(user.id)
+
+
 @app.get("/me")
 def get_me(request: Request,
            current_user: User = Depends(get_current_user),
            db: Session = Depends(get_db)):
     conn = user_connection(current_user)
-    reconcile_trades_with_mt5(current_user.id, conn)
-    info = conn.account_info() if conn and conn._ready else None
+    if USE_METAAPI:
+        reconcile_trades_with_mt5(current_user.id, conn)
+    info = conn.account_info() if conn and getattr(conn, "_ready", False) else None
     role = "master" if is_master_user(current_user) else "follower"
     sub_status = refresh_subscription_status(current_user)
     ref_code = ensure_referral_code(current_user, db)
@@ -2029,14 +2048,28 @@ def get_me(request: Request,
     if sub_status not in ("active", "trial") and amount_owed <= 0:
         amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
-    balance = info.balance if info else 0
-    equity  = info.equity  if info else 0
-    floating_pl = round(equity - balance, 2) if info else 0
+    # Prefer live MetaAPI info; else VPS-reported balance
+    if info:
+        balance = info.balance
+        equity = info.equity
+        floating_pl = round(equity - balance, 2)
+    else:
+        balance = float(current_user.vps_balance or 0)
+        equity = balance
+        floating_pl = 0.0
+        for a in agent_hub.list_agents():
+            if a["user_id"] == current_user.id:
+                balance = float(a.get("balance") or balance)
+                equity = float(a.get("equity") or balance)
+                floating_pl = round(equity - balance, 2)
+                break
+
+    mt5_ready = _user_trading_ready(current_user)
 
     open_trades_db = db.query(Trade).filter(
         Trade.user_id == current_user.id, Trade.status == "open"
     ).count()
-    live_positions = get_live_positions(current_user.id, conn) if conn else []
+    live_positions = get_live_positions(current_user.id, conn) if conn and USE_METAAPI else []
     open_trades_count = max(open_trades_db, len(live_positions))
 
     expires_at = current_user.subscription_expires_at
@@ -2053,7 +2086,10 @@ def get_me(request: Request,
         "is_admin":          is_master_user(current_user),
         "role":              role,
         "mt5_connected":     current_user.mt5_login is not None,
-        "mt5_ready":         mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id),
+        "mt5_ready":         mt5_ready,
+        "vps_ready":         bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
+        "vps_status":        current_user.vps_status or "stopped",
+        "trading_backend":   "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
         "bot_active":        current_user.bot_active,
@@ -2543,15 +2579,22 @@ def get_open_positions(current_user: User = Depends(get_current_user)):
 @app.get("/status")
 def get_status(current_user: User = Depends(get_current_user)):
     conn = user_connection(current_user)
-    ready = mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id)
-    info = conn.account_info() if conn and ready else None
+    meta_ready = mt5_manager._ready if is_master_user(current_user) else pool_is_ready(current_user.id)
+    ready = _user_trading_ready(current_user)
+    info = conn.account_info() if conn and meta_ready else None
+    balance = info.balance if info else float(current_user.vps_balance or 0)
     return {
-        "metaapi_ready":    ready,
+        "metaapi_ready":    meta_ready,
         "event_set":        metaapi_ready_event.is_set(),
-        "bot_active":       active_bots.get(current_user.id, False),
-        "account_info_ok":  info is not None,
-        "balance":          info.balance if info else None,
+        "bot_active":       active_bots.get(current_user.id, False) or bool(current_user.bot_active),
+        "account_info_ok":  info is not None or bool(current_user.vps_ready),
+        "balance":          balance,
         "role":             "master" if is_master_user(current_user) else "follower",
+        "trading_backend":  "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
+        "vps_ready":        bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
+        "vps_status":       current_user.vps_status or "stopped",
+        "mt5_ready":        ready,
+        "agents_online":    len(agent_hub.list_agents()),
     }
 
 
@@ -2867,6 +2910,21 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                     equity=msg.get("equity"),
                     ready=msg.get("ready"),
                 )
+                # Persist for /me dashboard (mobile) without waiting on supervisor
+                try:
+                    dbh = SessionLocal()
+                    row = dbh.query(User).filter(User.id == user.id).first()
+                    if row:
+                        if msg.get("balance") is not None:
+                            row.vps_balance = float(msg.get("balance") or 0)
+                        row.vps_ready = bool(msg.get("ready"))
+                        row.vps_status = "running" if msg.get("ready") else "starting"
+                        row.vps_last_seen = datetime.utcnow()
+                        row.vps_last_error = None
+                        dbh.commit()
+                    dbh.close()
+                except Exception as e:
+                    print(f"[AGENT HUB] heartbeat db: {e}")
                 continue
 
             if mtype == "ack":

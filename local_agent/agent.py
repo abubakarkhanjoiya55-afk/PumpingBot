@@ -123,18 +123,25 @@ class PumpingAgent:
         def on_close(ws, status, msg):
             print(f"[AGENT] WS closed status={status} {msg}")
 
-        self.ws = websocket.WebSocketApp(
-            url,
-            on_open=on_open,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close,
-        )
-        threading.Thread(
-            target=lambda: self.ws.run_forever(ping_interval=20, ping_timeout=10),
-            daemon=True,
-            name="agent-ws",
-        ).start()
+        def _run_ws():
+            while not self._stop.is_set():
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                )
+                try:
+                    self.ws.run_forever(ping_interval=20, ping_timeout=10)
+                except Exception as e:
+                    print(f"[AGENT] WS loop error: {e}")
+                if self._stop.is_set():
+                    break
+                print("[AGENT] WS disconnected — reconnect in 3s")
+                time.sleep(3)
+
+        threading.Thread(target=_run_ws, daemon=True, name="agent-ws").start()
 
     def send(self, payload: dict):
         with self._ws_lock:

@@ -74,9 +74,28 @@ def _persist_agent_open_results(results, symbol, trend, score, master_ticket,
 
 def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance,
                            entry, sl, master_ticket, source="BOT"):
-    """Broadcast COPY_OPEN to all online follower agents in parallel."""
+    """Broadcast COPY_OPEN to online follower agents with bot_active=True."""
     from agent_hub import agent_hub
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
+
+    db = SessionLocal()
+    try:
+        active_ids = {
+            row[0] for row in db.query(User.id).filter(
+                User.bot_active == True,
+                User.mt5_login != None,
+                User.username.notin_(["admin", "Admin99"]),
+            ).all()
+        }
+    finally:
+        db.close()
+
+    # Hub may mark ready a moment after connect — prefer ready, else all online
+    online = {s.user_id for s in agent_hub.online_followers(require_ready=False)}
+    targets = active_ids & online
+    if not targets:
+        print("[COPY AGENT] No bot_active online followers for fan-out")
+        return []
 
     payload = {
         "type": "copy_open",
@@ -92,7 +111,11 @@ def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance
         "source": source,
     }
     results = agent_hub.broadcast_sync(
-        payload, roles={"follower"}, require_ready=True, timeout=2.5
+        payload,
+        roles={"follower"},
+        only_user_ids=targets,
+        require_ready=False,
+        timeout=2.5,
     )
     _persist_agent_open_results(
         results, symbol, trend, score, master_ticket, SessionLocal, Trade

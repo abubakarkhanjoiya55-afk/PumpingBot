@@ -146,6 +146,7 @@ class AgentHub:
         *,
         roles: Optional[set[str]] = None,
         exclude_user: Optional[int] = None,
+        only_user_ids: Optional[set[int]] = None,
         timeout: float = 2.5,
         require_ready: bool = True,
     ) -> list[dict]:
@@ -155,6 +156,8 @@ class AgentHub:
         targets = []
         for s in list(self._agents.values()):
             if s.user_id == exclude_user:
+                continue
+            if only_user_ids is not None and s.user_id not in only_user_ids:
                 continue
             if s.role not in roles:
                 continue
