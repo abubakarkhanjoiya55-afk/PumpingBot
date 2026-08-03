@@ -184,18 +184,39 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-echo "Waiting for health at $PUBLIC_URL/health ..."
-for i in $(seq 1 90); do
+echo "Polling Railway deployment status ..."
+for i in $(seq 1 120); do
+  DEP_STATUS="$(gql "{\"query\":\"query { deployments(first: 3, input: { serviceId: \\\"$SERVICE_ID\\\", environmentId: \\\"$ENV_ID\\\" }) { edges { node { id status createdAt } } } }\"}")"
+  echo "  deploy-status try $i: $DEP_STATUS" | head -c 500; echo
+  STATUS="$(printf '%s' "$DEP_STATUS" | python3 -c '
+import json,sys
+raw=sys.stdin.read()
+try:
+  d=json.loads(raw)
+except Exception:
+  print(""); raise SystemExit
+edges=((d.get("data") or {}).get("deployments") or {}).get("edges") or []
+if not edges:
+  print(""); raise SystemExit
+print((edges[0].get("node") or {}).get("status") or "")
+' 2>/dev/null || true)"
+  echo "  latest deployment status=$STATUS"
+
   code="$(curl -s -o /tmp/scenecut_health.json -w '%{http_code}' --max-time 12 "$PUBLIC_URL/health" || true)"
   body="$(cat /tmp/scenecut_health.json 2>/dev/null || true)"
-  echo "  try $i: HTTP $code $body"
+  echo "  health try $i: HTTP $code $body"
   if [ "$code" = "200" ]; then
     echo "Healthy permanent URL: $PUBLIC_URL"
     echo "Download page: $PUBLIC_URL/download"
     exit 0
   fi
-  sleep 10
+  if printf '%s' "$STATUS" | grep -Eqi 'FAILED|CRASHED|REMOVED'; then
+    echo "::error::Railway deployment $STATUS — open build logs in Railway dashboard for service scenecut"
+    exit 1
+  fi
+  sleep 15
 done
 
 echo "Build may still be running. URL reserved: $PUBLIC_URL"
+echo "Build logs (open in browser): https://railway.com/project/${PROJECT_ID}/service/${SERVICE_ID}"
 exit 0
