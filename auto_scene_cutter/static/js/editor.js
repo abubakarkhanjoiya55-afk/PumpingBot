@@ -38,8 +38,8 @@ function fmtTime(seconds) {
   const m = Math.floor((s % 3600) / 60);
   const sec = s % 60;
   const whole = Math.floor(sec);
-  const frac = Math.floor((sec - whole) * 100);
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(whole).padStart(2, "0")}.${String(frac).padStart(2, "0")}`;
+  const frames = Math.floor((sec - whole) * 25); // 25fps display like reference
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(whole).padStart(2, "0")}:${String(frames).padStart(2, "0")}`;
 }
 
 function showError(msg) {
@@ -65,9 +65,12 @@ function setBusy(busy) {
     "btnApplyRematch",
     "btnSkipClip",
     "btnSample",
+    "btnRerunCut",
+    "btnRerunCutMain",
     "btnSaveProject",
     "btnOpenProject",
     "btnUndo",
+    "btnUndoTool",
     "btnTrimInMinus",
     "btnTrimInPlus",
     "btnTrimOutMinus",
@@ -145,11 +148,24 @@ function writeSettingsToUi(settings) {
 }
 
 function updateFileCard(key, name, meta) {
-  const card = document.querySelector(`.file-card[data-key="${key}"]`);
+  const card =
+    document.querySelector(`.file-row[data-key="${key}"]`) ||
+    document.querySelector(`.file-card[data-key="${key}"]`);
   if (!card) return;
   card.classList.remove("empty");
-  card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
+  if (card.classList.contains("file-row")) {
+    const type =
+      key === "movie" ? "MOV" : key.includes("audio") ? "AUD" : "SRT";
+    card.innerHTML = `
+      <span class="ftype">${type}</span>
+      <div class="fname">${name}<span class="fmeta">${meta || ""}</span></div>
+      <span class="fcheck"></span>`;
+  } else {
+    card.innerHTML = `<strong>${name}</strong><div class="meta">${meta || ""}</div>`;
+  }
   state.files[key] = name;
+  const save = $("autoSaveLabel");
+  if (save) save.textContent = "Auto-saved just now";
 }
 
 function bindFileInput(inputId, key, kind) {
@@ -236,6 +252,23 @@ function fillSceneSelect(selectedSceneId) {
   else sel.value = "";
 }
 
+function renderRuler(maxEnd, width) {
+  const ruler = $("timeRuler");
+  if (!ruler) return;
+  ruler.innerHTML = "";
+  ruler.style.minWidth = `${width}px`;
+  const step = state.pxPerSec >= 40 ? 1 : state.pxPerSec >= 20 ? 5 : 10;
+  for (let t = 0; t <= maxEnd + step; t += step) {
+    const mark = document.createElement("div");
+    mark.className = "ruler-mark";
+    mark.style.left = `${t * state.pxPerSec}px`;
+    const m = Math.floor(t / 60);
+    const s = Math.floor(t % 60);
+    mark.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    ruler.appendChild(mark);
+  }
+}
+
 function renderTimeline() {
   const track = $("trackScenes");
   const audioTrack = $("trackAudio");
@@ -250,6 +283,7 @@ function renderTimeline() {
       wave.classList.remove("active");
       wave.style.width = "";
     }
+    renderRuler(30, 800);
     state.outputDuration = 0;
     updateFooterStats();
     return;
@@ -260,8 +294,8 @@ function renderTimeline() {
   const width = Math.max(800, maxEnd * state.pxPerSec + 80);
   track.style.minWidth = `${width}px`;
   audioTrack.style.minWidth = `${width}px`;
+  renderRuler(maxEnd, width);
 
-  // Reference Track 1: one continuous narration waveform bar
   if (wave) {
     wave.classList.add("active");
     wave.style.width = `${Math.max(40, maxEnd * state.pxPerSec)}px`;
@@ -269,21 +303,26 @@ function renderTimeline() {
 
   clips.forEach((clip) => {
     const left = clip.timeline_start * state.pxPerSec;
-    const w = Math.max(36, clip.clip_duration * state.pxPerSec - 4);
+    const w = Math.max(44, clip.clip_duration * state.pxPerSec - 4);
     const block = document.createElement("button");
     block.type = "button";
     block.className =
       "scene-block" + (state.selectedClipKey === clip.key ? " selected" : "");
     block.style.left = `${left}px`;
     block.style.width = `${w}px`;
-    const id = String(clip.index).padStart(3, "0");
-    block.innerHTML = `<div class="sid">Clip ${id}</div><div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
+    const id = String(clip.scene_id ?? clip.index).padStart(3, "0");
+    block.innerHTML = `
+      <div class="sid">SC_${id}</div>
+      <div class="sidx">#${clip.index}</div>
+      <div class="sdur">${clip.clip_duration.toFixed(1)}s</div>`;
     block.title = clip.scene_text || clip.narration_text || "";
     block.addEventListener("click", () => selectClip(clip.key));
     track.appendChild(block);
   });
 
   $("timelineScaleLabel").textContent = `Scale: ${state.pxPerSec}px/s`;
+  const zoom = $("zoomSlider");
+  if (zoom) zoom.value = String(state.pxPerSec);
   updateFooterStats();
 }
 
@@ -297,14 +336,21 @@ function selectClip(key) {
   $("propTitle").textContent = clip.matched
     ? `Scene_${String(clip.scene_id ?? clip.index).padStart(3, "0")}`
     : `Narration_${clip.narration_index} (skipped)`;
+  if ($("propFile")) $("propFile").textContent = state.files.movie || "movie.mp4";
   $("propStart").textContent =
-    clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
-  $("propEnd").textContent = clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
+    clip.timeline_start != null ? fmtTime(clip.timeline_start) : "—";
+  $("propEnd").textContent =
+    clip.timeline_end != null ? fmtTime(clip.timeline_end) : "—";
   $("propDur").textContent = clip.matched ? fmtTime(clip.clip_duration) : "—";
+  if ($("propSourceIn"))
+    $("propSourceIn").textContent =
+      clip.clip_start != null ? fmtTime(clip.clip_start) : "—";
+  if ($("propSourceOut"))
+    $("propSourceOut").textContent =
+      clip.clip_end != null ? fmtTime(clip.clip_end) : "—";
 
   const subText = clip.scene_text || clip.narration_text || "";
   $("propSubs").textContent = String(countSubtitleLines(subText));
-  // Reference-style purple subtitle box (scene dialogue)
   $("propNote").textContent = subText || "—";
 
   $("propScore").textContent =
@@ -324,9 +370,13 @@ function selectClip(key) {
 function updateFooterStats() {
   const clips = (state.clips || []).filter((c) => c.matched);
   $("statScenes").textContent = String(clips.length);
+  if ($("statClips")) $("statClips").textContent = String(clips.length);
+  if ($("statSubs")) $("statSubs").textContent = String(
+    Number($("statSubs").textContent) || 0
+  );
   if (!clips.length) {
-    $("statDuration").textContent = "00:00:00.00";
-    $("statAvg").textContent = "00:00:00.00";
+    $("statDuration").textContent = "00:00:00:00";
+    $("statAvg").textContent = "00:00:00:00";
     return;
   }
   const total = clips.reduce((acc, c) => acc + (c.clip_duration || 0), 0);
@@ -338,11 +388,15 @@ function updatePlayhead() {
   const video = $("videoPlayer");
   const t = video.currentTime || 0;
   $("playhead").style.left = `${t * state.pxPerSec}px`;
+  const head = $("playheadTime");
+  if (head) head.textContent = fmtTime(t).slice(0, 8);
   const dur =
     video.duration && Number.isFinite(video.duration)
       ? video.duration
       : state.outputDuration || 0;
   $("timecode").textContent = `${fmtTime(t)} / ${fmtTime(dur)}`;
+  const scrub = $("scrubBar");
+  if (scrub && dur > 0) scrub.value = String(Math.round((t / dur) * 1000));
 }
 
 function showDownloads(show, reportUrl) {
@@ -363,10 +417,7 @@ function applyPlanResult(data, opts = {}) {
   if (data.project_name) {
     state.projectName = data.project_name;
     const pl = $("projectNameLabel");
-    if (pl) {
-      pl.hidden = true;
-      pl.textContent = `Project: ${state.projectName}`;
-    }
+    if (pl) pl.textContent = state.projectName || "My Project 01";
   }
   if (data.subtitle_count != null) $("statSubs").textContent = String(data.subtitle_count);
 
@@ -597,10 +648,9 @@ async function saveProject() {
     if (!res.ok) throw new Error(data.error || "Save fail");
     state.projectName = data.project_name;
     const pl = $("projectNameLabel");
-    if (pl) {
-      pl.hidden = true;
-      pl.textContent = `Project: ${state.projectName}`;
-    }
+    if (pl) pl.textContent = state.projectName || "My Project 01";
+    const save = $("autoSaveLabel");
+    if (save) save.textContent = "Auto-saved just now";
     showOk(`Saved ${data.filename}`);
   } catch (err) {
     showError(err.message || String(err));
@@ -706,7 +756,23 @@ function wireControls() {
   bindFileInput("fileNarrationAudio", "narration_audio", "narration_audio");
   bindFileInput("fileNarrationSrt", "narration_srt", "narration_srt");
 
-  $("btnAutoCutTop").addEventListener("click", runAutoCut);
+  // Export button runs full auto-cut pipeline (then downloads appear)
+  $("btnAutoCutTop").addEventListener("click", async () => {
+    if (!state.files.movie && !state.files.movie_srt) {
+      $("btnSample").click();
+      return;
+    }
+    await runAutoCut();
+    const dl = $("downloadBlock");
+    if (dl && !dl.hidden) dl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  $("btnMenuExport")?.addEventListener("click", () => $("btnAutoCutTop").click());
+  $("btnMenuFile")?.addEventListener("click", () => {
+    const menu = $("moreMenu");
+    if (menu) menu.hidden = false;
+  });
+  $("btnMenuEdit")?.addEventListener("click", () => undoLast());
+
   $("btnApplyRematch").addEventListener("click", () => {
     const val = $("sceneSelect").value;
     rematchSelected(val === "" ? null : Number(val), true);
@@ -717,6 +783,7 @@ function wireControls() {
     closeMoreMenu();
     undoLast();
   });
+  $("btnUndoTool")?.addEventListener("click", () => undoLast());
   $("btnSaveProject").addEventListener("click", () => {
     closeMoreMenu();
     saveProject();
@@ -731,13 +798,30 @@ function wireControls() {
     const menu = $("moreMenu");
     if (menu) menu.hidden = !menu.hidden;
   });
-  $("btnToggleAdvanced")?.addEventListener("click", () => {
+  const openAdvanced = () => {
     closeMoreMenu();
     const box = $("advancedBox");
     if (box) {
       box.open = true;
       box.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
+  };
+  $("btnToggleAdvanced")?.addEventListener("click", openAdvanced);
+  $("btnRailSettings")?.addEventListener("click", openAdvanced);
+  $("btnRailImport")?.addEventListener("click", () => {
+    $("fileMovie")?.click();
+  });
+  document.querySelectorAll(".rail-btn[data-rail]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".rail-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
+  document.querySelectorAll(".ptab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll(".ptab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+    });
   });
   document.addEventListener("click", (e) => {
     const wrap = document.querySelector(".menu-wrap");
@@ -777,9 +861,10 @@ function wireControls() {
     });
   });
 
-  $("btnSample").addEventListener("click", async () => {
+  const loadSampleAndCut = async () => {
     resetStatus();
     showDownloads(false);
+    closeMoreMenu();
     try {
       const res = await fetch("/api/load-sample", { method: "POST" });
       const data = await res.json();
@@ -802,10 +887,21 @@ function wireControls() {
       if (data.settings) writeSettingsToUi(data.settings);
       $("videoPlayer").src = data.files.movie_url;
       $("playerPlaceholder").classList.add("hide");
+      const pl = $("projectNameLabel");
+      if (pl) pl.textContent = "My Project 01";
       await runAutoCut();
     } catch (err) {
       showError(err.message || String(err));
     }
+  };
+  $("btnSample").addEventListener("click", loadSampleAndCut);
+  $("btnRerunCut")?.addEventListener("click", () => {
+    closeMoreMenu();
+    runAutoCut();
+  });
+  $("btnRerunCutMain")?.addEventListener("click", () => {
+    if (!state.files.movie && !state.files.movie_srt) loadSampleAndCut();
+    else runAutoCut();
   });
 
   const video = $("videoPlayer");
@@ -813,14 +909,33 @@ function wireControls() {
   video.addEventListener("loadedmetadata", updatePlayhead);
   $("btnPlay").addEventListener("click", () => {
     if (!video.src) return;
-    if (video.paused) video.play();
-    else video.pause();
+    if (video.paused) {
+      video.play();
+      $("btnPlay").textContent = "Pause";
+    } else {
+      video.pause();
+      $("btnPlay").textContent = "Play";
+    }
   });
   $("btnSeekBack").addEventListener("click", () => {
     video.currentTime = Math.max(0, video.currentTime - 5);
   });
   $("btnSeekFwd").addEventListener("click", () => {
     video.currentTime = video.currentTime + 5;
+  });
+  $("btnSeekBack1")?.addEventListener("click", () => {
+    video.currentTime = Math.max(0, video.currentTime - 1);
+  });
+  $("btnSeekFwd1")?.addEventListener("click", () => {
+    video.currentTime = video.currentTime + 1;
+  });
+  $("scrubBar")?.addEventListener("input", (e) => {
+    const dur =
+      video.duration && Number.isFinite(video.duration)
+        ? video.duration
+        : state.outputDuration || 0;
+    if (!dur) return;
+    video.currentTime = (Number(e.target.value) / 1000) * dur;
   });
   $("btnZoomIn").addEventListener("click", () => {
     state.pxPerSec = Math.min(80, state.pxPerSec + 4);
@@ -829,6 +944,11 @@ function wireControls() {
   });
   $("btnZoomOut").addEventListener("click", () => {
     state.pxPerSec = Math.max(8, state.pxPerSec - 4);
+    renderTimeline();
+    updatePlayhead();
+  });
+  $("zoomSlider")?.addEventListener("input", (e) => {
+    state.pxPerSec = Number(e.target.value) || 24;
     renderTimeline();
     updatePlayhead();
   });

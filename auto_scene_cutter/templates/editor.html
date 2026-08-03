@@ -3,34 +3,54 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-  <meta name="theme-color" content="#0b0d12" />
-  <title>SceneCut Pro — AI Movie Scene Cutter</title>
+  <meta name="theme-color" content="#0e0e12" />
+  <title>SceneCut Pro — AI Movie Explanation Editor</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}" />
 </head>
 <body>
   <div class="app">
+    <!-- Top bar — reference #2 -->
     <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">S</div>
-        <div class="brand-text">
-          <strong>SceneCut Pro</strong>
-          <span>AI Movie Scene Cutter</span>
+      <div class="top-left">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">✂</div>
+          <div class="brand-text">
+            <strong>SceneCut Pro</strong>
+            <span>AI Movie Explanation Editor</span>
+          </div>
         </div>
+        <nav class="menubar" aria-label="Main menu">
+          <button type="button" class="menu-item" id="btnMenuFile">File</button>
+          <button type="button" class="menu-item" id="btnMenuEdit">Edit</button>
+          <button type="button" class="menu-item">View</button>
+          <button type="button" class="menu-item" id="btnMenuExport">Export</button>
+          <button type="button" class="menu-item" id="btnToggleAdvanced">Settings</button>
+          <button type="button" class="menu-item">Help</button>
+        </nav>
       </div>
+
+      <div class="top-center">
+        <span class="proj-dot" aria-hidden="true"></span>
+        <strong id="projectNameLabel">My Project 01</strong>
+        <span class="autosave" id="autoSaveLabel">Ready</span>
+      </div>
+
       <div class="top-actions top-actions-desktop">
         <div class="menu-wrap">
-          <button class="btn" id="btnMoreMenu" type="button" title="More">⋯</button>
+          <button class="btn btn-ghost" id="btnMoreMenu" type="button" title="More">⋯</button>
           <div class="menu-drop" id="moreMenu" hidden>
-            <button type="button" id="btnUndo">Undo</button>
+            <button type="button" id="btnSample">Load Sample</button>
+            <button type="button" id="btnRerunCut">Re-run Auto Cut</button>
             <button type="button" id="btnOpenProject">Open Project</button>
             <button type="button" id="btnSaveProject">Save Project</button>
-            <button type="button" id="btnToggleAdvanced">Pro Settings</button>
+            <button type="button" id="btnUndo">Undo</button>
+            <a href="/download">Download Student Pack</a>
             <button type="button" id="btnQuitDesktop" hidden>Quit</button>
           </div>
         </div>
-        <a class="btn" id="btnDownloadApp" href="/download" title="Student pack download">Download</a>
-        <button class="btn" id="btnSample" type="button">Load Sample</button>
-        <button class="btn btn-primary" id="btnAutoCutTop" type="button">Auto Cut Scenes</button>
+        <button class="btn btn-primary btn-export" id="btnAutoCutTop" type="button">
+          <span class="ico-up" aria-hidden="true">↑</span> Export
+        </button>
         <input id="fileProject" type="file" accept=".json,application/json" hidden />
       </div>
       <div class="top-actions top-actions-mobile">
@@ -39,196 +59,294 @@
       </div>
     </header>
 
-    <main class="workspace">
-      <!-- Left: Imported Files + Auto Cut Status (reference) -->
-      <aside class="panel left">
-        <div class="panel-head">Imported Files</div>
-        <div class="panel-body">
-          <div class="upload-row">
-            <label>
-              Movie File
-              <input id="fileMovie" type="file" accept="video/*" />
-            </label>
-            <label>
-              Movie SRT
-              <input id="fileMovieSrt" type="file" accept=".srt" />
-            </label>
-            <label>
-              Narration Audio
-              <input id="fileNarrationAudio" type="file" accept="audio/*" />
-            </label>
-            <label>
-              Narration Timestamps (SRT)
-              <input id="fileNarrationSrt" type="file" accept=".srt" />
-            </label>
-          </div>
-
-          <div id="fileCards">
-            <div class="file-card empty" data-key="movie">Movie File — not loaded</div>
-            <div class="file-card empty" data-key="movie_srt">Movie SRT — not loaded</div>
-            <div class="file-card empty" data-key="narration_audio">Narration Audio — not loaded</div>
-            <div class="file-card empty" data-key="narration_srt">Narration Timestamps — not loaded</div>
-          </div>
-
-          <div class="panel-head subhead">Auto Cut Status</div>
-          <div class="progress-wrap">
-            <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-            <div class="progress-msg" id="progressMsg">Idle</div>
-          </div>
-          <ul class="status-list" id="statusList">
-            <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time">—</div></li>
-            <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time">—</div></li>
-            <li data-step="matching"><div class="check">✓</div><div>Clustering Scenes</div><div class="time">—</div></li>
-            <li data-step="cutting" class="status-extra"><div class="check">✓</div><div>Cutting Scenes</div><div class="time">—</div></li>
-            <li data-step="export" class="status-extra"><div class="check">✓</div><div>Export (VO + Subs)</div><div class="time">—</div></li>
-          </ul>
-
-          <details class="advanced-box" id="advancedBox">
-            <summary>Pro Settings</summary>
-            <div class="settings-grid">
-              <label>
-                Quality
-                <select id="setQuality">
-                  <option value="fast">Fast</option>
-                  <option value="balanced" selected>Balanced</option>
-                  <option value="high">High</option>
-                </select>
-              </label>
-              <label>
-                Transition
-                <select id="setTransition">
-                  <option value="none">None</option>
-                  <option value="fade" selected>Fade</option>
-                </select>
-              </label>
-              <label>
-                Max Clip (s)
-                <input id="setMaxClip" type="number" min="0.5" max="30" step="0.5" value="5" />
-              </label>
-              <label class="check-row">
-                <input id="setBurnSubs" type="checkbox" checked />
-                Burn narration subs
-              </label>
-            </div>
-          </details>
-
-          <div class="download-block" id="downloadBlock" hidden>
-            <div class="panel-head subhead">Download</div>
-            <div class="download-links">
-              <a id="dlFinal" href="/api/media/final" download>Final video</a>
-              <a id="dlCut" href="/api/media/cut" download>Cut only</a>
-              <a id="dlSrt" href="/api/media/timeline-srt" download>Timeline SRT</a>
-              <a id="dlReport" href="/api/media/report" download>HTML Report</a>
-            </div>
-          </div>
-        </div>
+    <div class="workspace-shell">
+      <!-- Left icon rail -->
+      <aside class="icon-rail" aria-label="Tools">
+        <button type="button" class="rail-btn active" data-rail="media" title="Media">▣</button>
+        <button type="button" class="rail-btn" data-rail="import" title="Import" id="btnRailImport">⬇</button>
+        <button type="button" class="rail-btn" data-rail="subs" title="Subtitles">Aa</button>
+        <button type="button" class="rail-btn" data-rail="scenes" title="Scenes">▦</button>
+        <button type="button" class="rail-btn" data-rail="audio" title="Audio">♪</button>
+        <button type="button" class="rail-btn" data-rail="text" title="Text">T</button>
+        <button type="button" class="rail-btn" data-rail="fx" title="Effects">✦</button>
+        <button type="button" class="rail-btn" data-rail="settings" title="Settings" id="btnRailSettings">⚙</button>
+        <div class="rail-spacer"></div>
+        <button type="button" class="rail-btn" title="Collapse" id="btnRailCollapse">«</button>
       </aside>
 
-      <!-- Center: preview -->
-      <section class="center">
-        <div class="player-stage">
-          <div class="player-frame">
-            <video id="videoPlayer" controls></video>
-            <div class="player-placeholder" id="playerPlaceholder">
-              Movie load karo — preview yahan dikhega
+      <main class="workspace">
+        <!-- Left: Project Files + Auto Cut Status -->
+        <aside class="panel left">
+          <div class="panel-head">Project Files</div>
+          <div class="panel-body">
+            <div class="upload-row compact">
+              <label class="file-pick">
+                <span>Movie</span>
+                <input id="fileMovie" type="file" accept="video/*" />
+              </label>
+              <label class="file-pick">
+                <span>Movie SRT</span>
+                <input id="fileMovieSrt" type="file" accept=".srt" />
+              </label>
+              <label class="file-pick">
+                <span>Narration</span>
+                <input id="fileNarrationAudio" type="file" accept="audio/*" />
+              </label>
+              <label class="file-pick">
+                <span>Narration SRT</span>
+                <input id="fileNarrationSrt" type="file" accept=".srt" />
+              </label>
             </div>
-          </div>
-        </div>
-        <div class="player-controls">
-          <button class="btn" id="btnSeekBack" type="button">← 5s</button>
-          <button class="btn" id="btnPlay" type="button">Play / Pause</button>
-          <button class="btn" id="btnSeekFwd" type="button">5s →</button>
-          <div class="timecode" id="timecode">00:00:00.00 / 00:00:00.00</div>
-        </div>
-      </section>
 
-      <!-- Right: Clip Properties (reference fields) -->
-      <aside class="panel right">
-        <div class="panel-head">Clip Properties</div>
-        <div class="panel-body">
-          <div class="prop-card" id="propCard">
-            <div class="prop-empty" id="propEmpty">
-              Timeline se koi scene select karo — yahan start/end/duration dikhega.
-            </div>
-            <div id="propDetails" hidden>
-              <div class="prop-title" id="propTitle">Scene_001</div>
-              <div class="prop-grid">
-                <div class="prop-row"><span>Start Time</span><strong id="propStart">—</strong></div>
-                <div class="prop-row"><span>End Time</span><strong id="propEnd">—</strong></div>
-                <div class="prop-row"><span>Duration</span><strong class="accent" id="propDur">—</strong></div>
-                <div class="prop-row"><span>Subtitle Lines</span><strong id="propSubs">—</strong></div>
+            <div id="fileCards" class="project-files">
+              <div class="file-row empty" data-key="movie">
+                <span class="ftype">MOV</span>
+                <div class="fname">Movie File — not loaded</div>
+                <span class="fcheck"></span>
               </div>
-              <div class="prop-note" id="propNote">—</div>
+              <div class="file-row empty" data-key="movie_srt">
+                <span class="ftype">SRT</span>
+                <div class="fname">Movie SRT — not loaded</div>
+                <span class="fcheck"></span>
+              </div>
+              <div class="file-row empty" data-key="narration_audio">
+                <span class="ftype">AUD</span>
+                <div class="fname">Narration Audio — not loaded</div>
+                <span class="fcheck"></span>
+              </div>
+              <div class="file-row empty" data-key="narration_srt">
+                <span class="ftype">SRT</span>
+                <div class="fname">Narration Timestamps — not loaded</div>
+                <span class="fcheck"></span>
+              </div>
+            </div>
 
-              <details class="edit-tools">
-                <summary>Edit Tools</summary>
-                <div class="rematch-box">
-                  <div class="rematch-label">Manual Rematch</div>
-                  <div class="prop-meta">
-                    <span>Match Score</span>
-                    <strong id="propScore">—</strong>
-                    <span>Scene ID</span>
-                    <strong id="propSceneId">—</strong>
-                  </div>
-                  <select id="sceneSelect"></select>
-                  <div class="rematch-actions">
-                    <button class="btn btn-primary" id="btnApplyRematch" type="button">Apply Scene</button>
-                    <button class="btn" id="btnSkipClip" type="button">Skip Clip</button>
-                  </div>
-                </div>
-                <div class="rematch-box">
-                  <div class="rematch-label">Trim / Order</div>
-                  <div class="rematch-actions">
-                    <button class="btn" id="btnTrimInMinus" type="button">In −</button>
-                    <button class="btn" id="btnTrimInPlus" type="button">In +</button>
-                    <button class="btn" id="btnTrimOutMinus" type="button">Out −</button>
-                    <button class="btn" id="btnTrimOutPlus" type="button">Out +</button>
-                  </div>
-                  <div class="rematch-actions" style="margin-top:8px;">
-                    <button class="btn" id="btnMoveLeft" type="button">← Earlier</button>
-                    <button class="btn" id="btnMoveRight" type="button">Later →</button>
-                  </div>
-                </div>
-              </details>
+            <div class="panel-head subhead">Auto Cut Status</div>
+            <div class="progress-wrap">
+              <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+              <div class="progress-msg" id="progressMsg">Idle</div>
+            </div>
+            <ul class="status-list" id="statusList">
+              <li data-step="analyze_movie"><div class="check">✓</div><div>Analyzing Movie</div><div class="time">—</div></li>
+              <li data-step="analyze_narration"><div class="check">✓</div><div>Analyzing Narration</div><div class="time">—</div></li>
+              <li data-step="matching"><div class="check">✓</div><div>Matching Scenes</div><div class="time">—</div></li>
+              <li data-step="cutting"><div class="check">✓</div><div>Cutting Scenes (Max 5s)</div><div class="time">—</div></li>
+              <li data-step="export"><div class="check">✓</div><div>Placing on Timeline</div><div class="time">—</div></li>
+            </ul>
+
+            <button class="btn btn-primary btn-rerun" id="btnRerunCutMain" type="button">
+              <span aria-hidden="true">↻</span> Re-run Auto Cut
+            </button>
+
+            <details class="advanced-box" id="advancedBox">
+              <summary>Pro Settings</summary>
+              <div class="settings-grid">
+                <label>
+                  Quality
+                  <select id="setQuality">
+                    <option value="fast">Fast</option>
+                    <option value="balanced" selected>Balanced</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+                <label>
+                  Transition
+                  <select id="setTransition">
+                    <option value="none">None</option>
+                    <option value="fade" selected>Fade</option>
+                  </select>
+                </label>
+                <label>
+                  Max Clip (s)
+                  <input id="setMaxClip" type="number" min="0.5" max="30" step="0.5" value="5" />
+                </label>
+                <label class="check-row">
+                  <input id="setBurnSubs" type="checkbox" checked />
+                  Burn narration subs
+                </label>
+              </div>
+            </details>
+
+            <div class="download-block" id="downloadBlock" hidden>
+              <div class="panel-head subhead">Download</div>
+              <div class="download-links">
+                <a id="dlFinal" href="/api/media/final" download>Final video</a>
+                <a id="dlCut" href="/api/media/cut" download>Cut only</a>
+                <a id="dlSrt" href="/api/media/timeline-srt" download>Timeline SRT</a>
+                <a id="dlReport" href="/api/media/report" download>HTML Report</a>
+              </div>
             </div>
           </div>
-        </div>
-      </aside>
-    </main>
+        </aside>
 
-    <!-- Bottom timeline — reference dual track -->
+        <!-- Center preview -->
+        <section class="center">
+          <div class="player-stage">
+            <div class="player-frame">
+              <video id="videoPlayer"></video>
+              <div class="player-placeholder" id="playerPlaceholder">
+                Movie load karo — preview yahan dikhega
+              </div>
+            </div>
+          </div>
+          <div class="transport">
+            <div class="transport-time" id="timecode">00:00:00:00 / 00:00:00:00</div>
+            <div class="transport-controls">
+              <button class="tbtn" id="btnSeekBack" type="button" title="-5s">&lt;&lt;</button>
+              <button class="tbtn" type="button" title="-1s" id="btnSeekBack1">&lt;</button>
+              <button class="tbtn tbtn-play" id="btnPlay" type="button" title="Play / Pause">Play</button>
+              <button class="tbtn" type="button" title="+1s" id="btnSeekFwd1">&gt;</button>
+              <button class="tbtn" id="btnSeekFwd" type="button" title="+5s">&gt;&gt;</button>
+            </div>
+            <div class="transport-right">
+              <label class="fit-label">Fit
+                <select id="fitSelect" aria-label="Fit">
+                  <option>Fit</option>
+                  <option>100%</option>
+                  <option>50%</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="scrub-wrap">
+            <input type="range" id="scrubBar" min="0" max="1000" value="0" />
+          </div>
+        </section>
+
+        <!-- Right: Clip / Audio / Subs tabs -->
+        <aside class="panel right">
+          <div class="prop-tabs" role="tablist">
+            <button type="button" class="ptab active" data-tab="clip">Clip</button>
+            <button type="button" class="ptab" data-tab="audio">Audio</button>
+            <button type="button" class="ptab" data-tab="subs">Subtitles</button>
+          </div>
+          <div class="panel-body">
+            <div class="prop-card" id="propCard">
+              <div class="prop-empty" id="propEmpty">
+                Timeline se koi scene select karo — yahan start/end/duration dikhega.
+              </div>
+              <div id="propDetails" hidden>
+                <div class="prop-section-title">Clip Properties</div>
+                <div class="prop-title" id="propTitle">Scene_001</div>
+                <div class="prop-grid fields">
+                  <div class="prop-row"><span>File Name</span><strong id="propFile">—</strong></div>
+                  <div class="prop-row"><span>Start Time</span><strong id="propStart">—</strong></div>
+                  <div class="prop-row"><span>End Time</span><strong id="propEnd">—</strong></div>
+                  <div class="prop-row"><span>Duration</span><strong class="accent" id="propDur">—</strong></div>
+                  <div class="prop-row"><span>Source In</span><strong id="propSourceIn">—</strong></div>
+                  <div class="prop-row"><span>Source Out</span><strong id="propSourceOut">—</strong></div>
+                  <div class="prop-row"><span>Subtitle Lines</span><strong id="propSubs">—</strong></div>
+                </div>
+
+                <div class="prop-section-title">Transform</div>
+                <label class="slider-row">Scale
+                  <input type="range" min="10" max="200" value="100" disabled />
+                  <span>100%</span>
+                </label>
+                <div class="xy-row">
+                  <label>X <input type="text" value="0" disabled /></label>
+                  <label>Y <input type="text" value="0" disabled /></label>
+                </div>
+
+                <div class="prop-section-title">Other</div>
+                <label class="slider-row">Speed
+                  <input type="range" min="25" max="200" value="100" disabled />
+                  <span>100%</span>
+                </label>
+                <label class="slider-row">Opacity
+                  <input type="range" min="0" max="100" value="100" disabled />
+                  <span>100%</span>
+                </label>
+
+                <div class="prop-note" id="propNote">—</div>
+
+                <details class="edit-tools" open>
+                  <summary>Edit Tools</summary>
+                  <div class="rematch-box">
+                    <div class="rematch-label">Manual Rematch</div>
+                    <div class="prop-meta">
+                      <span>Match Score</span>
+                      <strong id="propScore">—</strong>
+                      <span>Scene ID</span>
+                      <strong id="propSceneId">—</strong>
+                    </div>
+                    <select id="sceneSelect"></select>
+                    <div class="rematch-actions">
+                      <button class="btn btn-primary" id="btnApplyRematch" type="button">Apply Scene</button>
+                      <button class="btn" id="btnSkipClip" type="button">Skip Clip</button>
+                    </div>
+                  </div>
+                  <div class="rematch-box">
+                    <div class="rematch-label">Trim / Order</div>
+                    <div class="rematch-actions">
+                      <button class="btn" id="btnTrimInMinus" type="button">In −</button>
+                      <button class="btn" id="btnTrimInPlus" type="button">In +</button>
+                      <button class="btn" id="btnTrimOutMinus" type="button">Out −</button>
+                      <button class="btn" id="btnTrimOutPlus" type="button">Out +</button>
+                    </div>
+                    <div class="rematch-actions" style="margin-top:8px;">
+                      <button class="btn" id="btnMoveLeft" type="button">← Earlier</button>
+                      <button class="btn" id="btnMoveRight" type="button">Later →</button>
+                    </div>
+                  </div>
+                </details>
+
+                <button class="btn btn-reset" id="btnResetProps" type="button">Reset All</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <!-- Timeline -->
     <section class="timeline">
       <div class="timeline-toolbar">
-        <button class="tool" type="button">Sel</button>
-        <button class="tool" type="button">Split</button>
-        <button class="tool" id="btnToolDel" type="button">Del</button>
+        <button class="tool active" type="button" title="Select">↖</button>
+        <button class="tool" type="button" title="Cut">✂</button>
+        <button class="tool" type="button" title="Split">◫</button>
+        <button class="tool" id="btnToolDel" type="button" title="Delete">🗑</button>
+        <button class="tool" id="btnUndoTool" type="button" title="Undo">↶</button>
+        <span class="tool-sep"></span>
         <button class="tool" id="btnZoomOut" type="button">−</button>
+        <input type="range" id="zoomSlider" min="8" max="80" value="24" />
         <button class="tool" id="btnZoomIn" type="button">+</button>
         <span class="timecode" id="timelineScaleLabel">Scale: 24px/s</span>
-        <span class="timecode project-label" id="projectNameLabel" hidden>Project: —</span>
       </div>
       <div class="timeline-body">
         <div class="track-labels">
-          <div class="track-label">Track 1 · Narration</div>
-          <div class="track-label">Track 2 · Auto Cut Scenes</div>
-        </div>
-        <div class="tracks" id="tracks">
-          <div class="track" id="trackAudio">
-            <div class="audio-wave" id="audioWave"></div>
+          <div class="ruler-gutter"></div>
+          <div class="track-label">
+            <span>Narration Audio</span>
+            <span class="tmeta">👁 🔒</span>
           </div>
-          <div class="track" id="trackScenes"></div>
-          <div class="playhead" id="playhead" style="left:0"></div>
+          <div class="track-label">
+            <span>Auto Cut Scenes</span>
+            <span class="tmeta">👁 🔒</span>
+          </div>
+        </div>
+        <div class="tracks-wrap">
+          <div class="ruler" id="timeRuler"></div>
+          <div class="tracks" id="tracks">
+            <div class="track" id="trackAudio">
+              <div class="audio-wave" id="audioWave"></div>
+            </div>
+            <div class="track" id="trackScenes"></div>
+            <div class="playhead" id="playhead" style="left:0">
+              <div class="playhead-head" id="playheadTime">00:00:00</div>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
     <footer class="footer">
-      <div>Project Duration: <strong id="statDuration">00:00:00.00</strong></div>
-      <div>Total Scenes: <strong id="statScenes">0</strong></div>
-      <div>Avg Scene: <strong id="statAvg">00:00:00.00</strong></div>
-      <div>Subtitles: <strong id="statSubs">0</strong></div>
+      <div>Project Duration: <strong id="statDuration">00:00:00:00</strong></div>
+      <div>Scenes: <strong id="statScenes">0</strong></div>
+      <div>Total Clips: <strong id="statClips">0</strong></div>
+      <div>Average Clip Duration: <strong id="statAvg">00:00:00:00</strong></div>
       <div class="footer-extra">Quality: <strong id="statQuality">balanced</strong></div>
-      <div>Save Location: <strong>auto_scene_cutter/output</strong></div>
+      <div class="footer-path">📁 Save Location: <strong>auto_scene_cutter/output</strong></div>
     </footer>
 
     <!-- CapCut-style mobile dock -->
@@ -267,6 +385,9 @@
       </div>
     </div>
   </div>
+
+  <!-- hidden alias for subtitle count footer -->
+  <span id="statSubs" hidden>0</span>
 
   <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
 </body>
