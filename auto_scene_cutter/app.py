@@ -1196,9 +1196,10 @@ if __name__ == "__main__":
             app,
             host=host,
             port=port,
-            threads=8,
+            threads=16,
             channel_timeout=3600,
             recv_bytes=65536,
+            connection_limit=200,
         )
     else:
         app.run(host=host, port=port, debug=False)
