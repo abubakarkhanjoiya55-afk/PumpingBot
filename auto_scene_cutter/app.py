@@ -426,9 +426,31 @@ def _run_full_pipeline(settings: dict, mode: str = "full") -> dict:
     )
 
 
+def _asset_version() -> str:
+    """Cache-bust editor JS/CSS so mobile never keeps old sync-bug scripts."""
+    try:
+        js = RESOURCE_DIR / "static" / "js" / "editor.js"
+        css = RESOURCE_DIR / "static" / "css" / "editor.css"
+        stamp = max(js.stat().st_mtime_ns, css.stat().st_mtime_ns)
+        return str(stamp)
+    except OSError:
+        return "1"
+
+
 @app.get("/")
 def index():
-    return render_template("editor.html")
+    resp = app.make_response(render_template("editor.html", asset_v=_asset_version()))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.after_request
+def _no_cache_html(resp):
+    ct = (resp.headers.get("Content-Type") or "").lower()
+    if "text/html" in ct:
+        resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 def _max_upload_bytes() -> int:

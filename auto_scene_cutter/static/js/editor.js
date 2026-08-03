@@ -241,10 +241,10 @@ function updateFilesHint(extraTip) {
   if (!need.length) {
     el.classList.add("ready");
     el.innerHTML =
-      "Files ready ✓ (movie local, SRT jaisi). Ab <strong>Export</strong> — scenes foran, cut baad mein.";
+      "Imported ✓ — CapCut style. Ab <strong>Export</strong> dabao.";
   } else {
     el.classList.add("bad");
-    el.innerHTML = `Click / drag-drop se select karo: <strong>${need.join(", ")}</strong>`;
+    el.innerHTML = `Select karo: <strong>${need.join(", ")}</strong> — foran ready ho jayega.`;
   }
   if (extraTip) showOk(extraTip);
 }
@@ -461,66 +461,61 @@ function kindForKey(key) {
   return "narration_srt";
 }
 
-function showLargeFileDesktopTip(file) {
-  const el = $("filesHint");
-  if (!el || isLocalHost()) return;
-  const mb = (file.size / (1024 * 1024)).toFixed(0);
-  el.classList.remove("ready", "bad");
-  el.innerHTML =
-    `<strong>${mb}MB</strong> web pe upload slow padega. CapCut jaisi speed ke liye ` +
-    `<a href="/download" style="color:#c4b5fd;font-weight:700">Student Pack desktop</a> use karo — ` +
-    `warna Export dabao, parallel sync tez chalegi.`;
-}
-
-function applyLocalFileInstant(key, kind, file, opts = {}) {
-  state.localFiles[key] = file;
-  const instantReady = !!opts.instantReady;
-  state.synced[key] = false;
-  // CapCut: movie row turns green immediately like SRT (no sync spinner)
-  updateFileCard(key, file.name, `${formatBytes(file.size)} · ready`, {
+function markFileRowReady(key, file, label) {
+  updateFileCard(key, file.name, label || `${formatBytes(file.size)} · ready`, {
     ready: true,
-    syncing: !instantReady && !opts.deferSync,
+    syncing: false,
+    error: false,
   });
-  if (instantReady || opts.deferSync) {
-    const card = fileCardEl(key);
-    card?.classList.remove("syncing");
-    card?.classList.add("ready");
+  const card = fileCardEl(key);
+  if (card) {
+    card.classList.remove("syncing", "sync-error", "empty");
+    card.classList.add("ready");
   }
-  previewLocalMedia(kind, file);
-  showOk(`${file.name} add ho gaya ✓`);
-  $("importModal") && ($("importModal").hidden = true);
 }
 
-function startBackgroundSync(key, kind, file) {
+function applyLocalFileInstant(key, kind, file) {
+  // CapCut rule: import = instant green ready. NEVER show sync on the file row.
+  state.localFiles[key] = file;
+  state.synced[key] = false;
+  markFileRowReady(key, file);
+  previewLocalMedia(kind, file);
+  showOk(`${file.name} imported ✓`);
+  const modal = $("importModal");
+  if (modal) modal.hidden = true;
+  updateFilesHint();
+}
+
+function startBackgroundSync(key, kind, file, opts = {}) {
+  // quiet=true (default): CapCut — progress NEVER on Project Files row
+  const quiet = opts.quiet !== false;
   delete state.deferredSync[key];
   const job = (async () => {
     try {
       const data = await uploadFileResilient(file, kind, (pct, eta) => {
-        // Ignore stale job if user re-selected another file
         if (state.localFiles[key] !== file) return;
-        const etaTxt = eta != null && eta > 1 ? ` · ~${formatEta(eta)}` : "";
-        setCardSyncMeta(
-          key,
-          `${formatBytes(file.size)} · sync ${pct}%${etaTxt}`,
-          { syncing: true }
-        );
-        updateFilesHint();
+        // Keep file row green "ready" always — progress only in Export status
+        if (kind === "movie") {
+          const etaTxt = eta != null && eta > 1 ? ` · ~${formatEta(eta)}` : "";
+          setProgress(Math.min(90, 50 + pct * 0.4), `Preparing movie ${pct}%${etaTxt}`);
+          setStatus("cutting", "active", `${pct}%`);
+        }
       });
       if (state.localFiles[key] !== file) return data;
       state.synced[key] = true;
-      updateFileCard(
-        key,
-        data.filename || file.name,
-        `${data.meta || formatBytes(file.size)} · ready`,
-        { ready: true }
-      );
+      markFileRowReady(key, file, `${data.meta || formatBytes(file.size)} · ready`);
       return data;
     } catch (err) {
       if (state.localFiles[key] !== file) throw err;
       state.synced[key] = false;
-      setCardSyncMeta(key, `${formatBytes(file.size)} · sync fail — tap retry`, {
-        error: true,
-      });
+      if (!quiet || kind !== "movie") {
+        setCardSyncMeta(key, `${formatBytes(file.size)} · retry`, { error: true });
+      }
+      // Movie stays looking ready; error goes to toast / export status
+      if (kind === "movie") {
+        setStatus("cutting", "error", "fail");
+        setProgress(0, "Movie prepare fail");
+      }
       showError(formatUploadError(err));
       updateFilesHint();
       throw err;
@@ -536,22 +531,21 @@ function startBackgroundSync(key, kind, file) {
 async function waitForPendingUploads() {
   const jobs = Object.values(state.uploadJobs).filter(Boolean);
   if (!jobs.length) return;
-  showOk("Parallel sync chal rahi hai…");
   await Promise.all(
     jobs.map((j) =>
       j.catch(() => {
-        /* surfaced on card */
+        /* surfaced elsewhere */
       })
     )
   );
 }
 
 async function ensureSmallFilesSynced() {
-  // SRT/audio only — movie stays local until cut (CapCut speed)
+  // SRT/audio — already look ready; quiet sync in background
   ["movie_srt", "narration_srt", "narration_audio"].forEach((key) => {
     const file = state.localFiles[key];
     if (!file || state.synced[key] || state.uploadJobs[key]) return;
-    startBackgroundSync(key, kindForKey(key), file);
+    startBackgroundSync(key, kindForKey(key), file, { quiet: true });
   });
   await waitForPendingUploads();
 }
@@ -560,9 +554,10 @@ async function ensureMovieSynced() {
   const file = state.localFiles.movie || state.deferredSync.movie;
   if (state.synced.movie) return true;
   if (!file) return false;
+  // Never flip movie row to "sync %" — CapCut import already done
+  markFileRowReady("movie", file);
   if (!state.uploadJobs.movie) {
-    showOk("Movie sync (parallel) — scenes pehle ready ho chuki hain…");
-    startBackgroundSync("movie", "movie", file);
+    startBackgroundSync("movie", "movie", file, { quiet: true });
   }
   await waitForPendingUploads();
   return !!state.synced.movie;
@@ -607,25 +602,20 @@ function ingestSelectedFile(key, kind, file) {
     );
     return;
   }
-  // Cancel any previous movie sync — never block UI with sync 1%
-  if (kind === "movie" && state.uploadJobs.movie) {
-    delete state.uploadJobs.movie;
-  }
 
-  // Movie = always instant green ready like SRT (no upload on select)
+  // CapCut: EVERY file type imports in ~0ms UI — green ready immediately
+  applyLocalFileInstant(key, kind, file);
+
   if (kind === "movie") {
-    applyLocalFileInstant(key, kind, file, { instantReady: true, deferSync: true });
+    // Movie stays local until Export cut — NO upload on import (this was the bug)
     state.deferredSync.movie = file;
     state.synced.movie = false;
-    if (!isLocalHost() && file.size >= 400 * 1024 * 1024) {
-      showLargeFileDesktopTip(file);
-    }
+    if (state.uploadJobs.movie) delete state.uploadJobs.movie;
     return;
   }
 
-  // SRT / audio — tiny, sync foran (same as CapCut import)
-  applyLocalFileInstant(key, kind, file, { instantReady: false });
-  startBackgroundSync(key, kind, file);
+  // Tiny SRT/audio: quiet server copy (row stays ready, no sync spinner)
+  startBackgroundSync(key, kind, file, { quiet: true });
 }
 
 function bindFileInput(inputId, key, kind) {
@@ -1041,14 +1031,14 @@ async function runAutoCut(opts = {}) {
     setStatus("matching", "done", `${sceneCount} scenes`);
     setProgress(45, "Timeline ready");
     applyPlanResult(matchData);
-    showOk("Timeline ready ✓ — ab movie sync + cut…");
+    showOk("Timeline ready ✓");
 
-    // 3) Movie sync only now (parallel chunks), then cut/export
-    setStatus("cutting", "active", "movie sync…");
+    // 3) Prepare movie silently (file row stays ready — progress in Auto Cut only)
+    setStatus("cutting", "active", "prepare…");
     const movieOk = await ensureMovieSynced();
     if (!movieOk) {
       throw new Error(
-        "Movie sync fail. Red ! pe tap retry, ya /download Student Pack (2GB foran local)."
+        "Movie prepare fail. Export dobara dabao, ya /download Student Pack use karo."
       );
     }
 

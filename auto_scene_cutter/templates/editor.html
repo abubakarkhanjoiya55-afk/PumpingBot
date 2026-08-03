@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
   <meta name="theme-color" content="#0e0e10" />
   <title>SceneCut Pro — AI Movie Explanation Editor</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/editor.css') }}?v={{ asset_v }}" />
 </head>
 <body>
   <div class="app">
@@ -124,7 +125,7 @@
               </button>
             </div>
             <div class="files-hint" id="filesHint">
-              CapCut jaisa: Movie bhi SRT jaisi foran <strong>ready</strong>. Export pe scenes turant, cut baad mein.
+              CapCut import: koi bhi file select → foran <strong>ready</strong> (movie pe sync nahi).
             </div>
 
             <div class="panel-head subhead">Auto Cut Status</div>
@@ -433,6 +434,6 @@
   </div>
 
   <span id="statSubs" hidden>0</span>
-  <script src="{{ url_for('static', filename='js/editor.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/editor.js') }}?v={{ asset_v }}"></script>
 </body>
 </html>
