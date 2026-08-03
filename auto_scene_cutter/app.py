@@ -68,8 +68,11 @@ app = Flask(
     template_folder=str(RESOURCE_DIR / "templates"),
     static_folder=str(RESOURCE_DIR / "static"),
 )
-# Large movie uploads (Railway / desktop). Override with SCENECUT_MAX_UPLOAD_MB.
-app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("SCENECUT_MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+# Full-length movies (2GB+). Override with SCENECUT_MAX_UPLOAD_MB.
+# Chunked uploads send small parts; this caps total movie size + single-request body.
+_MAX_UPLOAD_MB = int(os.environ.get("SCENECUT_MAX_UPLOAD_MB", "20480"))  # 20 GB default
+app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_MB * 1024 * 1024
+app.config["SCENECUT_MAX_UPLOAD_BYTES"] = _MAX_UPLOAD_MB * 1024 * 1024
 
 SESSION = {
     "movie": None,
@@ -408,11 +411,24 @@ def index():
     return render_template("editor.html")
 
 
+def _max_upload_bytes() -> int:
+    return int(app.config.get("SCENECUT_MAX_UPLOAD_BYTES") or (20 * 1024 * 1024 * 1024))
+
+
+def _disk_free_bytes(path: Path) -> int | None:
+    try:
+        st = os.statvfs(path)
+        return int(st.f_bavail * st.f_frsize)
+    except (AttributeError, OSError):
+        return None
+
+
 @app.errorhandler(413)
 def _too_large(_err):
+    gb = max(1, _max_upload_bytes() // (1024 * 1024 * 1024))
     return jsonify(
         {
-            "error": "File bahut bari hai (max ~2GB). Chhoti movie try karo ya Student Pack desktop app use karo.",
+            "error": f"File limit ~{gb}GB hai. Agar movie is se bari hai to compress karo, ya /download Student Pack (desktop) use karo.",
         }
     ), 413
 
@@ -495,15 +511,37 @@ def api_upload_init():
         return jsonify({"error": err}), 400
     if size <= 0:
         return jsonify({"error": "File size invalid."}), 400
-    if size > int(app.config.get("MAX_CONTENT_LENGTH") or 0):
-        return jsonify({"error": "File bahut bari hai (max ~2GB)."}), 413
+
+    max_bytes = _max_upload_bytes()
+    if size > max_bytes:
+        gb = max(1, max_bytes // (1024 * 1024 * 1024))
+        return jsonify(
+            {
+                "error": f"Ye movie ~{size / (1024 * 1024):.0f}MB hai — limit ~{gb}GB. Compress karke try karo ya Student Pack desktop use karo.",
+            }
+        ), 413
 
     _ensure_dirs()
+    free = _disk_free_bytes(UPLOAD_DIR)
+    # Need movie + some headroom for ffmpeg outputs
+    if free is not None and free < size + (512 * 1024 * 1024):
+        free_gb = free / (1024 * 1024 * 1024)
+        return jsonify(
+            {
+                "error": (
+                    f"Server disk kam hai (~{free_gb:.1f}GB free) — {size / (1024 * 1024):.0f}MB movie "
+                    "yahan fit nahi. /download se Student Pack desktop use karo (wahan bari movie chal jati hai)."
+                ),
+            }
+        ), 507
+
     upload_id = uuid.uuid4().hex
     dest_name = _upload_dest_name(kind, suffix or "")
     part_path = UPLOAD_DIR / f".part_{upload_id}"
-    chunk_size = int(payload.get("chunk_size") or (2 * 1024 * 1024))
-    chunk_size = max(256 * 1024, min(chunk_size, 4 * 1024 * 1024))
+    # Bigger chunks for multi‑GB movies (faster, fewer requests)
+    default_chunk = 8 * 1024 * 1024 if size >= 1024 * 1024 * 1024 else 4 * 1024 * 1024
+    chunk_size = int(payload.get("chunk_size") or default_chunk)
+    chunk_size = max(256 * 1024, min(chunk_size, 16 * 1024 * 1024))
     total_chunks = (size + chunk_size - 1) // chunk_size
     with _UPLOAD_LOCK:
         PENDING_UPLOADS[upload_id] = {
@@ -516,9 +554,8 @@ def api_upload_init():
             "total_chunks": total_chunks,
             "next_index": 0,
         }
-    # Pre-create empty sparse-ish file
-    with open(part_path, "wb") as fh:
-        fh.truncate(size)
+    # Append-mode chunks — don't pre-allocate full multi-GB (saves disk pressure)
+    part_path.write_bytes(b"")
     return jsonify(
         {
             "ok": True,
@@ -556,15 +593,21 @@ def api_upload_chunk():
 
     data = chunk.read()
     part_path = Path(meta["part_path"])
-    offset = index * meta["chunk_size"]
     try:
-        with open(part_path, "r+b") as fh:
-            fh.seek(offset)
+        # Sequential append (matches next_index enforcement)
+        with open(part_path, "ab") as fh:
             fh.write(data)
         with _UPLOAD_LOCK:
             if upload_id in PENDING_UPLOADS:
                 PENDING_UPLOADS[upload_id]["next_index"] = index + 1
     except OSError as exc:
+        msg = str(exc)
+        if "No space" in msg or getattr(exc, "errno", None) == 28:
+            return jsonify(
+                {
+                    "error": "Disk full — bari movie web pe fit nahi. Student Pack desktop (/download) use karo.",
+                }
+            ), 507
         return jsonify({"error": f"Upload path failed: {exc}"}), 500
 
     return jsonify(

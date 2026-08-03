@@ -261,7 +261,7 @@ async function readJsonSafe(res) {
     if (res.status === 413)
       return {
         error:
-          "File bahut bari hai (path/upload failed). Chhoti movie try karo ya Student Pack use karo.",
+          "File limit cross — compress karo ya /download Student Pack desktop use karo (2GB+ wahan easy).",
       };
     return {
       error: text
@@ -276,8 +276,11 @@ function formatUploadError(err) {
   if (/SERVER_DOWN/i.test(msg)) {
     return "Server band / nahi mil raha. Page refresh karo. Desktop app hai to SceneCut dobara kholo.";
   }
+  if (/bahut bari|limit ~|disk (kam|full)|fit nahi/i.test(msg)) {
+    return msg;
+  }
   if (/failed to fetch|networkerror|load failed|abort/i.test(msg)) {
-    return "Upload toot gaya (net slow / timeout). Wi‑Fi pe chhoti movie try karo, ya /download se Student Pack use karo.";
+    return "Upload toot gaya (net slow / bari file). Wi‑Fi + dobara try, ya /download Student Pack desktop use karo — wahan 2GB+ movie foran chalti hai.";
   }
   return msg || "Upload/path failed";
 }
@@ -306,10 +309,17 @@ async function fetchWithRetry(url, options, tries = 3) {
   throw lastErr || new Error("failed to fetch");
 }
 
+function pickChunkSize(fileSize) {
+  // Multi‑GB movies need larger chunks or sync takes forever / hits limits
+  if (fileSize >= 2 * 1024 * 1024 * 1024) return 8 * 1024 * 1024;
+  if (fileSize >= 512 * 1024 * 1024) return 4 * 1024 * 1024;
+  if (fileSize >= 64 * 1024 * 1024) return 2 * 1024 * 1024;
+  return 1024 * 1024;
+}
+
 async function uploadFileResilient(file, kind, onProgress) {
   await ensureServerUp();
-  // Smaller chunks = CapCut-like smooth progress on phone nets
-  const CHUNK = 1024 * 1024;
+  const CHUNK = pickChunkSize(file.size);
   const useChunks = file.size > 3 * 1024 * 1024;
 
   if (!useChunks) {
@@ -489,6 +499,11 @@ function ingestSelectedFile(key, kind, file) {
     return;
   }
   applyLocalFileInstant(key, kind, file);
+  if (kind === "movie" && file.size >= 1500 * 1024 * 1024) {
+    showOk(
+      `${(file.size / (1024 * 1024)).toFixed(0)}MB movie — sync background mein chalegi (Wi‑Fi best).`
+    );
+  }
   // Non-blocking sync — CapCut style
   startBackgroundSync(key, kind, file);
 }
