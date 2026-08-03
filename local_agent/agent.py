@@ -13,6 +13,7 @@ Usage:
   set MT5_PASSWORD=...
   set MT5_SERVER=...
   set AGENT_ROLE=master   # or follower
+  set BOT_ACTIVE=1        # 1 only after user Start Bot
   python agent.py
 """
 
@@ -66,6 +67,7 @@ class PumpingAgent:
         self.server_url = _env("SERVER_URL", "http://127.0.0.1:8000")
         self.token = _env("ACCESS_TOKEN") or _env("TOKEN")
         self.role = (_env("AGENT_ROLE", "follower") or "follower").lower()
+        self.bot_active = (_env("BOT_ACTIVE", "1") or "1").strip() in ("1", "true", "True", "yes")
         self.login = int(_env("MT5_LOGIN", "0") or 0)
         self.password = _env("MT5_PASSWORD", "")
         self.server = _env("MT5_SERVER", "")
@@ -285,7 +287,7 @@ class PumpingAgent:
             MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
         )
 
-        print("[MASTER] Local M1 strategy started (no MetaAPI)")
+        print(f"[MASTER] Local M1 strategy started (no MetaAPI) bot_active={self.bot_active}")
         last_close = {}
         # Tiny shim so trading_engine can call copy_rates / symbol helpers
         bridge = MasterMT5Bridge(self.mt5)
@@ -299,6 +301,11 @@ class PumpingAgent:
                 open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
                 # Manage closes → notify server for fan-out
                 self._master_manage_positions(open_pos, bridge)
+
+                # Start Bot OFF → manage open trades only, no new entries
+                if not self.bot_active:
+                    time.sleep(SCAN_INTERVAL_SEC)
+                    continue
 
                 if len(open_pos) >= MAX_OPEN_TRADES:
                     time.sleep(SCAN_INTERVAL_SEC)

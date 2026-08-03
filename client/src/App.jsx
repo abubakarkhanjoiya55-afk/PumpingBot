@@ -576,8 +576,8 @@ export default function App() {
           <>
             <h1>MT5 Connection</h1>
             <p className="mt5-hint">
-              Mobile se MT5 login kaafi hai — trading VPS pe auto chalti hai.
-              Multiple accounts? <strong>Disconnect</strong> karo, phir naya login.
+              Mobile se MT5 login save karo, phir Dashboard pe <strong>Start Bot</strong> —
+              trading VPS pe auto start hogi. Multiple accounts? <strong>Disconnect</strong> → naya login.
             </p>
 
             {me?.mt5_connected ? (
@@ -585,7 +585,7 @@ export default function App() {
                 <div className="mt5-status-header">
                   <span className="mt5-status-icon">{mt5Live ? '✅' : '⏳'}</span>
                   <strong className={mt5Live ? 'green' : ''}>
-                    {mt5Live ? 'MT5 Connected (VPS)' : 'VPS Connecting…'}
+                    {mt5Live ? 'MT5 Connected (VPS)' : (me?.bot_active ? 'VPS Connecting…' : 'Saved — Start Bot')}
                   </strong>
                 </div>
                 <div className="mt5-status-details">
@@ -594,10 +594,16 @@ export default function App() {
                   <p><span>Balance:</span> {fmt(me.balance)}</p>
                   {me.vps_status && <p><span>VPS:</span> {me.vps_status}</p>}
                 </div>
-                {!mt5Live && (
+                {!mt5Live && me?.bot_active && (
                   <p className="mt5-sync-note">
                     VPS pe account connect ho raha hai — usually 30–90 sec.
                     PC pe kuch install/chalane ki zarurat nahi.
+                  </p>
+                )}
+                {!mt5Live && !me?.bot_active && (
+                  <p className="mt5-sync-note">
+                    Account save ho gaya. Dashboard pe <strong>Start Bot</strong> dabao —
+                    VPS agent tabhi start hoga.
                   </p>
                 )}
                 <button
@@ -625,7 +631,7 @@ export default function App() {
                 <strong>MT5 Not Connected</strong>
                 <p className="mt5-sync-note">
                   Neeche login/password/server daalo — mobile se bas itna.
-                  Baqi VPS pe auto connect ho jayega.
+                  Phir Dashboard → Start Bot.
                 </p>
               </div>
             )}

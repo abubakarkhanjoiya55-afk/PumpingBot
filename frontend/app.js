@@ -212,7 +212,9 @@
       ? 'Master account — your trades copy to all active followers.'
       : 'Follower account — master trades will mirror to your account.';
 
-    const canStart = m.mt5_connected && (m.mt5_ready || m.role === 'follower');
+    const canStart = m.mt5_connected && (
+      m.mt5_ready || m.vps_ready || m.role === 'follower' || m.trading_backend === 'vps_agent'
+    );
     $('#btn-start').disabled = !canStart || m.bot_active;
     $('#btn-stop').disabled = !m.bot_active;
 

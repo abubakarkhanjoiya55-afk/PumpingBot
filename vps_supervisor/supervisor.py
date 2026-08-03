@@ -46,6 +46,7 @@ class ManagedAgent:
         self.login = int(user["mt5_login"])
         self.password = user["mt5_password"]
         self.server = user["mt5_server"]
+        self.bot_active = bool(user.get("bot_active"))
         self.proc: Optional[subprocess.Popen] = None
         self.term_proc: Optional[subprocess.Popen] = None
         self.last_error: Optional[str] = None
@@ -123,8 +124,10 @@ class Supervisor:
                 "MT5_SERVER": agent.server,
                 "MT5_PATH": mt5_path,
                 "AGENT_ROLE": agent.role,
+                "BOT_ACTIVE": "1" if user.get("bot_active") else "0",
                 "PYTHONUNBUFFERED": "1",
             })
+            agent.bot_active = bool(user.get("bot_active"))
             agent_py = REPO_DIR / "local_agent" / "agent.py"
             if not agent_py.is_file():
                 raise FileNotFoundError(f"Missing {agent_py}")
@@ -167,6 +170,17 @@ class Supervisor:
             except Exception as e:
                 print(f"[VPS] stop error: {e}")
         agent.proc = None
+        # Also stop portable MT5 terminal so logins don't pile up
+        if agent.term_proc and agent.term_proc.poll() is None:
+            try:
+                agent.term_proc.terminate()
+                try:
+                    agent.term_proc.wait(timeout=5)
+                except Exception:
+                    agent.term_proc.kill()
+            except Exception as e:
+                print(f"[VPS] terminal stop error: {e}")
+        agent.term_proc = None
         agent.status = "stopped"
         agent.ready = False
 
@@ -187,14 +201,16 @@ class Supervisor:
                 self.agents[uid] = self.start_agent(user)
                 continue
 
-            # Credentials changed → restart
-            creds_changed = (
+            # Credentials / role / Start Bot flag changed → restart
+            bot_active = bool(user.get("bot_active"))
+            need_restart = (
                 int(user["mt5_login"]) != existing.login
                 or user["mt5_password"] != existing.password
                 or user["mt5_server"] != existing.server
                 or (user.get("role") or "follower") != existing.role
+                or bot_active != existing.bot_active
             )
-            if creds_changed:
+            if need_restart:
                 self.stop_agent(existing)
                 self.agents[uid] = self.start_agent(user)
                 continue
@@ -204,16 +220,11 @@ class Supervisor:
                 self.agents[uid] = self.start_agent(user)
                 continue
 
-            # Refresh fields
+            # Refresh fields — do NOT mark ready just because process is alive
             existing.password = user["mt5_password"]
+            existing.bot_active = bot_active
             existing.status = "running"
-
-        # Mark ready from live websocket hub? We don't have direct access —
-        # approximate: process alive for >15s ⇒ assume connecting/ready
-        now_pids = {a.user_id: a for a in self.agents.values() if a.alive()}
-        for a in now_pids.values():
-            a.ready = True  # WS hub is source of truth on server; process up = hosted
-            a.status = "running"
+            # ready stays False here; agent WS heartbeat on Railway sets vps_ready
 
     def run(self):
         print("=" * 60)

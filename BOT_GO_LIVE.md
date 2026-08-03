@@ -15,7 +15,7 @@ SECRET_KEY=...
 ```
 
 4. Check: `https://<bot-url>/api`  
-   - `"version": "3.28.0"`  
+   - `"version": "3.28.1"`  
    - `"use_metaapi": false`  
    - `"trading_backend": "agent"`
 
@@ -24,7 +24,7 @@ See `OWNER_GO_LIVE.md` / `vps_supervisor/README.md`
 `START_HERE.bat` window open rakho.
 
 ## 3) Test
-1. Admin login → MT5 connect → Start Bot  
+1. Admin login → MT5 connect → **Start Bot** (VPS agent tabhi start)  
 2. Badge: **MT5 Live** / **MT5 Connected (VPS)**  
 3. Test follower same  
 4. Master trade → follower copy  

@@ -3,23 +3,31 @@
 Code ready hai. Users mobile se login karenge.  
 **Sirf tum 1 Windows VPS chalaoge.**
 
+Full Railway layout: [`RAILWAY_PROJECTS.md`](RAILWAY_PROJECTS.md) · short bot checklist: [`BOT_GO_LIVE.md`](BOT_GO_LIVE.md)
+
 ---
 
-## A) Railway (website / API) — pehle ye
+## A) Railway — pehle ye (`proactive-healing` = bot)
 
-1. PR merge karo: https://github.com/abubakarkhanjoiya55-afk/PumpingBot/pull/45  
-2. Railway pe deploy ho (GitHub `main` connect)  
-3. Railway → Variables mein ye 3 daalo:
+1. PR merge karo: https://github.com/abubakarkhanjoiya55-afk/PumpingBot/pull/47  
+2. Railway project **`proactive-healing`** → service `web` → branch **`main`** → Redeploy  
+3. Variables (`.env.bot.example` se):
 
 ```
 TRADING_BACKEND=agent
 USE_METAAPI=0
 VPS_SECRET=apni-lambi-secret-yahan
+EMBED_MY_SIGNALS=0
+MY_SIGNALS_URL=https://<reasonable-essence-my-signals-url>
+SECRET_KEY=...
 ```
 
-4. Check: browser pe `https://YOUR-APP.up.railway.app/api`  
-   - `"version": "3.26.0"`  
-   - `"use_metaapi": false`
+4. Check: browser pe `https://YOUR-BOT.up.railway.app/api`  
+   - `"version": "3.28.1"`  
+   - `"use_metaapi": false`  
+   - `"trading_backend": "agent"`
+
+My Signals alag project: **`reasonable-essence`** → Dockerfile `my_signals_service/Dockerfile` (see `RAILWAY_PROJECTS.md`).
 
 ---
 
@@ -41,7 +49,7 @@ mkdir C:\PumpingBot -Force
 cd C:\PumpingBot
 # Agar git nahi: winget install Git.Git
 git clone -b main --single-branch https://github.com/abubakarkhanjoiya55-afk/PumpingBot.git
-REM Agar main pe abhi merge nahi hua: -b cursor/my-signals-separate-service-ff4b
+# Agar main pe abhi merge nahi: -b cursor/my-signals-separate-service-ff4b
 cd PumpingBot\vps_supervisor
 powershell -ExecutionPolicy Bypass -File .\setup_vps.ps1
 ```
@@ -51,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\setup_vps.ps1
 File: `C:\PumpingBot\PumpingBot\vps_supervisor\config.bat`
 
 ```bat
-set SERVER_URL=https://YOUR-APP.up.railway.app
+set SERVER_URL=https://YOUR-BOT.up.railway.app
 set VPS_SECRET=wahi-secret-jo-railway-pe-dalii
 ```
 
@@ -82,10 +90,10 @@ C:\PumpingBot\PumpingBot\vps_supervisor\START_HERE.bat
 
 ## D) Test (group se pehle)
 
-1. Mobile/PC pe website open  
-2. Admin login → MT5 connect (master) → Bot Start  
-3. 1 test user se MT5 connect → Bot Start  
-4. `GET /me/vps-status` ya dashboard pe ready dikhe  
+1. Mobile/PC pe **bot** website open (`proactive-healing` URL)  
+2. Admin login → MT5 connect (master) → **Start Bot**  
+3. Badge: **MT5 Live** / **MT5 Connected (VPS)**  
+4. 1 test user se MT5 connect → **Start Bot**  
 5. Master pe trade aaye → user pe copy dikhe  
 
 Tab group ko website link bhejo.
@@ -105,7 +113,7 @@ Tab group ko website link bhejo.
 |--------|-----|
 | Supervisor turant band | `config.bat` URL/secret check |
 | MT5 template error | `C:\PumpingBot\MT5_Template\terminal64.exe` |
-| User ready nahi | VPS window chal rahi hai? Railway `VPS_SECRET` same? |
-| Purana API version | PR merge + Railway redeploy |
+| User ready nahi | VPS window chal rahi hai? Railway `VPS_SECRET` same? Start Bot ON? |
+| Purana API version | PR #47 merge + Railway redeploy → `3.28.1` |
 
 Logs: `C:\PumpingBot\logs\`

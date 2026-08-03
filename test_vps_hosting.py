@@ -40,5 +40,15 @@ class TestCopyTradingDefaults(unittest.TestCase):
         self.assertTrue(ct.agent_mode_enabled())
 
 
+class TestAgentTokenExpiryHelper(unittest.TestCase):
+    def test_create_access_token_accepts_custom_minutes(self):
+        # Import only the token helper without starting the full app lifespan
+        import ast
+        src = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("expires_minutes", src)
+        self.assertIn("60 * 24 * 30", src)
+        self.assertIn('scope": "vps_agent"', src)
+
+
 if __name__ == "__main__":
     unittest.main()

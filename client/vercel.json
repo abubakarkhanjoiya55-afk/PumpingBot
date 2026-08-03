@@ -4,6 +4,6 @@
   "framework": "vite",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "env": {
-    "VITE_API_URL": "https://web-production-26ef9.up.railway.app"
+    "VITE_API_URL": "https://web-production-c78a0.up.railway.app"
   }
 }

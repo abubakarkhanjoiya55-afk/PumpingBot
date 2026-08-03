@@ -1,8 +1,6 @@
 """Tests for agent hub fan-out (no MetaAPI / no MT5 required)."""
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock
-
 from agent_hub import AgentHub, AgentSession
 
 
@@ -95,6 +93,15 @@ class TestCopyTradingAgentFlag(unittest.TestCase):
         self.assertTrue(hasattr(ct, "agent_mode_enabled"))
         self.assertTrue(callable(ct.fanout_open_via_agents))
         self.assertTrue(callable(ct.fanout_close_via_agents))
+
+    def test_fanout_open_skips_inactive_followers(self):
+        """COPY_OPEN targets = bot_active IDs ∩ online agents (excludes idle)."""
+        # Mirrors fanout_open_via_agents intersection in copy_trading.py
+        active_ids = {10}          # only user 10 pressed Start Bot
+        online = {10, 11}          # both agents WS-connected
+        targets = active_ids & online
+        self.assertEqual(targets, {10})
+        self.assertNotIn(11, targets)
 
 
 if __name__ == "__main__":

@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
 ]
 
-API_VERSION = "3.28.0"   # Bot go-live: VPS-ready /me + mobile Start Bot
+API_VERSION = "3.28.1"   # Start Bot gates VPS; long-lived agent JWT; ready from heartbeat
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -492,9 +492,10 @@ def get_password_hash(password):
 def verify_password(plain, hashed):
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
-def create_access_token(data: dict):
+def create_access_token(data: dict, expires_minutes: int | None = None):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    minutes = ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else int(expires_minutes)
+    expire = datetime.utcnow() + timedelta(minutes=minutes)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -2327,10 +2328,15 @@ async def connect_mt5(creds: MT5Credentials,
         current_user.mt5_login = creds.mt5_login
         current_user.mt5_password = creds.mt5_password
         current_user.mt5_server = creds.mt5_server
-        # Queue for Windows VPS supervisor — user PC agent NOT required
-        current_user.vps_desired = True
-        current_user.vps_status = "starting"
-        current_user.vps_ready = False
+        # Credentials only — VPS agent starts on /bot/start (Start Bot)
+        if current_user.bot_active:
+            current_user.vps_desired = True
+            current_user.vps_status = "starting"
+            current_user.vps_ready = False
+        else:
+            current_user.vps_desired = False
+            current_user.vps_status = "idle"
+            current_user.vps_ready = False
         current_user.vps_last_error = None
         db.commit()
         role = "master" if is_master_user(current_user) else "follower"
@@ -2341,15 +2347,15 @@ async def connect_mt5(creds: MT5Credentials,
         )
         return {
             "message": (
-                "MT5 account saved. Trading aapke VPS pe auto start hogi — "
-                "mobile se bas login kaafi hai. PC pe kuch install/chalane ki zarurat nahi."
+                "MT5 account saved. Ab Start Bot dabao — VPS pe agent auto chalega. "
+                "Mobile se bas itna; PC pe kuch install nahi."
             ),
             "balance": float(current_user.vps_balance or 0),
             "mt5_ready": online,
             "role": role,
             "trading_backend": "vps_agent",
             "agent_online": online,
-            "vps_status": current_user.vps_status,
+            "vps_status": current_user.vps_status or "idle",
         }
 
     if is_master_user(current_user):
@@ -2687,13 +2693,7 @@ async def startup_event():
         if not USE_METAAPI:
             print("[STARTUP] MetaAPI disabled — using local MT5 agents "
                   "(Windows local_agent). No cloud terminal init.")
-            user = db.query(User).filter(User.username == "admin").first()
-            if user:
-                # Arm master bot flag; actual trading is on master agent
-                active_bots[user.id] = True
-                user.bot_active = True
-                db.commit()
-            print("[STARTUP] Run local_agent on Windows for master + each follower")
+            print("[STARTUP] Master/followers: Start Bot → VPS supervisor hosts agents")
         else:
             # Legacy MetaAPI cloud terminals
             user = db.query(User).filter(User.username == "admin").first()
@@ -2933,9 +2933,21 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
 
             if mtype == "master_trade_open":
                 if is_master_user(user) or session.role == "master":
-                    _handle_master_trade_open(user, msg)
+                    # Only fan-out when master has Start Bot ON
+                    db_chk = SessionLocal()
+                    try:
+                        row = db_chk.query(User).filter(User.id == user.id).first()
+                        master_on = bool(row and row.bot_active)
+                    finally:
+                        db_chk.close()
+                    if master_on:
+                        _handle_master_trade_open(user, msg)
+                    else:
+                        print(f"[AGENT HUB] ignore master_trade_open — bot not started")
                     await websocket.send_text(json.dumps({
-                        "type": "ack", "req_id": msg.get("req_id"), "ok": True,
+                        "type": "ack", "req_id": msg.get("req_id"),
+                        "ok": master_on,
+                        "detail": None if master_on else "bot_inactive",
                     }))
                 continue
 
@@ -3033,17 +3045,19 @@ def vps_agent_token(
     _: bool = Depends(require_vps_secret),
     db: Session = Depends(get_db),
 ):
-    """Issue a JWT so the hosted agent can connect to /ws/agent as that user."""
+    """Issue a long-lived JWT so the hosted agent can connect to /ws/agent."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    token = create_access_token({"sub": user.username})
+    # 30 days — supervisor refreshes token on each agent (re)start
+    token = create_access_token({"sub": user.username, "scope": "vps_agent"}, expires_minutes=60 * 24 * 30)
     return {
         "access_token": token,
         "token_type": "bearer",
         "user_id": user.id,
         "username": user.username,
         "role": "master" if is_master_user(user) else "follower",
+        "expires_days": 30,
     }
 
 
@@ -3061,8 +3075,14 @@ def vps_report(
         if not user:
             continue
         user.vps_status = item.status
-        user.vps_ready = bool(item.ready)
-        user.vps_balance = float(item.balance or 0)
+        # Ready truth: agent WS heartbeat owns True; supervisor can only clear
+        # on stop/error, or set True when it has confirmed MT5 ready.
+        if item.status in ("stopped", "error"):
+            user.vps_ready = False
+        elif item.ready:
+            user.vps_ready = True
+        if item.balance:
+            user.vps_balance = float(item.balance or 0)
         user.vps_last_error = item.error
         user.vps_last_seen = now
         updated += 1
