@@ -36,8 +36,8 @@ from device_care.smc import (
     scan_smc,
 )
 
-APP_NAME = "Crypto Pumping Signals"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.0")
+APP_NAME = "Crypto Pumping"
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.1")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -107,7 +107,7 @@ hourly_symbols: dict[str, list[str]] = {}  # hour_key -> ["BTC_USDT|4H", ...]
 hourly_alert_count: dict[str, int] = {}
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-NTFY_TITLE = os.environ.get("NTFY_TITLE", "Crypto Pumping Signals")
+NTFY_TITLE = os.environ.get("NTFY_TITLE", "Crypto Pumping")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})

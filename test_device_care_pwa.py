@@ -26,7 +26,7 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("no-cache", response.headers["cache-control"])
         html = response.text
-        self.assertIn("Crypto Pumping Signals", html)
+        self.assertIn("Crypto Pumping", html)
         self.assertIn('id="updateBanner"', html)
         self.assertIn("Update Now", html)
         self.assertIn('id="authScreen"', html)
@@ -67,8 +67,8 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("no-cache", response.headers["cache-control"])
         manifest = response.json()
-        self.assertEqual("Crypto Pumping Signals", manifest["name"])
-        self.assertEqual("CPS Signals", manifest["short_name"])
+        self.assertEqual("Crypto Pumping", manifest["name"])
+        self.assertEqual("Crypto Pumping", manifest["short_name"])
         self.assertEqual("./", manifest["start_url"])
         self.assertEqual("./", manifest["scope"])
 
@@ -90,9 +90,9 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertEqual("no-cache", response.headers["cache-control"])
         service_worker = response.text
         self.assertIn('"/my-signals"', service_worker)
-        self.assertIn("Crypto Pumping Signals", service_worker)
+        self.assertIn("Crypto Pumping", service_worker)
         self.assertIn("SKIP_WAITING", service_worker)
-        self.assertIn("cps-v4.1.0", service_worker)
+        self.assertIn("cps-v4.1.1", service_worker)
         for icon in manifest["icons"]:
             self.assertIn(f"${{BASE}}/{icon['src']}", service_worker)
         self.assertIn('e.request.method !== "GET"', service_worker)
