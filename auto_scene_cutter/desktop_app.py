@@ -2,9 +2,10 @@
 SceneCut Pro+ — desktop launcher
 
 Stable Windows shell:
-  - Edge/Chrome --app window (avoids pywebview .NET KeyError: 'master')
-  - Local Flask server for fast 2GB+ cuts
-  - PowerShell file dialog for local paths (no upload)
+  - Sync latest code FIRST (before importing app) so /home never 404s
+  - Edge/Chrome --app window
+  - Local Flask for fast 2GB+ cuts
+  - PowerShell file dialog for local paths
 
 Usage:
   python desktop_app.py
@@ -18,10 +19,10 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
-
-from flask import jsonify, request
 
 
 def _app_root() -> Path:
@@ -36,6 +37,54 @@ if str(BASE_DIR) not in sys.path:
 os.chdir(BASE_DIR)
 
 os.environ.setdefault("SCENECUT_DESKTOP", "1")
+
+
+def _install_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    local = Path(os.environ.get("LOCALAPPDATA") or "") / "SceneCutProPlus"
+    if local.exists():
+        return local
+    return BASE_DIR
+
+
+def _bootstrap_sync(force: bool = False) -> bool:
+    """
+    Update install files BEFORE importing app.
+    Returns True if files changed (caller should re-exec).
+    """
+    if getattr(sys, "frozen", False):
+        return False
+    try:
+        from desktop_update import sync_from_live
+
+        result = sync_from_live(_install_dir(), force=force)
+        if result.get("updated"):
+            print(f"  Updated from live ({result.get('files')} files) — restarting…")
+            return True
+        if not result.get("ok"):
+            print(f"  Update skip: {result.get('reason')}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  Update skip: {exc}")
+    return False
+
+
+def _reexec() -> None:
+    """Restart this process so newly synced app.py is loaded."""
+    script = str(Path(__file__).resolve())
+    args = [sys.executable, script, "--no-update", *sys.argv[1:]]
+    # Avoid infinite loop
+    if "--no-update" not in sys.argv:
+        os.execv(sys.executable, args)
+
+
+# Optional early sync (skipped when --no-update already in argv during re-exec)
+if "--no-update" not in sys.argv and "--help" not in sys.argv:
+    if _bootstrap_sync(force=False):
+        _reexec()
+
+
+from flask import jsonify, request  # noqa: E402
 
 from app import (  # noqa: E402
     JOB,
@@ -66,15 +115,6 @@ SHUTDOWN = threading.Event()
 APP_PROC = None
 
 
-def _install_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    local = Path(os.environ.get("LOCALAPPDATA") or "") / "SceneCutProPlus"
-    if local.exists():
-        return local
-    return BASE_DIR
-
-
 def _free_port(preferred: int) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -95,6 +135,39 @@ def _wait_until_up(port: int, timeout: float = 20.0) -> bool:
         except OSError:
             time.sleep(0.15)
     return False
+
+
+def _http_ok(url: str) -> bool:
+    try:
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "SceneCutPro-Desktop"})
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            return 200 <= getattr(resp, "status", 200) < 400
+    except urllib.error.HTTPError as exc:
+        return 200 <= exc.code < 400
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pick_working_url(port: int) -> str:
+    """
+    Prefer /d (short desktop entry), then /home, then /editor, then /.
+    Avoids white Flask 404 when an old build is still somehow loaded.
+    """
+    candidates = [
+        f"http://127.0.0.1:{port}/d",
+        f"http://127.0.0.1:{port}/home",
+        f"http://127.0.0.1:{port}/editor",
+        f"http://127.0.0.1:{port}/",
+    ]
+    for url in candidates:
+        if _http_ok(url):
+            # Keep desktop flag for UI (query may be stripped by some --app parsers)
+            if url.endswith("/d") or url.rstrip("/").endswith("/home"):
+                return url if "desktop=" in url else (url + ("&" if "?" in url else "?") + "desktop=1")
+            if url.endswith("/editor"):
+                return url + "?desktop=1"
+            return url + "?desktop=1" if "?" not in url else url
+    return f"http://127.0.0.1:{port}/d"
 
 
 def _run_server(port: int) -> None:
@@ -164,7 +237,6 @@ def api_desktop():
 
 @app.post("/api/desktop/pick")
 def api_desktop_pick_file():
-    """Native file dialog — registers absolute path (no multi‑GB upload)."""
     if os.environ.get("SCENECUT_DESKTOP") != "1":
         return jsonify({"ok": False, "error": "desktop only"}), 400
     payload = request.get_json(silent=True) or {}
@@ -196,7 +268,6 @@ def api_desktop_pick_file():
 
 @app.post("/api/desktop/update")
 def api_desktop_update():
-    """Apply update + restart desktop."""
     if os.environ.get("SCENECUT_DESKTOP") != "1":
         return jsonify({"ok": False, "error": "desktop only"}), 400
     install = _install_dir()
@@ -223,17 +294,6 @@ def _prepend_bundled_ffmpeg() -> None:
             return
 
 
-def _quiet_background_sync() -> None:
-    if getattr(sys, "frozen", False):
-        return
-    try:
-        result = sync_from_live(_install_dir(), force=False)
-        if result.get("updated"):
-            print(f"  Background update applied ({result.get('files')} files).")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  Background update skip: {exc}")
-
-
 def main(argv: list[str] | None = None) -> int:
     global APP_PROC
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
@@ -242,26 +302,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-update", action="store_true")
     args = parser.parse_args(argv)
 
+    # If launched without --no-update and files are stale, force one more sync+reexec
+    if not args.no_update and not getattr(sys, "frozen", False):
+        # Ensure home template exists; if not, force sync
+        home_html = _install_dir() / "templates" / "home.html"
+        if not home_html.exists() and _bootstrap_sync(force=True):
+            _reexec()
+
     _ensure_dirs()
     _prepend_bundled_ffmpeg()
 
-    if not args.no_update:
-        _quiet_background_sync()
-        try:
-            man = remote_manifest()
-            ver = str(man.get("version") or "")
-            if ver:
-                write_local_version(_install_dir(), ver)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        man = remote_manifest()
+        ver = str(man.get("version") or "")
+        if ver:
+            write_local_version(_install_dir(), ver)
+    except Exception:  # noqa: BLE001
+        pass
 
     port = _free_port(args.port)
-    url = f"http://127.0.0.1:{port}/home?desktop=1"
 
     print("")
     print("  SceneCut Pro+ Desktop")
-    print("  Shell: Edge/Chrome app window (stable — no .NET crash)")
-    print(f"  Window: {url}")
+    print("  Shell: Edge/Chrome app window")
     print("")
 
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
@@ -269,6 +332,17 @@ def main(argv: list[str] | None = None) -> int:
     if not _wait_until_up(port):
         print("ERROR: local server start fail")
         return 1
+
+    url = _pick_working_url(port)
+    print(f"  Window: {url}")
+
+    # If still 404 on /home|/d — force sync + restart once
+    if (not _http_ok(f"http://127.0.0.1:{port}/d")) and (not _http_ok(f"http://127.0.0.1:{port}/home")):
+        if not args.no_update and not getattr(sys, "frozen", False):
+            print("  Local app outdated — forcing update…")
+            if _bootstrap_sync(force=True):
+                _kill_app_proc()
+                _reexec()
 
     if args.browser:
         webbrowser.open(url)

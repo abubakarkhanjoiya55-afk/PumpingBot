@@ -510,14 +510,33 @@ def index():
 
 
 @app.get("/home")
+@app.get("/app")
+@app.get("/d")
 def app_home():
-    """In-app CapCut-style home: New project / Open / Recent."""
+    """In-app CapCut-style home: New project / Open / Recent.
+
+    /d is the short desktop entry (avoids Edge --app query-string quirks).
+    """
     return _html("home.html")
 
 
 @app.get("/editor")
 def editor_page():
     return _html("editor.html")
+
+
+@app.errorhandler(404)
+def _friendly_404(_err):
+    """Desktop kabhi white Flask 404 pe na atke — home pe bhej do."""
+    path = request.path or ""
+    if path.startswith("/api/") or path.startswith("/media/"):
+        return jsonify({"error": "Not found"}), 404
+    if os.environ.get("SCENECUT_DESKTOP") == "1":
+        return redirect("/d")
+    accept = (request.headers.get("Accept") or "").lower()
+    if "text/html" in accept:
+        return redirect("/")
+    return jsonify({"error": "Not found", "home": "/"}), 404
 
 
 @app.get("/media/hero.mp4")

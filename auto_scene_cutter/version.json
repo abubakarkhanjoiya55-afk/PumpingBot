@@ -1,10 +1,10 @@
 {
-  "version": "1.4.2",
-  "title": "Fixed .NET 'master' crash",
+  "version": "1.4.3",
+  "title": "Fixed desktop 404 Not Found",
   "notes": [
-    "pywebview/.NET error ('master') hata diya",
-    "Ab Edge/Chrome app window use hoti hai — stable",
-    "2GB movie local path se — Preparing hang nahi"
+    "Desktop /home 404 fix — /d entry + auto-update before launch",
+    "Purani install khud sync ho kar restart hoti hai",
+    "Edge app window stable (no .NET master crash)"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"
