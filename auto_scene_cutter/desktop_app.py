@@ -1,12 +1,12 @@
 """
 SceneCut Pro+ — desktop launcher
 
-Native app window (pywebview). Online → live UI (instant updates).
-CapCut-style in-app update notifications + silent apply/restart.
+Native window on LOCAL server (fast 2GB+ cuts — no cloud upload).
+Background sync keeps code updated CapCut-style.
 
 Usage:
   python desktop_app.py
-  python desktop_app.py --local
+  python desktop_app.py --live   # UI from website (slower for big movies)
 """
 
 from __future__ import annotations
@@ -33,7 +33,15 @@ os.chdir(BASE_DIR)
 
 os.environ.setdefault("SCENECUT_DESKTOP", "1")
 
-from app import JOB, SESSION, _ensure_dirs, app  # noqa: E402
+from app import (  # noqa: E402
+    JOB,
+    SESSION,
+    UPLOAD_KIND_MAP,
+    _ensure_dirs,
+    _file_meta,
+    _validate_upload_kind,
+    app,
+)
 from desktop_update import (  # noqa: E402
     ensure_webview_installed,
     is_online,
@@ -60,8 +68,16 @@ def _install_dir() -> Path:
     return BASE_DIR
 
 
+_FILE_FILTERS = {
+    "movie": ("Video (*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v)", "*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v"),
+    "movie_srt": ("Subtitles (*.srt;*.txt)", "*.srt;*.txt"),
+    "narration_srt": ("Subtitles (*.srt;*.txt)", "*.srt;*.txt"),
+    "narration_audio": ("Audio (*.mp3;*.m4a;*.wav;*.aac;*.ogg;*.flac)", "*.mp3;*.m4a;*.wav;*.aac;*.ogg;*.flac"),
+}
+
+
 class DesktopApi:
-    """JS bridge for Quit + CapCut-style Update Now."""
+    """JS bridge: Quit, Update, and local file pick (no multi‑GB upload)."""
 
     def ping(self) -> str:
         return "scenecut-desktop"
@@ -74,19 +90,63 @@ class DesktopApi:
         return local_version(_install_dir()) or ""
 
     def apply_update(self) -> dict:
-        """Called from updater.js Update Now button."""
         install = _install_dir()
         if getattr(sys, "frozen", False):
             result = update_frozen_app()
             if result.get("ok"):
                 threading.Timer(0.8, lambda: (SHUTDOWN.set(), _close_window())).start()
             return result
-
         result = sync_from_live(install, force=True)
         if result.get("ok"):
             restart_desktop(install)
             threading.Timer(0.9, lambda: (SHUTDOWN.set(), _close_window())).start()
         return result
+
+    def pick_file(self, kind: str) -> dict:
+        """Native file dialog → register path in SESSION (instant, no upload)."""
+        kind = (kind or "").strip()
+        if kind not in UPLOAD_KIND_MAP:
+            return {"ok": False, "error": "invalid kind"}
+        try:
+            import webview
+        except ImportError:
+            return {"ok": False, "error": "webview missing"}
+
+        windows = getattr(webview, "windows", None) or []
+        window = windows[0] if windows else WINDOW
+        if window is None:
+            return {"ok": False, "error": "no window"}
+
+        label, pattern = _FILE_FILTERS.get(kind, ("All files (*.*)", "*.*"))
+        try:
+            selection = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=(f"{label} ({pattern})",),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+        if not selection:
+            return {"ok": False, "cancelled": True}
+        path = Path(selection[0] if isinstance(selection, (list, tuple)) else selection)
+        path = path.expanduser().resolve()
+        if not path.is_file():
+            return {"ok": False, "error": "file missing"}
+        err, _ = _validate_upload_kind(kind, path.name)
+        if err:
+            return {"ok": False, "error": err}
+
+        SESSION[UPLOAD_KIND_MAP[kind]] = str(path)
+        return {
+            "ok": True,
+            "kind": kind,
+            "filename": path.name,
+            "meta": _file_meta(path),
+            "path": str(path),
+            "size": path.stat().st_size,
+            "local": True,
+        }
 
 
 def _free_port(preferred: int) -> int:
@@ -163,10 +223,12 @@ def api_desktop():
         "ok": True,
         "desktop": True,
         "native_window": WINDOW is not None,
+        "local_fast": True,
         "live_url": live_base(),
         "local_version": local_version(_install_dir()),
         "job": JOB.snapshot().get("status"),
         "project": SESSION.get("project_name"),
+        "has_movie": bool(SESSION.get("movie")),
     }
 
 
@@ -218,18 +280,18 @@ def _prepend_bundled_ffmpeg() -> None:
             return
 
 
-def _pick_ui_url(port: int, force_local: bool) -> tuple[str, str]:
+def _pick_ui_url(port: int, prefer_live: bool) -> tuple[str, str]:
+    """
+    Default LOCAL — big movie Export stays on disk (fast).
+    --live only for testing website UI inside the window.
+    """
     local = f"http://127.0.0.1:{port}/home?desktop=1"
-    if force_local:
-        return local, "local"
-    if is_online():
-        # Live UI = CapCut-like instant feature updates, no re-download
+    if prefer_live and is_online():
         return f"{live_base()}/home?desktop=1", "live"
     return local, "local"
 
 
 def _quiet_background_sync() -> None:
-    """Keep local engine files fresh even while showing live UI."""
     if getattr(sys, "frozen", False):
         return
     try:
@@ -243,7 +305,12 @@ def _quiet_background_sync() -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
-    parser.add_argument("--local", action="store_true")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Load website UI (slow for 2GB+ movies — not recommended)",
+    )
+    parser.add_argument("--local", action="store_true", help="Force local UI (default)")
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--no-update", action="store_true")
     args = parser.parse_args(argv)
@@ -253,7 +320,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.no_update:
         _quiet_background_sync()
-        # Remember latest live version stamp for notifications
         try:
             man = remote_manifest()
             ver = str(man.get("version") or "")
@@ -263,12 +329,14 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     port = _free_port(args.port)
-    force_local = args.local or os.environ.get("SCENECUT_FORCE_LOCAL") == "1"
-    url, mode = _pick_ui_url(port, force_local)
+    prefer_live = args.live and not args.local
+    if os.environ.get("SCENECUT_FORCE_LIVE") == "1":
+        prefer_live = True
+    url, mode = _pick_ui_url(port, prefer_live)
 
     print("")
     print("  SceneCut Pro+ Desktop")
-    print(f"  Mode: {mode} (live = auto UI updates)")
+    print(f"  Mode: {mode} (local = fast Export for 2GB+ movies)")
     print(f"  Window: {url}")
     print("")
 

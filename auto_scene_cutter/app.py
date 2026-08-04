@@ -601,6 +601,48 @@ def _finalize_saved_upload(kind: str, path: Path, original_name: str) -> dict:
     }
 
 
+@app.post("/api/local-file")
+def api_local_file():
+    """
+    Desktop fast-path: register an absolute local path into SESSION
+    without copying/uploading multi‑GB movies (CapCut-like speed).
+    """
+    if os.environ.get("SCENECUT_DESKTOP") != "1":
+        return jsonify({"error": "local-file sirf desktop app mein"}), 400
+    payload = request.get_json(silent=True) or {}
+    kind = (payload.get("kind") or "").strip()
+    raw_path = (payload.get("path") or "").strip()
+    if kind not in UPLOAD_KIND_MAP:
+        return jsonify({"error": "invalid kind"}), 400
+    if not raw_path:
+        return jsonify({"error": "path required"}), 400
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        return jsonify({"error": f"File nahi mili: {path}"}), 400
+    err, _suffix = _validate_upload_kind(kind, path.name)
+    if err:
+        return jsonify({"error": err}), 400
+    SESSION[UPLOAD_KIND_MAP[kind]] = str(path)
+    # Quiet auto-match when SRTs land and movie already present
+    tip = _upload_tip(kind)
+    if kind in ("movie_srt", "narration_srt") and SESSION.get("movie"):
+        if not SESSION.get("movie_srt"):
+            tip = "Movie man gaya — Movie SRT bhi select karo."
+        if not SESSION.get("narration_srt"):
+            tip = "Movie man gaya — Narration SRT bhi select karo."
+    return jsonify(
+        {
+            "ok": True,
+            "kind": kind,
+            "filename": path.name,
+            "meta": _file_meta(path),
+            "path": str(path),
+            "local": True,
+            "tip": tip,
+        }
+    )
+
+
 @app.post("/api/upload")
 def api_upload():
     kind = (request.form.get("kind") or "").strip()

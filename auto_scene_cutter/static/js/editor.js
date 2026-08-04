@@ -22,6 +22,8 @@ const state = {
   },
   uploadJobs: {},
   deferredSync: {},
+  desktopLocal: {},
+  isDesktop: false,
   clips: [],
   scenes: [],
   matchPlan: [],
@@ -558,17 +560,31 @@ async function waitForPendingUploads() {
 async function ensureSmallFilesSynced() {
   // SRT/audio — already look ready; quiet sync in background
   ["movie_srt", "narration_srt", "narration_audio"].forEach((key) => {
+    if (state.desktopLocal[key] || state.synced[key]) return;
     const file = state.localFiles[key];
-    if (!file || state.synced[key] || state.uploadJobs[key]) return;
+    if (!file || state.uploadJobs[key]) return;
     startBackgroundSync(key, kindForKey(key), file, { quiet: true });
   });
   await waitForPendingUploads();
 }
 
 async function ensureMovieSynced() {
+  // Desktop local-path register — already on disk, zero prepare upload
+  if (state.synced.movie || state.desktopLocal?.movie) return true;
   const file = state.localFiles.movie || state.deferredSync.movie;
-  if (state.synced.movie) return true;
-  if (!file) return false;
+  if (!file) {
+    // Maybe already registered via previous desktop pick / session
+    try {
+      const sess = await fetch("/api/session").then((r) => r.json());
+      if (sess?.files?.movie) {
+        state.synced.movie = true;
+        return true;
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return false;
+  }
   // Never flip movie row to "sync %" — CapCut import already done
   markFileRowReady("movie", file);
   if (!state.uploadJobs.movie) {
@@ -576,6 +592,49 @@ async function ensureMovieSynced() {
   }
   await waitForPendingUploads();
   return !!state.synced.movie;
+}
+
+async function desktopPickFile(key, kind) {
+  try {
+    if (!window.pywebview?.api?.pick_file) return false;
+    const data = await window.pywebview.api.pick_file(kind);
+    if (!data || data.cancelled) return true; // handled, user cancelled
+    if (!data.ok) {
+      showError(data.error || "File pick fail");
+      return true;
+    }
+    state.desktopLocal = state.desktopLocal || {};
+    state.desktopLocal[key] = data.path;
+    state.synced[key] = true;
+    state.localFiles[key] = {
+      name: data.filename,
+      size: data.size || 0,
+      __desktopPath: data.path,
+    };
+    if (key === "movie") delete state.deferredSync.movie;
+    markFileRowReady(
+      key,
+      { name: data.filename, size: data.size || 0 },
+      `${data.meta || ""} · local`
+    );
+    if (kind === "movie") {
+      // Preview via server media route (file already in SESSION)
+      const player = $("videoPlayer");
+      if (player) {
+        player.src = `/api/media/movie?t=${Date.now()}`;
+        player.load();
+      }
+      $("playerPlaceholder")?.classList.add("hide");
+    }
+    if (kind === "narration_audio") $("audioWave")?.classList.add("active");
+    showOk(`${data.filename} ready (local — no upload)`);
+    const modal = $("importModal");
+    if (modal) modal.hidden = true;
+    updateFilesHint();
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function startJob(mode, settings, useSample) {
@@ -636,6 +695,13 @@ function ingestSelectedFile(key, kind, file) {
 function bindFileInput(inputId, key, kind) {
   const input = $(inputId);
   if (!input) return;
+  // Desktop: intercept click → native path pick (2GB movie, no prepare upload)
+  input.addEventListener("click", async (e) => {
+    if (!window.pywebview?.api?.pick_file) return;
+    e.preventDefault();
+    e.stopPropagation();
+    await desktopPickFile(key, kind);
+  });
   input.addEventListener("change", (e) => {
     const file = e.target.files && e.target.files[0];
     // Reset so same file can be re-picked instantly
@@ -1024,23 +1090,28 @@ async function runAutoCut(opts = {}) {
       return;
     }
 
-    // FAST PATH: start movie prepare IMMEDIATELY in parallel with SRT sync + match
-    // (old flow waited until after match → felt stuck at Preparing 1%)
-    setStatus("cutting", "active", "prepare…");
+    // Desktop local path = skip "Preparing movie %" entirely (was the 2GB hang)
+    const desktopLocalMovie = !!(state.desktopLocal?.movie || state.synced.movie);
+    setStatus("cutting", "active", desktopLocalMovie ? "ready" : "prepare…");
     const moviePreparePromise = ensureMovieSynced();
 
     setProgress(5, "SRT sync…");
     await ensureSmallFilesSynced();
-    const smallFail = ["movie_srt", "narration_srt"].filter(
-      (k) => state.files[k] && !state.synced[k]
-    );
+    // Desktop-picked SRTs already synced; browser picks may still need quiet upload
+    const smallFail = ["movie_srt", "narration_srt"].filter((k) => {
+      if (state.desktopLocal?.[k] || state.synced[k]) return false;
+      return !!(state.localFiles[k] || state.files[k]);
+    });
     if (smallFail.length) {
       throw new Error(`SRT sync fail: ${smallFail.join(", ")}. Tap retry.`);
     }
 
-    // Match from SRT while movie prepare runs in parallel
     setStatus("analyze_movie", "active");
-    showOk("Matching + preparing movie parallel (fast)…");
+    showOk(
+      desktopLocalMovie
+        ? "Local movie — matching scenes (no upload)…"
+        : "Matching + preparing movie parallel…"
+    );
     const matchJob = await startJob("match_only", settings, false);
     const matchData = matchJob.result || {};
     const stats = matchData.stats || {};
@@ -1054,11 +1125,12 @@ async function runAutoCut(opts = {}) {
     const movieOk = await moviePreparePromise;
     if (!movieOk) {
       throw new Error(
-        "Movie prepare fail. Export dobara dabao, ya /download Student Pack use karo."
+        "Movie prepare fail. Desktop app se files dubara select karo (local path)."
       );
     }
 
     setStatus("cutting", "active", "cutting…");
+    setProgress(55, "Cutting scenes…");
     const cutJob = await startJob("cut_export", settings, false);
     const cutData = cutJob.result || matchData;
     setStatus("cutting", "done", `${cutData.cut_clip_count || sceneCount} clips`);
@@ -1888,11 +1960,15 @@ async function boot() {
   try {
     const desk = await fetch("/api/desktop").then((r) => r.json());
     const q = new URLSearchParams(location.search).get("desktop");
-    if ((desk && desk.desktop) || q === "1") {
+    state.isDesktop = !!(desk && desk.desktop) || q === "1" || Boolean(window.pywebview);
+    if (state.isDesktop) {
       const btn = $("btnQuitDesktop");
       if (btn) {
         btn.hidden = false;
         btn.addEventListener("click", quitDesktop);
+      }
+      if (desk?.local_fast) {
+        showOk("Desktop local mode — 2GB+ movie upload nahi hogi");
       }
     }
   } catch (_) {
