@@ -43,6 +43,16 @@ const state = {
   },
   projectName: "scenecut_project",
   canUndo: false,
+  // CapCut-style timeline drag/scrub session
+  tl: {
+    mode: null, // scrub | move | trimL | trimR
+    clipKey: null,
+    startX: 0,
+    originStart: 0,
+    originEnd: 0,
+    moved: false,
+    pointerId: null,
+  },
 };
 
 function $(id) {
@@ -891,21 +901,37 @@ function renderTimeline() {
     block.type = "button";
     block.className =
       "scene-block" + (state.selectedClipKey === clip.key ? " selected" : "");
+    block.dataset.clipKey = clip.key;
     block.style.left = `${left}px`;
     block.style.width = `${w}px`;
     const n = String(clip.index).padStart(2, "0");
     const id = String(clip.scene_id ?? clip.index).padStart(3, "0");
     const durLabel = fmtTime(clip.clip_duration).slice(3, 8); // MM:SS
     block.innerHTML = `
-      <span class="handle left"></span>
+      <span class="handle left" title="Trim in"></span>
       <span class="badge">${n}</span>
       <span class="sid">SC_${id}</span>
       <span class="sdur">${durLabel}</span>
-      <span class="handle right"></span>`;
-    block.title = clip.scene_text || clip.narration_text || "";
-    block.addEventListener("click", () => selectClip(clip.key));
+      <span class="handle right" title="Trim out"></span>`;
+    block.title =
+      (clip.scene_text || clip.narration_text || "Clip") +
+      " — drag to reorder · edges trim · click seek";
+    block.addEventListener("pointerdown", (e) => onClipPointerDown(e, clip));
+    const hL = block.querySelector(".handle.left");
+    const hR = block.querySelector(".handle.right");
+    hL?.addEventListener("pointerdown", (e) => onTrimPointerDown(e, clip, "L"));
+    hR?.addEventListener("pointerdown", (e) => onTrimPointerDown(e, clip, "R"));
     track.appendChild(block);
   });
+
+  // Keep insert marker node available
+  if (!$("tlInsertMarker")) {
+    const marker = document.createElement("div");
+    marker.id = "tlInsertMarker";
+    marker.className = "tl-insert-marker";
+    marker.hidden = true;
+    track.appendChild(marker);
+  }
 
   $("timelineScaleLabel").textContent = `Scale: ${state.pxPerSec}px/s`;
   const zoom = $("zoomSlider");
@@ -913,7 +939,9 @@ function renderTimeline() {
   updateFooterStats();
 }
 
-function selectClip(key) {
+function selectClip(key, opts = {}) {
+  const rerender = opts.rerender !== false;
+  const seek = opts.seek !== false;
   state.selectedClipKey = key;
   const clip = state.clips.find((c) => c.key === key);
   if (!clip) return;
@@ -964,11 +992,21 @@ function selectClip(key) {
   setVal("propSceneId", clip.scene_id != null ? String(clip.scene_id) : "—");
 
   fillSceneSelect(clip.scene_id);
-  const video = $("videoPlayer");
-  if (video.src && clip.matched && clip.timeline_start != null) {
-    video.currentTime = Math.max(0, Number(clip.timeline_start) || 0);
+  if (seek) {
+    const t =
+      opts.seekTime != null
+        ? Number(opts.seekTime)
+        : clip.matched && clip.timeline_start != null
+          ? Number(clip.timeline_start)
+          : null;
+    if (t != null) seekTimeline(t, { scroll: !!opts.scroll });
   }
-  renderTimeline();
+  if (rerender) renderTimeline();
+  else {
+    document.querySelectorAll(".scene-block").forEach((el) => {
+      el.classList.toggle("selected", el.dataset.clipKey === key);
+    });
+  }
   updatePlayhead();
 }
 
@@ -992,7 +1030,8 @@ function updateFooterStats() {
 function updatePlayhead() {
   const video = $("videoPlayer");
   const t = video.currentTime || 0;
-  $("playhead").style.left = `${t * state.pxPerSec}px`;
+  const ph = $("playhead");
+  if (ph) ph.style.left = `${t * state.pxPerSec}px`;
   const head = $("playheadTime");
   if (head) head.textContent = fmtTime(t).slice(0, 8);
   const dur =
@@ -1004,6 +1043,400 @@ function updatePlayhead() {
   if (scrub && dur > 0) scrub.value = String(Math.round((t / dur) * 1000));
   const fill = $("playerProgressFill");
   if (fill && dur > 0) fill.style.width = `${Math.min(100, (t / dur) * 100)}%`;
+}
+
+/* ——— CapCut-style timeline: scrub cursor + clip drag/drop + edge trim ——— */
+
+function timelineMaxTime() {
+  const video = $("videoPlayer");
+  if (video?.duration && Number.isFinite(video.duration)) return video.duration;
+  return Math.max(state.outputDuration || 0, 0.01);
+}
+
+function clientXToTimelineTime(clientX) {
+  const tracks = $("tracks");
+  if (!tracks) return 0;
+  const rect = tracks.getBoundingClientRect();
+  const x = clientX - rect.left + tracks.scrollLeft;
+  return Math.max(0, x / Math.max(1, state.pxPerSec));
+}
+
+function seekTimeline(time, opts = {}) {
+  const video = $("videoPlayer");
+  const maxT = timelineMaxTime();
+  const t = Math.max(0, Math.min(Number(time) || 0, maxT));
+  if (video?.src) {
+    try {
+      video.currentTime = t;
+    } catch (_) {
+      /* ignore seek race */
+    }
+  }
+  updatePlayhead();
+  if (opts.scroll !== false) {
+    const tracks = $("tracks");
+    if (!tracks) return;
+    const px = t * state.pxPerSec;
+    const left = tracks.scrollLeft;
+    const right = left + tracks.clientWidth;
+    if (px < left + 48) tracks.scrollLeft = Math.max(0, px - 96);
+    else if (px > right - 48) tracks.scrollLeft = Math.max(0, px - tracks.clientWidth + 96);
+  }
+}
+
+function showInsertMarker(atTime) {
+  const marker = $("tlInsertMarker");
+  const track = $("trackScenes");
+  if (!marker || !track) return;
+  marker.hidden = false;
+  marker.style.left = `${Math.max(0, atTime) * state.pxPerSec}px`;
+}
+
+function hideInsertMarker() {
+  const marker = $("tlInsertMarker");
+  if (marker) marker.hidden = true;
+}
+
+function matchedClips() {
+  return (state.clips || []).filter((c) => c.matched);
+}
+
+function dropIndexForTime(time, excludeKey) {
+  const clips = matchedClips().filter((c) => c.key !== excludeKey);
+  if (!clips.length) return 0;
+  for (let i = 0; i < clips.length; i++) {
+    const mid =
+      (Number(clips[i].timeline_start) + Number(clips[i].timeline_end)) / 2;
+    if (time < mid) return i;
+  }
+  return clips.length;
+}
+
+function buildOrderAfterMove(dragKey, insertAt) {
+  const dragClip = state.clips.find((c) => c.key === dragKey);
+  const fallback = (state.matchPlan || []).map((m) => m.narration_index);
+  if (!dragClip) return fallback;
+  const dragIdx = dragClip.narration_index;
+  const allMatched = matchedClips();
+  const matchedSet = new Set(allMatched.map((c) => c.narration_index));
+  const others = allMatched.filter((c) => c.key !== dragKey);
+  const newMatched = others
+    .slice(0, insertAt)
+    .map((c) => c.narration_index)
+    .concat([dragIdx], others.slice(insertAt).map((c) => c.narration_index));
+
+  const result = [];
+  let emitted = false;
+  for (const m of state.matchPlan || []) {
+    const idx = m.narration_index;
+    if (matchedSet.has(idx)) {
+      if (!emitted) {
+        newMatched.forEach((n) => result.push(n));
+        emitted = true;
+      }
+    } else {
+      result.push(idx);
+    }
+  }
+  if (!emitted) newMatched.forEach((n) => result.push(n));
+  return result;
+}
+
+function optimisticReorderLocal(dragKey, insertAt) {
+  const dragClip = state.clips.find((c) => c.key === dragKey);
+  if (!dragClip) return;
+  const matched = matchedClips().filter((c) => c.key !== dragKey);
+  const nextMatched = matched
+    .slice(0, insertAt)
+    .concat([dragClip], matched.slice(insertAt));
+  // Rebuild matchPlan order
+  const newOrder = buildOrderAfterMove(dragKey, insertAt);
+  const byIdx = Object.fromEntries(
+    (state.matchPlan || []).map((m) => [m.narration_index, m])
+  );
+  state.matchPlan = newOrder.map((idx) => byIdx[idx]).filter(Boolean);
+  state.clips = buildClipsFromMatchPlan(state.matchPlan);
+  renderTimeline();
+  selectClip(dragKey, { rerender: false, seek: false });
+}
+
+async function commitReorder(dragKey, insertAt) {
+  const next = buildOrderAfterMove(dragKey, insertAt);
+  const same =
+    next.length === (state.matchPlan || []).length &&
+    next.every((n, i) => n === state.matchPlan[i]?.narration_index);
+  if (same) return;
+  optimisticReorderLocal(dragKey, insertAt);
+  setBusy(true);
+  try {
+    const res = await fetch("/api/clip/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ narration_order: next, reexport: true }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Reorder fail");
+    applyPlanResult(data, { keepKey: dragKey });
+    showOk("Clip move ho gaya ✓");
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function commitTrimAbsolute(clip, newStart, newEnd) {
+  setBusy(true);
+  try {
+    const res = await fetch("/api/clip/trim", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        narration_index: clip.narration_index,
+        clip_start: newStart,
+        clip_end: newEnd,
+        reexport: true,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Trim fail");
+    applyPlanResult(data, { keepKey: clip.key });
+    showOk("Trim applied ✓");
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(false);
+  }
+}
+
+function resetTlDrag() {
+  state.tl.mode = null;
+  state.tl.clipKey = null;
+  state.tl.moved = false;
+  state.tl.pointerId = null;
+  document.body.classList.remove("tl-scrubbing", "tl-dragging", "tl-trimming");
+  document.querySelectorAll(".scene-block.dragging").forEach((el) => {
+    el.classList.remove("dragging");
+  });
+  hideInsertMarker();
+}
+
+function onPlayheadPointerDown(e) {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  state.tl.mode = "scrub";
+  state.tl.pointerId = e.pointerId;
+  state.tl.moved = false;
+  document.body.classList.add("tl-scrubbing");
+  try {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  } catch (_) {
+    /* ignore */
+  }
+  const video = $("videoPlayer");
+  if (video && !video.paused) video.pause();
+  seekTimeline(clientXToTimelineTime(e.clientX));
+}
+
+function onScrubSurfacePointerDown(e) {
+  if (e.button !== 0) return;
+  if (e.target.closest?.(".scene-block")) return;
+  if (e.target.closest?.(".playhead")) return;
+  e.preventDefault();
+  state.tl.mode = "scrub";
+  state.tl.pointerId = e.pointerId;
+  state.tl.moved = true;
+  document.body.classList.add("tl-scrubbing");
+  const video = $("videoPlayer");
+  if (video && !video.paused) video.pause();
+  seekTimeline(clientXToTimelineTime(e.clientX));
+}
+
+function onClipPointerDown(e, clip) {
+  if (e.button !== 0) return;
+  if (e.target.closest?.(".handle")) return;
+  if (state.busy) return;
+  e.preventDefault();
+  e.stopPropagation();
+  state.tl.mode = "move";
+  state.tl.clipKey = clip.key;
+  state.tl.startX = e.clientX;
+  state.tl.originStart = clip.timeline_start;
+  state.tl.moved = false;
+  state.tl.pointerId = e.pointerId;
+  selectClip(clip.key, {
+    rerender: false,
+    seek: true,
+    seekTime: clientXToTimelineTime(e.clientX),
+    scroll: false,
+  });
+  try {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function onTrimPointerDown(e, clip, side) {
+  if (e.button !== 0) return;
+  if (state.busy) return;
+  e.preventDefault();
+  e.stopPropagation();
+  state.tl.mode = side === "L" ? "trimL" : "trimR";
+  state.tl.clipKey = clip.key;
+  state.tl.startX = e.clientX;
+  state.tl.originStart = Number(clip.clip_start);
+  state.tl.originEnd = Number(clip.clip_end);
+  state.tl.moved = false;
+  state.tl.pointerId = e.pointerId;
+  document.body.classList.add("tl-trimming");
+  selectClip(clip.key, { rerender: false, seek: false });
+  try {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function onTimelinePointerMove(e) {
+  const mode = state.tl.mode;
+  if (!mode) return;
+  if (mode === "scrub") {
+    seekTimeline(clientXToTimelineTime(e.clientX), { scroll: true });
+    return;
+  }
+  const dx = e.clientX - state.tl.startX;
+  if (Math.abs(dx) > 3) state.tl.moved = true;
+
+  if (mode === "move" && state.tl.clipKey) {
+    document.body.classList.add("tl-dragging");
+    const block = document.querySelector(
+      `.scene-block[data-clip-key="${state.tl.clipKey}"]`
+    );
+    block?.classList.add("dragging");
+    const t = clientXToTimelineTime(e.clientX);
+    const insertAt = dropIndexForTime(t, state.tl.clipKey);
+    const matched = matchedClips().filter((c) => c.key !== state.tl.clipKey);
+    const markerTime =
+      insertAt <= 0
+        ? 0
+        : insertAt >= matched.length
+          ? timelineMaxTime()
+          : Number(matched[insertAt].timeline_start);
+    showInsertMarker(markerTime);
+    if (block) {
+      const w = parseFloat(block.style.width) || 52;
+      block.style.left = `${Math.max(0, t * state.pxPerSec - w / 2)}px`;
+    }
+    return;
+  }
+
+  if ((mode === "trimL" || mode === "trimR") && state.tl.clipKey) {
+    const clip = state.clips.find((c) => c.key === state.tl.clipKey);
+    const block = document.querySelector(
+      `.scene-block[data-clip-key="${state.tl.clipKey}"]`
+    );
+    if (!clip || !block) return;
+    const dt = dx / Math.max(1, state.pxPerSec);
+    let start = state.tl.originStart;
+    let end = state.tl.originEnd;
+    if (mode === "trimL") start = Math.min(end - 0.2, start + dt);
+    else end = Math.max(start + 0.2, end + dt);
+    const dur = Math.max(0.2, end - start);
+    // Visual: keep timeline_start, change width for right; shift left for left trim approx
+    if (mode === "trimR") {
+      block.style.width = `${Math.max(28, dur * state.pxPerSec)}px`;
+    } else {
+      const delta = start - state.tl.originStart;
+      const tlStart = Number(clip.timeline_start) + delta;
+      block.style.left = `${Math.max(0, tlStart * state.pxPerSec)}px`;
+      block.style.width = `${Math.max(28, dur * state.pxPerSec)}px`;
+    }
+    state.tl._pendingStart = start;
+    state.tl._pendingEnd = end;
+  }
+}
+
+async function onTimelinePointerUp(e) {
+  const mode = state.tl.mode;
+  if (!mode) return;
+  const clipKey = state.tl.clipKey;
+  const moved = state.tl.moved;
+
+  if (mode === "scrub") {
+    resetTlDrag();
+    return;
+  }
+
+  if (mode === "move" && clipKey) {
+    const t = clientXToTimelineTime(e.clientX);
+    const insertAt = dropIndexForTime(t, clipKey);
+    resetTlDrag();
+    if (moved) await commitReorder(clipKey, insertAt);
+    else {
+      // pure click — already sought on pointerdown
+      selectClip(clipKey, { rerender: true, seek: false });
+    }
+    return;
+  }
+
+  if ((mode === "trimL" || mode === "trimR") && clipKey) {
+    const clip = state.clips.find((c) => c.key === clipKey);
+    const start = state.tl._pendingStart;
+    const end = state.tl._pendingEnd;
+    resetTlDrag();
+    if (moved && clip && start != null && end != null) {
+      await commitTrimAbsolute(clip, start, end);
+    } else if (clip) {
+      renderTimeline();
+      selectClip(clip.key, { rerender: false, seek: false });
+    }
+    return;
+  }
+
+  resetTlDrag();
+}
+
+function wireTimelineInteractions() {
+  const playhead = $("playhead");
+  const ruler = $("timeRuler");
+  const tracks = $("tracks");
+  if (!tracks) return;
+
+  playhead?.addEventListener("pointerdown", onPlayheadPointerDown);
+  ruler?.addEventListener("pointerdown", onScrubSurfacePointerDown);
+  tracks.addEventListener("pointerdown", onScrubSurfacePointerDown);
+
+  window.addEventListener("pointermove", onTimelinePointerMove);
+  window.addEventListener("pointerup", onTimelinePointerUp);
+  window.addEventListener("pointercancel", onTimelinePointerUp);
+
+  // Keyboard scrub like CapCut: ← →  (Shift = 1s)
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target && e.target.tagName) || "";
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const video = $("videoPlayer");
+    if (!video?.src) return;
+    if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      seekTimeline(video.currentTime - (e.shiftKey ? 1 : 0.1));
+    } else if (e.key === "ArrowRight") {
+      e.preventDefault();
+      seekTimeline(video.currentTime + (e.shiftKey ? 1 : 0.1));
+    } else if (e.key === " " && !e.repeat) {
+      // Space play/pause when not typing
+      if (tag === "BUTTON") return;
+      e.preventDefault();
+      if (video.paused) {
+        video.play();
+        if ($("btnPlay")) $("btnPlay").textContent = "❚❚";
+      } else {
+        video.pause();
+        if ($("btnPlay")) $("btnPlay").textContent = "▶";
+      }
+    }
+  });
 }
 
 function showDownloads(show, reportUrl) {
@@ -1723,6 +2156,8 @@ function wireControls() {
     if (!state.files.movie && !state.files.movie_srt) loadSampleAndCut();
     else runAutoCut({ useSample: false });
   });
+
+  wireTimelineInteractions();
 
   const video = $("videoPlayer");
   video.addEventListener("timeupdate", updatePlayhead);
