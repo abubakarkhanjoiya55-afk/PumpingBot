@@ -516,12 +516,17 @@ def index():
 @app.get("/home")
 @app.get("/app")
 @app.get("/d")
+@app.get("/start")
 def app_home():
     """In-app CapCut-style home: New project / Open / Recent.
 
-    /d is the short desktop entry (avoids Edge --app query-string quirks).
+    /d and /start are desktop entries. Never return bare Flask 404 here.
     """
-    return _html("home.html")
+    try:
+        return _html("home.html")
+    except Exception:
+        # Template missing in broken install — editor still usable
+        return redirect("/editor")
 
 
 @app.get("/editor")
@@ -531,12 +536,16 @@ def editor_page():
 
 @app.errorhandler(404)
 def _friendly_404(_err):
-    """Desktop kabhi white Flask 404 pe na atke — home pe bhej do."""
+    """Desktop: never show black Werkzeug 'Not Found' — serve home/editor."""
     path = request.path or ""
     if path.startswith("/api/") or path.startswith("/media/"):
         return jsonify({"error": "Not found"}), 404
     if os.environ.get("SCENECUT_DESKTOP") == "1":
-        return redirect("/d")
+        # Do NOT redirect to /d (loop if /d missing). Render home directly.
+        try:
+            return _html("home.html")
+        except Exception:
+            return redirect("/editor")
     accept = (request.headers.get("Accept") or "").lower()
     if "text/html" in accept:
         return redirect("/")

@@ -4,7 +4,7 @@ SceneCut Pro+ — CapCut-style desktop launcher
 LOCKED (do not thrash again):
   1) Native pywebview window titled "SceneCut Pro+"  → CapCut / VLC feel
   2) NEVER open Microsoft Edge / Chrome browser automatically
-  3) Always open APP HOME at /d  (website landing stays on / only)
+  3) Always open APP HOME (/start or /d) — never marketing landing, never Flask 404
   4) Local Flask for 2GB cuts + PowerShell file pick
   5) Edge --app= ONLY with --edge-fallback (emergency debug)
 
@@ -93,6 +93,7 @@ from app import (  # noqa: E402
     UPLOAD_KIND_MAP,
     _ensure_dirs,
     _file_meta,
+    _html,
     _validate_upload_kind,
     app,
 )
@@ -122,6 +123,88 @@ APP_PROC = None
 WINDOW = None
 _WINDOW_LIVE = False
 
+# Minimal CapCut-style home if templates are missing (broken / half-updated install)
+_FALLBACK_HOME = """<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SceneCut Pro+</title>
+<style>
+html,body{margin:0;height:100%;background:#0e0e10;color:#f4f4f5;
+font-family:Segoe UI,system-ui,sans-serif}
+.wrap{min-height:100%;display:grid;place-items:center;padding:32px}
+h1{font-size:42px;margin:0 0 8px;letter-spacing:-.02em}
+p{color:#a1a1aa;margin:0 0 24px}
+a{display:inline-block;padding:14px 22px;border-radius:10px;background:#3b82f6;
+color:#fff;text-decoration:none;font-weight:600}
+</style></head>
+<body><div class="wrap">
+<div><h1>SceneCut Pro</h1>
+<p>New project se editor kholo — CapCut jaisi start.</p>
+<a href="/editor">+ New project</a>
+</div></div></body></html>
+"""
+
+
+def _render_app_home():
+    """Always return usable home HTML — never Werkzeug Not Found."""
+    try:
+        return _html("home.html")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"home.html missing/fail: {exc}")
+        return _FALLBACK_HOME, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+def _bind_route(path: str, endpoint: str, view) -> None:
+    """Ensure path serves view (override stale/missing routes)."""
+    existing = [r for r in app.url_map.iter_rules() if r.rule == path]
+    if existing:
+        for rule in existing:
+            app.view_functions[rule.endpoint] = view
+        return
+    app.add_url_rule(path, endpoint, view)
+
+
+def _install_guaranteed_desktop_routes() -> None:
+    """
+    Black-screen fix: even if local app.py is old/missing /d,
+    these routes (registered by the launcher) always serve home.
+    """
+    _bind_route("/start", "sc_desktop_start", _render_app_home)
+    _bind_route("/d", "sc_desktop_d", _render_app_home)
+    _bind_route("/home", "sc_desktop_home", _render_app_home)
+    _bind_route("/app", "sc_desktop_app", _render_app_home)
+
+    @app.errorhandler(404)
+    def _desktop_never_black(_err):  # noqa: ANN001
+        path = request.path or ""
+        if path.startswith("/api/") or path.startswith("/media/"):
+            return jsonify({"error": "Not found"}), 404
+        return _render_app_home()
+
+
+_install_guaranteed_desktop_routes()
+
+
+def _repair_stale_install_if_needed() -> None:
+    """If home template /d route missing, force live sync once (python installs)."""
+    if getattr(sys, "frozen", False):
+        return
+    home_tpl = _install_dir() / "templates" / "home.html"
+    app_py = _install_dir() / "app.py"
+    broken = (not home_tpl.is_file()) or (not app_py.is_file())
+    if not broken and app_py.is_file():
+        try:
+            text = app_py.read_text(encoding="utf-8", errors="ignore")
+            if '@app.get("/d")' not in text and "@app.get('/d')" not in text:
+                broken = True
+        except OSError:
+            broken = True
+    if not broken:
+        return
+    _log("Stale/broken install detected — force sync from live")
+    if _bootstrap_sync(force=True):
+        _reexec()
+
 
 def _free_port(preferred: int) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -143,6 +226,32 @@ def _wait_until_up(port: int, timeout: float = 20.0) -> bool:
         except OSError:
             time.sleep(0.15)
     return False
+
+
+def _http_ok(url: str, timeout: float = 2.0) -> bool:
+    import urllib.request
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SceneCutPro-Desktop"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(800).decode("utf-8", errors="ignore")
+            if resp.status != 200:
+                return False
+            if "The requested URL was not found" in body:
+                return False
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _pick_entry_url(port: int) -> str:
+    """Pick first working app-home URL (never open a 404 page)."""
+    for path in ("/start", "/d", "/home", "/app", "/editor"):
+        url = f"http://127.0.0.1:{port}{path}"
+        if _http_ok(url):
+            return url
+    # Last resort — /start still has our guaranteed handler
+    return f"http://127.0.0.1:{port}/start"
 
 
 def _run_server(port: int) -> None:
@@ -334,6 +443,7 @@ def main(argv: list[str] | None = None) -> int:
         if not (_install_dir() / "templates" / "home.html").exists():
             if _bootstrap_sync(force=True):
                 _reexec()
+        _repair_stale_install_if_needed()
 
     _ensure_dirs()
     _prepend_bundled_ffmpeg()
@@ -346,13 +456,10 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     port = _free_port(args.port)
-    # STABLE desktop entry — app home only (never marketing landing)
-    url = f"http://127.0.0.1:{port}/d"
 
     print("")
     print("  SceneCut Pro+")
     print("  CapCut-style native window (not Edge)")
-    print(f"  {url}")
     print("")
 
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
@@ -360,6 +467,12 @@ def main(argv: list[str] | None = None) -> int:
     if not _wait_until_up(port):
         win_message("SceneCut Pro+", "Local server start fail. Dubara try karo.", 0x10)
         return 1
+
+    # Probe real working home — fixes black Flask 404 screen
+    url = _pick_entry_url(port)
+    _log(f"Entry: {url}")
+    print(f"  {url}")
+    print("")
 
     # Debug browser path only
     if args.browser:

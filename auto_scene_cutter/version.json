@@ -1,10 +1,10 @@
 {
-  "version": "1.5.1",
-  "title": "Native desktop window only — no Edge",
+  "version": "1.5.2",
+  "title": "Fix black Not Found screen on start",
   "notes": [
-    "CapCut jaisa native SceneCut window — Microsoft Edge browser auto-open band",
-    "Hamesha App Home (/d) — website landing sirf browser pe",
-    "pywebview + pythonnet + WebView2 — Setup ek dafa, phir andar updates"
+    "Black Flask 404 screen fix — /start guaranteed home",
+    "Native SceneCut window + CapCut New project home",
+    "Purani install auto-repair / naya Setup.exe"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"
