@@ -21,6 +21,7 @@ datas = [
     (str(ROOT / "sample_movie_cluster.srt"), "."),
     (str(ROOT / "sample_narration.srt"), "."),
     (str(ROOT / "config.json"), "."),
+    (str(ROOT / "version.json"), "."),
 ]
 binaries = []
 hiddenimports = [

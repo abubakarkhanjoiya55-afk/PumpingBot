@@ -21,6 +21,8 @@ APP KAISE CHALTI HAI
 --------------------
 - Apni native window mein khulti hai (browser tab / CMD nahi)
 - Online ho to LIVE site load hoti hai — updates turant milte hain
+- Naya version aaye to CapCut jaisi "New version" notification / Update Now
+- Setup dubara download ki zaroorat nahi (sirf pehli dafa install)
 - Home → New project → files import → Export
 - Dost ko Setup.exe share kar sakte ho
 

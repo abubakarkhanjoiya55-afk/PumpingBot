@@ -476,6 +476,8 @@ def _asset_version() -> str:
             RESOURCE_DIR / "static" / "css" / "home.css",
             RESOURCE_DIR / "static" / "js" / "landing.js",
             RESOURCE_DIR / "static" / "css" / "landing.css",
+            RESOURCE_DIR / "static" / "js" / "updater.js",
+            RESOURCE_DIR / "version.json",
         ]
         stamp = max(p.stat().st_mtime_ns for p in paths if p.exists())
         return str(stamp)
@@ -1249,17 +1251,110 @@ def api_download_student_pack():
     )
 
 
+def _load_version_manifest() -> dict:
+    path = RESOURCE_DIR / "version.json"
+    data: dict = {
+        "version": "1.0.0",
+        "title": "SceneCut Pro+",
+        "notes": [],
+        "setup_url": SETUP_EXE_URL,
+    }
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            data.update(raw)
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    data["ok"] = True
+    data["app"] = "SceneCut Pro+"
+    data["asset_v"] = _asset_version()
+    data["live_home"] = "/home"
+    data["setup_exe"] = data.get("setup_url") or SETUP_EXE_URL
+    data["setup_url"] = data.get("setup_url") or SETUP_EXE_URL
+    return data
+
+
 @app.get("/api/version")
 def api_version():
-    """Desktop auto-update + cache bust stamp."""
+    """CapCut-style version manifest for in-app update notifications."""
+    return jsonify(_load_version_manifest())
+
+
+@app.get("/api/update/check")
+def api_update_check():
+    """Compare client version (?current=) with live manifest."""
+    manifest = _load_version_manifest()
+    current = (request.args.get("current") or "").strip()
+    latest = str(manifest.get("version") or "")
     return jsonify(
         {
             "ok": True,
-            "app": "SceneCut Pro+",
-            "version": _asset_version(),
-            "asset_v": _asset_version(),
-            "live_home": "/home",
-            "setup_exe": SETUP_EXE_URL,
+            "update_available": bool(latest and current and current != latest) or not current,
+            "current": current or None,
+            "latest": latest,
+            "title": manifest.get("title"),
+            "notes": manifest.get("notes") or [],
+            "setup_url": manifest.get("setup_url"),
+        }
+    )
+
+
+@app.post("/api/update/apply")
+def api_update_apply():
+    """
+    Apply update for desktop installs.
+    - Live/browser UI: client reloads (action=reload)
+    - LocalAppData python install: sync student pack + restart
+    - Frozen exe: silent Setup.exe
+    """
+    manifest = _load_version_manifest()
+    # Web / live UI — no server-side files to patch here
+    if os.environ.get("SCENECUT_DESKTOP") != "1":
+        return jsonify(
+            {
+                "ok": True,
+                "action": "reload",
+                "version": manifest.get("version"),
+                "message": "UI live hai — reload se latest mil jayega",
+            }
+        )
+
+    try:
+        from desktop_update import (
+            restart_desktop,
+            sync_from_live,
+            update_frozen_app,
+        )
+    except ImportError:
+        return jsonify({"ok": True, "action": "reload", "version": manifest.get("version")})
+
+    if getattr(sys, "frozen", False):
+        result = update_frozen_app(manifest)
+        if result.get("ok"):
+            return jsonify(
+                {
+                    "ok": True,
+                    "action": "setup_silent",
+                    "version": manifest.get("version"),
+                    **result,
+                }
+            )
+        return jsonify({"ok": False, "error": result.get("reason") or "update fail"}), 400
+
+    install = Path(os.environ.get("LOCALAPPDATA") or "") / "SceneCutProPlus"
+    if not install.exists():
+        install = BASE_DIR
+    result = sync_from_live(install, force=True)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("reason") or "sync fail"}), 400
+    restart_desktop(install)
+    # Caller (desktop_app) should quit after this
+    return jsonify(
+        {
+            "ok": True,
+            "action": "restart",
+            "version": result.get("version") or manifest.get("version"),
+            "files": result.get("files"),
         }
     )
 
@@ -1277,7 +1372,8 @@ def health():
             "student_pack": pack.exists(),
             "download_page": "/download",
             "setup_exe": SETUP_EXE_URL,
-            "version": _asset_version(),
+            "version": _load_version_manifest().get("version"),
+            "asset_v": _asset_version(),
         }
     )
 
