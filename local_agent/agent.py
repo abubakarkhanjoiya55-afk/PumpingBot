@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
@@ -48,13 +49,42 @@ from mt5_local import LocalMT5  # noqa: E402
 BOT_MAGIC = 888888
 HEARTBEAT_SEC = 5
 MASTER_SCAN_SEC = 3
-# Tiny USC/$ accounts: gold/crypto min-lot still stop-outs — forex only
 TINY_USD = 50.0
-FOREX_ONLY_STEMS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD")
 # Never use more than this fraction of free margin on one entry
 MAX_MARGIN_FRAC = 0.25
 # Pause new entries if free margin (USD) below this
 MIN_FREE_MARGIN_USD = 3.0
+# Schedule: Mon–Fri = Gold only; Sat–Sun = BTC + ETH only
+GOLD_STEMS = ("XAUUSD", "GOLD")
+CRYPTO_STEMS = ("BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT")
+
+
+def _is_weekend(now: Optional[datetime] = None) -> bool:
+    """Saturday/Sunday (local VPS clock). weekday: Mon=0 … Sun=6."""
+    d = now or datetime.now()
+    return d.weekday() >= 5
+
+
+def _symbol_matches(symbol: str, stems: tuple[str, ...]) -> bool:
+    u = (symbol or "").upper()
+    return any(stem in u for stem in stems)
+
+
+def active_trade_symbols(all_symbols: list[str], now: Optional[datetime] = None) -> list[str]:
+    """
+    Mon–Fri → Gold only.
+    Sat–Sun → BTC + ETH only (gold market closed / user rule).
+    """
+    weekend = _is_weekend(now)
+    stems = CRYPTO_STEMS if weekend else GOLD_STEMS
+    picked = [s for s in all_symbols if _symbol_matches(s, stems)]
+    if picked:
+        return picked
+    # Fallbacks if SYMBOLS env omitted the right instruments
+    suf = "c" if any(s.endswith("c") for s in all_symbols) else "m"
+    if weekend:
+        return [f"BTCUSD{suf}", f"ETHUSD{suf}"]
+    return [f"XAUUSD{suf}"]
 
 
 def _ws_url(server_url: str, token: str) -> str:
@@ -79,12 +109,12 @@ class PumpingAgent:
         self.password = _env("MT5_PASSWORD", "")
         self.server = _env("MT5_SERVER", "")
         self.mt5_path = _env("MT5_PATH")
-        # Default: Exness CENT symbols (*c). Override with SYMBOLS=... if needed.
+        # Default pool: Gold + BTC/ETH (day filter picks which to trade).
         self.account_type = (_env("ACCOUNT_TYPE", "cent") or "cent").strip().lower()
         default_symbols = (
-            "XAUUSDc,XAGUSDc,BTCUSDc,ETHUSDc,EURUSDc,GBPUSDc,USDJPYc,AUDUSDc"
+            "XAUUSDc,BTCUSDc,ETHUSDc"
             if self.account_type in ("cent", "cents", "usc")
-            else "XAUUSDm,EURUSDm,GBPUSDm,BTCUSDm"
+            else "XAUUSDm,BTCUSDm,ETHUSDm"
         )
         self.symbols = [
             s.strip() for s in (_env("SYMBOLS", default_symbols) or "").split(",")
@@ -113,6 +143,9 @@ class PumpingAgent:
             if resolved:
                 self.symbols = resolved
             print(f"[AGENT] ACCOUNT_TYPE={self.account_type} symbols={self.symbols}")
+            today = active_trade_symbols(self.symbols)
+            mode = "WEEKEND BTC/ETH" if _is_weekend() else "WEEKDAY GOLD"
+            print(f"[AGENT] Schedule={mode} active={today}")
             acc = self.mt5.account()
             if acc.get("is_cent"):
                 print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')}")
@@ -382,15 +415,12 @@ class PumpingAgent:
 
                 now = time.time()
                 opened_this_cycle = False
-                scan_symbols = self.symbols
-                if bal_usd < TINY_USD:
-                    # Gold/crypto min lot still wipe ~$10 USC via stop-out
-                    scan_symbols = [
-                        s for s in self.symbols
-                        if any(stem in s.upper() for stem in FOREX_ONLY_STEMS)
-                    ]
-                    if not scan_symbols:
-                        scan_symbols = ["EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc"]
+                scan_symbols = active_trade_symbols(self.symbols)
+                # Log schedule once per mode change
+                mode = "WEEKEND BTC/ETH" if _is_weekend() else "WEEKDAY GOLD"
+                if getattr(self, "_last_schedule_mode", None) != mode:
+                    self._last_schedule_mode = mode
+                    print(f"[MASTER] Schedule → {mode} symbols={scan_symbols}")
 
                 for symbol in scan_symbols:
                     if opened_this_cycle:

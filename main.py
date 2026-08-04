@@ -142,11 +142,10 @@ else:
               f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
-    "XAUUSDc", "XAGUSDc", "BTCUSDc", "ETHUSDc",
-    "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
+    "XAUUSDc", "BTCUSDc", "ETHUSDc",
 ]
 
-API_VERSION = "3.28.9"   # Stop-out guard: forex-only tiny accounts, margin check, deal reason
+API_VERSION = "3.29.0"   # Weekday Gold only; Sat/Sun BTC+ETH only
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
