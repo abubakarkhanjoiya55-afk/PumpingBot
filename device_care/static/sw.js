@@ -1,6 +1,6 @@
 const BASE = self.registration.scope.replace(/\/$/, '').replace(self.location.origin, '') || "/my-signals";
-const CACHE = "cps-v4.1.0";
-const APP_VERSION = "4.1.0";
+const CACHE = "cps-v4.1.1";
+const APP_VERSION = "4.1.1";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,
@@ -48,7 +48,7 @@ self.addEventListener("message", (e) => {
   }
   if (data.type !== "breakout") return;
   const a = data.alert;
-  const title = "Crypto Pumping Signals";
+  const title = "Crypto Pumping";
   const body = `${a.symbol} ${a.direction || ""} @ ${a.close}`;
   self.registration.showNotification(title, {
     body,

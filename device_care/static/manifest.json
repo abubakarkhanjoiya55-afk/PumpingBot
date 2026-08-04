@@ -1,6 +1,6 @@
 {
-  "name": "Crypto Pumping Signals",
-  "short_name": "CPS Signals",
+  "name": "Crypto Pumping",
+  "short_name": "Crypto Pumping",
   "description": "1H · 4H · 1D crypto breakouts + Smart Money Concepts alerts",
   "id": "/my-signals/",
   "start_url": "./",

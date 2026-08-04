@@ -61,11 +61,11 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertTrue((root / "icon-192.png").is_file())
         self.assertTrue((root / "icon-512.png").is_file())
         html = (root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Crypto Pumping Signals", html)
+        self.assertIn("Crypto Pumping", html)
         self.assertIn("updateBanner", html)
         self.assertIn("SKIP_WAITING", html)
         sw = (root / "sw.js").read_text(encoding="utf-8")
-        self.assertIn("cps-v4.1.0", sw)
+        self.assertIn("cps-v4.1.1", sw)
         self.assertIn("SKIP_WAITING", sw)
         self.assertNotIn("skipWaiting()", sw.split("message")[0])  # no auto skip on install
 
