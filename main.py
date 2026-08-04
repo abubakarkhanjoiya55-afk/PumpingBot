@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.4"   # Cent-account symbols + USC balance display
+API_VERSION = "3.28.5"   # Master margin-100% TP; H1+M5 entries; agent open trades UI
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -2563,7 +2563,8 @@ def get_signals(current_user: User = Depends(get_current_user),
 def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
     conn = user_connection(current_user)
-    reconcile_trades_with_mt5(current_user.id, conn)
+    if USE_METAAPI:
+        reconcile_trades_with_mt5(current_user.id, conn)
     trades = db.query(Trade).filter(
         Trade.user_id == current_user.id
     ).order_by(
@@ -2571,7 +2572,9 @@ def get_trades(current_user: User = Depends(get_current_user),
         Trade.opened_at.desc()
     ).limit(500).all()
 
-    if conn and conn._ready:
+    # Live P/L overlay from MetaAPI or agent heartbeat
+    live_map = {}
+    if conn and getattr(conn, "_ready", False):
         live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
         backfilled = 0
         for t in trades:
@@ -2584,11 +2587,70 @@ def get_trades(current_user: User = Depends(get_current_user),
                     backfilled += 1
         if backfilled:
             db.commit()
+    elif agent_mode_enabled() and not USE_METAAPI:
+        for p in agent_hub.get_positions(current_user.id) or []:
+            if isinstance(p, dict) and p.get("ticket"):
+                live_map[int(p["ticket"])] = p
+        is_cent = False
+        for a in agent_hub.list_agents():
+            if a["user_id"] == current_user.id:
+                is_cent = bool(a.get("is_cent"))
+                break
+        for t in trades:
+            if t.status == "open" and t.mt5_ticket:
+                p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                if p:
+                    raw = float(p.get("profit") or 0)
+                    t.profit = round(raw / 100.0, 2) if is_cent else round(raw, 2)
+            elif t.status == "closed" and is_cent and t.profit is not None:
+                # Stored as USC from agent — expose USD for UI
+                # Heuristic: |profit| > 50 on tiny accounts usually USC already shown wrong;
+                # only scale if currency session is cent and abs looks like cents bookkeeping
+                pass
+
+    # Cent: convert stored USC profits to USD for display consistency
+    if agent_mode_enabled() and not USE_METAAPI:
+        is_cent = any(
+            a["user_id"] == current_user.id and a.get("is_cent")
+            for a in agent_hub.list_agents()
+        )
+        if is_cent:
+            for t in trades:
+                if t.profit is not None and t.status == "closed":
+                    # Agent writes USC; show USD
+                    t.profit = round(float(t.profit) / 100.0, 2)
 
     return trades
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
+    # Agent / VPS mode: live positions come from agent heartbeat cache
+    if agent_mode_enabled() and not USE_METAAPI:
+        raw = agent_hub.get_positions(current_user.id) or []
+        is_cent = any(
+            a["user_id"] == current_user.id and a.get("is_cent")
+            for a in agent_hub.list_agents()
+        )
+        out = []
+        for p in raw:
+            if isinstance(p, dict):
+                profit = float(p.get("profit") or 0)
+                if is_cent:
+                    profit = profit / 100.0
+                out.append({
+                    "ticket": p.get("ticket"),
+                    "symbol": p.get("symbol"),
+                    "profit": round(profit, 2),
+                    "type": "BUY" if int(p.get("type") or 0) == 0 else "SELL",
+                    "lot": p.get("volume") or p.get("lot") or 0,
+                    "open_price": p.get("price_open") or p.get("open_price") or 0,
+                    "current_price": 0,
+                    "score": 0,
+                    "magic": p.get("magic") or 0,
+                    "comment": p.get("comment") or "",
+                })
+        return out
+
     conn = user_connection(current_user)
     reconcile_trades_with_mt5(current_user.id, conn)
     positions = conn.positions_get() if conn else []
@@ -2845,6 +2907,7 @@ def _handle_master_trade_close(user: "User", msg: dict):
     ticket = int(msg.get("master_ticket") or 0)
     symbol = msg.get("symbol") or ""
     profit = msg.get("profit")
+    close_price = msg.get("price") or msg.get("close_price")
 
     db = SessionLocal()
     try:
@@ -2858,6 +2921,13 @@ def _handle_master_trade_close(user: "User", msg: dict):
             row.closed_at = datetime.utcnow()
             if profit is not None:
                 row.profit = float(profit)
+            elif row.profit is None:
+                row.profit = 0.0
+            if close_price is not None:
+                try:
+                    row.close_price = float(close_price)
+                except Exception:
+                    pass
             db.commit()
     finally:
         db.close()
@@ -2867,7 +2937,7 @@ def _handle_master_trade_close(user: "User", msg: dict):
         args=(ticket, symbol),
         daemon=True,
     ).start()
-    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol}")
+    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol} profit={profit}")
 
 
 @app.websocket("/ws/agent")
@@ -2921,6 +2991,7 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                 continue
 
             if mtype in ("heartbeat", "pong"):
+                positions = msg.get("positions") or []
                 await agent_hub.touch(
                     user.id,
                     balance=msg.get("balance"),
@@ -2928,6 +2999,7 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                     currency=msg.get("currency"),
                     is_cent=msg.get("is_cent"),
                     ready=msg.get("ready"),
+                    positions=positions if isinstance(positions, list) else [],
                 )
                 # Persist for /me dashboard (mobile) without waiting on supervisor
                 try:
@@ -2940,6 +3012,46 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                         row.vps_status = "running" if msg.get("ready") else "starting"
                         row.vps_last_seen = datetime.utcnow()
                         row.vps_last_error = None
+                        # Upsert open trades from live MT5 positions (agent mode UI)
+                        if isinstance(positions, list):
+                            live_tickets = set()
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                ticket = int(p.get("ticket") or 0)
+                                if not ticket:
+                                    continue
+                                live_tickets.add(ticket)
+                                existing = dbh.query(Trade).filter(
+                                    Trade.user_id == user.id,
+                                    Trade.mt5_ticket == ticket,
+                                    Trade.status == "open",
+                                ).first()
+                                side = "BUY" if int(p.get("type") or 0) == 0 else "SELL"
+                                if not existing:
+                                    dbh.add(Trade(
+                                        user_id=user.id,
+                                        symbol=p.get("symbol") or "",
+                                        trade_type=side,
+                                        lot=float(p.get("volume") or 0.01),
+                                        open_price=float(p.get("price_open") or 0),
+                                        profit=float(p.get("profit") or 0),
+                                        score=0,
+                                        mt5_ticket=ticket,
+                                        master_ticket=ticket if (msg.get("role") or session.role) == "master" else None,
+                                        status="open",
+                                    ))
+                                else:
+                                    existing.profit = float(p.get("profit") or existing.profit or 0)
+                            # Positions gone from MT5 → mark closed (keep last profit)
+                            opens = dbh.query(Trade).filter(
+                                Trade.user_id == user.id,
+                                Trade.status == "open",
+                            ).all()
+                            for tr in opens:
+                                if tr.mt5_ticket and int(tr.mt5_ticket) not in live_tickets:
+                                    tr.status = "closed"
+                                    tr.closed_at = datetime.utcnow()
                         dbh.commit()
                     dbh.close()
                 except Exception as e:

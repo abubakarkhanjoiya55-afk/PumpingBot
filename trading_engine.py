@@ -21,13 +21,14 @@ MIN_TREND_STRUCTURE   = 0
 MIN_EFFECTIVE_SCORE   = MIN_PATTERN_SCORE
 MIN_CONFLUENCE        = 0
 SCAN_INTERVAL_SEC     = 3       # M1 — scan often, act on newly closed candle
-MARGIN_PROFIT_TRIGGER = 0.7
+MARGIN_PROFIT_TRIGGER = 1.0     # close when profit >= 100% of margin used (master)
 MARGIN_SL_LOCK_PCT    = 0.70
 MAX_SPREAD_POINTS     = 2000
-MIN_COOLDOWN_SEC      = 60      # 1 min — same TF as entry
+MIN_COOLDOWN_SEC      = 45      # faster scalp after clear setup
 LOSS_COOLDOWN_SEC     = 300
 TRADE_MAX_LOSS_PCT    = 0.004
 EARLY_LOSS_CUT_PCT    = 0.0025
+MASTER_AUTO_LOSS_CUT  = False   # master manages losses manually
 STALE_LOSS_MINUTES    = 6
 BREAKEVEN_PROFIT_USD  = 3.0
 SCALP_ATR_MULT        = 1.2
@@ -539,13 +540,13 @@ def get_trend(symbol, mt5_manager):
 def get_risk_multiplier(score):
     """Higher pattern score → more margin/lot on that trade."""
     if score >= 90:
-        return 3.0
+        return 3.5
     if score >= STRONG_SCORE:
-        return 2.5
+        return 2.8
     if score >= 55:
         return 2.0
     if score >= MIN_PATTERN_SCORE:
-        return 1.5
+        return 1.4
     return 1.0
 
 
@@ -586,8 +587,162 @@ def calculate_lot(balance, atr, symbol, score, mt5_manager, sl_distance=None):
         return None
 
 
+# ─── HTF bias + M5 S/R breakout/retest ───────────────────────────────────────
+
+def get_h1_bias(symbol, mt5_manager):
+    """
+    1H structure for next ~2–3 hours: only scalp in this direction.
+    Returns ("BUY"|"SELL"|None, strength 0-30, detail).
+    """
+    tf = getattr(mt5_manager, "TIMEFRAME_H1", "1h")
+    ohlc = fetch_ohlc(symbol, tf, 40, mt5_manager)
+    if ohlc is None or len(ohlc["closes"]) < 6:
+        return None, 0, "no_h1"
+
+    opens, highs, lows, closes = (
+        ohlc["opens"], ohlc["highs"], ohlc["lows"], ohlc["closes"]
+    )
+    # Use closed bars only
+    c, h, l, o = closes[:-1], highs[:-1], lows[:-1], opens[:-1]
+    if len(c) < 5:
+        return None, 0, "short_h1"
+
+    # Last 3 H1 closes vs prior mid — bias for next 2–3 hours
+    last3 = c[-3:]
+    prior = c[-6:-3]
+    mid_prior = sum(prior) / len(prior)
+    up = last3[-1] > mid_prior and last3[-1] >= last3[0]
+    down = last3[-1] < mid_prior and last3[-1] <= last3[0]
+    higher_lows = l[-1] > l[-2] > l[-3]
+    lower_highs = h[-1] < h[-2] < h[-3]
+    bull_body = sum(1 for i in range(-3, 0) if c[i] > o[i])
+    bear_body = sum(1 for i in range(-3, 0) if c[i] < o[i])
+
+    if up and (higher_lows or bull_body >= 2):
+        strength = 18 + (8 if higher_lows else 0) + (4 if bull_body == 3 else 0)
+        return "BUY", min(30, strength), "h1_bull_2to3h"
+    if down and (lower_highs or bear_body >= 2):
+        strength = 18 + (8 if lower_highs else 0) + (4 if bear_body == 3 else 0)
+        return "SELL", min(30, strength), "h1_bear_2to3h"
+    return None, 0, "h1_chop"
+
+
+def detect_m5_sr_signal(symbol, mt5_manager, bias_dir=None):
+    """
+    M5 support/resistance: clear break → retest hold → continue.
+    Also accepts strong M5 engulfs after level break.
+    """
+    tf = getattr(mt5_manager, "TIMEFRAME_M5", None) or getattr(
+        mt5_manager, "TIMEFRAME_M1", "1m"
+    )
+    # Prefer real M5 if bridge exposes it
+    if hasattr(mt5_manager, "TIMEFRAME_M5"):
+        tf = mt5_manager.TIMEFRAME_M5
+    ohlc = fetch_ohlc(symbol, tf, 80, mt5_manager)
+    if ohlc is None or len(ohlc["closes"]) < 20:
+        return None
+
+    opens, highs, lows, closes = (
+        ohlc["opens"], ohlc["highs"], ohlc["lows"], ohlc["closes"]
+    )
+    # Closed bars
+    o, h, l, c = opens[:-1], highs[:-1], lows[:-1], closes[:-1]
+    if len(c) < 18:
+        return None
+
+    look = 12
+    # Level from bars before the last 3 (break + retest window)
+    window = slice(-(look + 4), -4)
+    res = max(h[window])
+    sup = min(l[window])
+    rng = res - sup
+    if rng <= 0:
+        return None
+
+    atr = calc_atr(h, l, c) or rng * 0.2
+    buf = max(atr * 0.15, rng * 0.05)
+    b0, b1, b2 = -3, -2, -1  # break, retest, confirm (closed)
+
+    # Resistance break → retest → hold above
+    broke_up = c[b0] > res + buf and o[b0] < res
+    retest_hold_up = (
+        l[b1] <= res + buf and l[b1] >= res - buf * 2 and c[b1] >= res - buf
+    )
+    confirm_up = c[b2] > res and c[b2] >= o[b2]
+
+    # Support break → retest → hold below
+    broke_dn = c[b0] < sup - buf and o[b0] > sup
+    retest_hold_dn = (
+        h[b1] >= sup - buf and h[b1] <= sup + buf * 2 and c[b1] <= sup + buf
+    )
+    confirm_dn = c[b2] < sup and c[b2] <= o[b2]
+
+    pname, pdir, pbase = detect_candle_pattern(o, h, l, c)
+
+    direction = None
+    score = 0
+    name = None
+    levels = {
+        "recent_high": res,
+        "recent_low": sup,
+        "range_height": rng,
+        "breakout_level": res,
+    }
+
+    if broke_up and retest_hold_up and confirm_up:
+        direction = "BUY"
+        score = 62 + min(20, int((c[b2] - res) / max(buf, 1e-9) * 4))
+        name = "M5:break_retest_res"
+        levels["breakout_level"] = res
+    elif broke_dn and retest_hold_dn and confirm_dn:
+        direction = "SELL"
+        score = 62 + min(20, int((sup - c[b2]) / max(buf, 1e-9) * 4))
+        name = "M5:break_retest_sup"
+        levels["breakout_level"] = sup
+    elif pdir and pbase >= 18:
+        # Strong candle after sitting near S/R
+        near_res = abs(c[-1] - res) <= buf * 2
+        near_sup = abs(c[-1] - sup) <= buf * 2
+        if pdir == "BUY" and (near_sup or c[-1] > res):
+            direction, score, name = "BUY", 50 + pbase, f"M5:pattern_{pname}"
+        elif pdir == "SELL" and (near_res or c[-1] < sup):
+            direction, score, name = "SELL", 50 + pbase, f"M5:pattern_{pname}"
+
+    if not direction:
+        return {"skip": True, "reason": "no_m5_setup", "symbol": symbol}
+
+    if bias_dir and direction != bias_dir:
+        return {
+            "skip": True,
+            "reason": "against_h1",
+            "symbol": symbol,
+            "m5_dir": direction,
+            "h1_bias": bias_dir,
+        }
+
+    score = int(max(40, min(100, score)))
+    return {
+        "symbol": symbol,
+        "trend": direction,
+        "score": score,
+        "pattern_name": name,
+        "atr": atr,
+        "breakout_levels": levels,
+        "m5_setup": name,
+        "m1_pattern": name,  # eligibility reuse
+        "confirm_reason": "m5_retest_confirm",
+        "ohlc": ohlc,
+    }
+
+
 def analyze_symbol(symbol, mt5_manager):
-    """M1 candle-pattern analysis — indicators nahi."""
+    """
+    Entry stack (fast scalp with HTF filter):
+      1) H1 bias for next 2–3h — only trade that side
+      2) M5 S/R break + retest OR strong M5 pattern near level
+      3) Else M1 candle pattern + confirm (same direction as H1)
+    Stronger confluence → higher score → larger lot.
+    """
     tick = mt5_manager.symbol_info_tick(symbol)
     sym_info = mt5_manager.symbol_info(symbol)
     if tick is None or sym_info is None:
@@ -598,15 +753,46 @@ def analyze_symbol(symbol, mt5_manager):
     if spread > max_spread:
         return {"skip": True, "reason": "spread", "symbol": symbol, "spread": spread}
 
-    signal = detect_m1_signal(symbol, mt5_manager)
-    if signal is None:
-        return {"skip": True, "reason": "no_candles", "symbol": symbol}
+    h1_dir, h1_bonus, h1_detail = get_h1_bias(symbol, mt5_manager)
+    if not h1_dir:
+        return {
+            "skip": True,
+            "reason": "no_h1_bias",
+            "symbol": symbol,
+            "h1_detail": h1_detail,
+            "tick": tick,
+        }
+
+    signal = detect_m5_sr_signal(symbol, mt5_manager, bias_dir=h1_dir)
+    source = "m5"
+    if signal is None or signal.get("skip"):
+        signal = detect_m1_signal(symbol, mt5_manager)
+        source = "m1"
+        if signal is None:
+            return {"skip": True, "reason": "no_candles", "symbol": symbol, "tick": tick}
+        if signal.get("skip"):
+            signal["tick"] = tick
+            signal["h1_bias"] = h1_dir
+            return signal
+        if signal.get("trend") != h1_dir:
+            return {
+                "skip": True,
+                "reason": "m1_against_h1",
+                "symbol": symbol,
+                "m1_dir": signal.get("trend"),
+                "h1_bias": h1_dir,
+                "tick": tick,
+            }
+
     if signal.get("skip"):
         signal["tick"] = tick
         return signal
 
     trend = signal["trend"]
-    score = signal["score"]
+    score = int(signal["score"]) + int(h1_bonus)
+    if source == "m5":
+        score += 8  # clear break+retest premium
+    score = int(max(0, min(100, score)))
     levels = signal.get("breakout_levels") or {}
     atr = signal.get("atr") or 0
     trade_mode = "ELITE" if score >= STRONG_SCORE else "SCALP"
@@ -623,18 +809,20 @@ def analyze_symbol(symbol, mt5_manager):
         "atr": atr,
         "breakout_levels": levels,
         "sl_distance": sl_distance,
-        "htf_aligned": False,
+        "htf_aligned": True,
         "pattern_name": signal.get("pattern_name"),
         "pattern_conflict": False,
-        "htf_patterns": {},
-        "breakouts": {},
+        "htf_patterns": {"H1": h1_detail},
+        "breakouts": {"M5": signal.get("m5_setup")},
         "breakout_name": signal.get("pattern_name"),
         "breakout_dir": trend,
         "breakout_bonus": score,
-        "m15_breakout": signal.get("m1_pattern"),  # reuse field for logs
-        "m1_pattern": signal.get("m1_pattern"),
+        "m15_breakout": signal.get("m5_setup") or signal.get("m1_pattern"),
+        "m1_pattern": signal.get("m1_pattern") or signal.get("m5_setup"),
         "m1_confirm": signal.get("confirm_reason"),
-        "h1_breakout": None,
+        "h1_breakout": h1_detail,
+        "h1_bias": h1_dir,
+        "entry_source": source,
         "h4_breakout": None,
         "tick": tick,
         "closes15": signal.get("ohlc", {}).get("closes", []),
@@ -642,12 +830,15 @@ def analyze_symbol(symbol, mt5_manager):
 
 
 def trade_eligible(analysis):
-    """M1 pattern + direction confirm + min score."""
+    """H1-aligned M5 retest/breakout or M1 pattern + min score."""
     if analysis.get("skip"):
         return False, analysis.get("reason", "skip")
 
+    if not analysis.get("htf_aligned") and not analysis.get("h1_bias"):
+        return False, "no_h1_bias"
+
     if not analysis.get("m1_pattern") and not analysis.get("m15_breakout"):
-        return False, "no_m1_pattern"
+        return False, "no_setup"
 
     score = analysis.get("score", 0)
     if score < MIN_PATTERN_SCORE:

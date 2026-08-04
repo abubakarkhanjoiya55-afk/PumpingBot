@@ -14,6 +14,22 @@ function fmt(n, me) {
   return `$${v.toFixed(2)}`;
 }
 
+function fmtTradePl(n, me) {
+  if (n == null || n === '') return '-';
+  const v = Number(n);
+  if (Number.isNaN(v)) return '-';
+  return fmt(v, me);
+}
+
+function plBadge(n) {
+  if (n == null || n === '') return <span className="badge-open">N/A</span>;
+  const v = Number(n);
+  if (Number.isNaN(v) || v === 0) return <span className="badge-open">FLAT</span>;
+  return v > 0
+    ? <span className="badge-profit">PROFIT</span>
+    : <span className="badge-loss">LOSS</span>;
+}
+
 function getFloatingPl(me) {
   if (!me) return 0;
   if (me.floating_pl != null && me.floating_pl !== 0) return me.floating_pl;
@@ -331,6 +347,9 @@ export default function App() {
     .filter(t => t.status === 'closed')
     .sort((a, b) => new Date(b.closed_at || b.opened_at) - new Date(a.closed_at || a.opened_at));
   const floatingPl = getFloatingPl(me);
+  // Merge DB open rows + live agent positions (orphans without DB row yet)
+  const openTickets = new Set(openTrades.map(t => Number(t.mt5_ticket)).filter(Boolean));
+  const liveOnly = (positions || []).filter(p => p?.ticket && !openTickets.has(Number(p.ticket)));
   const openCount = Math.max(me?.open_trades_count ?? 0, openTrades.length, positions.length);
   const netPl = closedTrades.reduce((s, t) => s + (t.profit || 0), 0);
   const isAdmin = me?.is_admin || me?.username === 'admin';
@@ -340,10 +359,11 @@ export default function App() {
   const canStartBot = me?.mt5_connected && subActive && (mt5Live || isFollower || me?.trading_backend === 'vps_agent');
 
   const posProfit = (trade) => {
-    const byTicket = positions.find(x => x.ticket === trade.mt5_ticket);
+    const byTicket = positions.find(x => Number(x.ticket) === Number(trade.mt5_ticket));
     if (byTicket) return byTicket.profit;
     const bySymbol = positions.find(x => x.symbol === trade.symbol);
-    return bySymbol ? bySymbol.profit : (trade.profit ?? null);
+    if (bySymbol) return bySymbol.profit;
+    return trade.profit ?? null;
   };
 
   const latestSignal = signals[0];
@@ -503,15 +523,31 @@ export default function App() {
                         <td>{t.lot}</td>
                         <td>{t.open_price?.toFixed?.(2) ?? t.open_price}</td>
                         <td className={pl == null ? '' : pl >= 0 ? 'green' : 'red'}>
-                          <strong>{pl == null ? '-' : fmt(pl)}</strong>
+                          <strong>{pl == null ? '-' : fmtTradePl(pl, me)}</strong>
                         </td>
                         <td><span className="badge-open">OPEN</span></td>
                       </tr>
                     );
                   })}
+                  {liveOnly.map(p => {
+                    const pl = p.profit;
+                    return (
+                      <tr key={`live-${p.ticket}`} className="row-open">
+                        <td>—</td>
+                        <td><strong>{p.symbol}</strong></td>
+                        <td className={p.type === 'BUY' ? 'green' : 'red'}><strong>{p.type}</strong></td>
+                        <td>{p.lot}</td>
+                        <td>{p.open_price?.toFixed?.(2) ?? p.open_price ?? '-'}</td>
+                        <td className={pl == null ? '' : pl >= 0 ? 'green' : 'red'}>
+                          <strong>{pl == null ? '-' : fmtTradePl(pl, me)}</strong>
+                        </td>
+                        <td><span className="badge-open">LIVE</span></td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
-              {openCount === 0 && <p className="empty">No open trades.</p>}
+              {openTrades.length === 0 && liveOnly.length === 0 && <p className="empty">No open trades.</p>}
             </div>
           </>
         )}
@@ -536,8 +572,8 @@ export default function App() {
                       <td>{t.lot}</td>
                       <td>{t.open_price?.toFixed?.(2) ?? t.open_price ?? '-'}</td>
                       <td>{t.close_price?.toFixed?.(2) ?? t.close_price ?? '-'}</td>
-                      <td className={(t.profit || 0) >= 0 ? 'green' : 'red'}>{fmt(t.profit)}</td>
-                      <td><span className={(t.profit || 0) >= 0 ? 'badge-profit' : 'badge-loss'}>{(t.profit || 0) >= 0 ? 'PROFIT' : 'LOSS'}</span></td>
+                      <td className={(t.profit || 0) >= 0 ? 'green' : 'red'}>{fmtTradePl(t.profit, me)}</td>
+                      <td>{plBadge(t.profit)}</td>
                     </tr>
                   ))}
                 </tbody>

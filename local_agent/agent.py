@@ -306,7 +306,7 @@ class PumpingAgent:
     def master_loop(self):
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
-            get_breakout_profit_target, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
+            MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
             MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
         )
 
@@ -381,21 +381,19 @@ class PumpingAgent:
                         continue
 
                     ticket = result["ticket"]
-                    target = get_breakout_profit_target(
-                        entry, trend, levels, lot, symbol, bridge, score)
-                    # target is USD; on cent books compare against profit/100
-                    is_cent_acc = bool(acc.get("is_cent"))
-                    bal_usd = (balance / 100.0) if is_cent_acc else float(balance)
-                    # Small accounts: don't require $5 TP — aim ~2–4% of equity
-                    if bal_usd > 0:
-                        target = min(float(target), max(0.8, bal_usd * 0.04))
-                    print(f"[MASTER OPEN] {symbol} {trend} score={score} "
-                          f"lot={lot} ticket={ticket} tp~${target:.2f} bal_usd~{bal_usd:.2f}")
+                    from trading_engine import calc_margin_used, MARGIN_PROFIT_TRIGGER
+                    margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+                    print(
+                        f"[MASTER OPEN] {symbol} {trend} score={score} "
+                        f"lot={lot} ticket={ticket} margin={margin:.2f} "
+                        f"tp@100%={margin * MARGIN_PROFIT_TRIGGER:.2f} "
+                        f"src={analysis.get('entry_source')} h1={analysis.get('h1_bias')}"
+                    )
 
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
                         "entry": entry, "sl": sl, "score": score,
-                        "atr": atr, "levels": levels, "tp_usd": target,
+                        "atr": atr, "levels": levels, "margin_used": margin,
                         "opened_at": time.time(),
                     }
 
@@ -420,12 +418,11 @@ class PumpingAgent:
                 time.sleep(2)
 
     def _master_manage_positions(self, open_pos, bridge):
-        """Simple TP/SL style exits for master; broadcast close."""
-        from trading_engine import (
-            get_profit_target, is_scalp_trade, get_locked_profit,
-        )
+        """Master exits: NO auto loss-cut (owner manages). Close at 100% of margin."""
+        from trading_engine import calc_margin_used, MARGIN_PROFIT_TRIGGER
+
         live_tickets = {p["ticket"] for p in open_pos}
-        # Detect broker-closed
+        # Detect broker/manual closes — snapshot profit from last known meta if any
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
                 info = self._master_open.pop(ticket)
@@ -434,53 +431,46 @@ class PumpingAgent:
                     "master_ticket": ticket,
                     "symbol": info["symbol"],
                     "reason": "BrokerClose",
+                    "profit": info.get("last_profit"),
                 })
 
         acc = self.mt5.account()
-        balance = acc.get("balance") or 1000
         is_cent = bool(acc.get("is_cent"))
-        bal_usd = (balance / 100.0) if is_cent else float(balance)
         for pos in open_pos:
             ticket = pos["ticket"]
             meta = self._master_open.get(ticket) or {
-                "symbol": pos["symbol"], "side": "BUY" if pos["type"] == 0 else "SELL",
-                "score": 60, "lot": pos["volume"], "entry": pos["price_open"],
+                "symbol": pos["symbol"],
+                "side": "BUY" if pos["type"] == 0 else "SELL",
+                "score": 60,
+                "lot": pos["volume"],
+                "entry": pos["price_open"],
             }
             profit = float(pos["profit"] or 0)
-            # Profit targets in trading_engine are USD; cent books report USC
-            profit_usd = (profit / 100.0) if is_cent else profit
-            score = meta.get("score", 60)
-            age = time.time() - float(meta.get("opened_at") or time.time())
+            meta["last_profit"] = profit
+            self._master_open[ticket] = meta
 
-            # Loss cut: was 0.25% (~$0.02 on $10) — spread alone killed every trade.
-            # Use ~1.2% of equity, min $0.80 / max 4% ; ignore first 8s (spread settle).
-            loss_limit_usd = min(max(bal_usd * 0.012, 0.80), max(bal_usd * 0.04, 0.80))
-            loss_limit = loss_limit_usd * 100.0 if is_cent else loss_limit_usd
-            if age >= 8 and profit <= -loss_limit:
-                self._master_close(ticket, meta, "LossCut")
-                continue
-
-            target = meta.get("tp_usd")
-            if target is None:
-                target = get_profit_target(
-                    score,
-                    meta.get("atr") or 0,
+            # Margin + profit must be same currency (USC on cent books)
+            margin = meta.get("margin_used")
+            if margin is None:
+                margin = calc_margin_used(
+                    meta.get("lot") or pos["volume"],
                     pos["symbol"],
+                    meta.get("entry") or pos["price_open"],
                     bridge,
-                    entry_price=meta.get("entry"),
-                    trade_type=meta.get("side"),
-                    levels=meta.get("levels"),
-                    lot=meta.get("lot") or pos["volume"],
                 )
-                if bal_usd > 0:
-                    target = min(float(target), max(0.8, bal_usd * 0.04))
-            if profit_usd >= float(target):
-                self._master_close(ticket, meta, "TP")
+                if margin:
+                    meta["margin_used"] = margin
+
+            if not margin or margin <= 0:
                 continue
-            if is_scalp_trade(score):
-                locked = get_locked_profit(profit_usd)
-                if locked and profit_usd < locked:
-                    self._master_close(ticket, meta, "Trail")
+
+            # 100% of margin profit → auto close (LossCut disabled for master)
+            if profit >= float(margin) * float(MARGIN_PROFIT_TRIGGER):
+                print(
+                    f"[MASTER TP] ticket={ticket} profit={profit:.2f} "
+                    f"margin={margin:.2f} ({'USC' if is_cent else 'USD'})"
+                )
+                self._master_close(ticket, meta, "Margin100")
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
         result = self.mt5.close_position(ticket, comment=f"PB_{reason}"[:31])
@@ -536,6 +526,7 @@ class MasterMT5Bridge:
     """Adapt LocalMT5 to the interface trading_engine expects."""
 
     TIMEFRAME_M1 = "1m"
+    TIMEFRAME_M5 = "5m"
     TIMEFRAME_M15 = "15m"
     TIMEFRAME_H1 = "1h"
     TIMEFRAME_H4 = "4h"
@@ -546,6 +537,7 @@ class MasterMT5Bridge:
         self._mt5 = local._mt5
         self._ready = local.ready
         self.TIMEFRAME_M1 = self._mt5.TIMEFRAME_M1
+        self.TIMEFRAME_M5 = getattr(self._mt5, "TIMEFRAME_M5", self._mt5.TIMEFRAME_M1)
         self.TIMEFRAME_M15 = self._mt5.TIMEFRAME_M15
         self.TIMEFRAME_H1 = self._mt5.TIMEFRAME_H1
         self.TIMEFRAME_H4 = self._mt5.TIMEFRAME_H4
