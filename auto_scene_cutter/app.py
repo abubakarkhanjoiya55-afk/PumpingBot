@@ -971,6 +971,8 @@ def api_auto_cut():
                     JOB.finish(result)
                 except Exception as exc:  # noqa: BLE001
                     JOB.fail(str(exc))
+                except BaseException as exc:  # noqa: BLE001 — never kill desktop process
+                    JOB.fail(f"Job interrupted: {exc}")
 
             _JOB_THREAD = threading.Thread(target=_worker, daemon=True)
             _JOB_THREAD.start()
