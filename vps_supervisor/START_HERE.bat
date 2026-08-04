@@ -53,7 +53,19 @@ echo  Keep this window OPEN
 echo ========================================
 
 cd /d "%REPO_DIR%"
-python vps_supervisor\supervisor.py
+
+REM Prefer real Python install over Windows Store alias
+if not defined PYTHON_EXE (
+  if exist "%LocalAppData%\Programs\Python\Python312\python.exe" (
+    set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python312\python.exe"
+  ) else if exist "%LocalAppData%\Programs\Python\Python311\python.exe" (
+    set "PYTHON_EXE=%LocalAppData%\Programs\Python\Python311\python.exe"
+  ) else (
+    set "PYTHON_EXE=python"
+  )
+)
+
+"%PYTHON_EXE%" vps_supervisor\supervisor.py
 echo.
 echo Supervisor band ho gaya. Error ke liye upar dekho / logs folder.
 pause

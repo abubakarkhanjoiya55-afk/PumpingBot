@@ -25,7 +25,10 @@ class AgentSession:
     server: Optional[str] = None
     balance: float = 0.0
     equity: float = 0.0
+    currency: str = ""
+    is_cent: bool = False
     ready: bool = False
+    positions: list = field(default_factory=list)
     connected_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     pending: dict = field(default_factory=dict)  # req_id -> Future
@@ -85,7 +88,10 @@ class AgentHub:
                 "server": s.server,
                 "balance": s.balance,
                 "equity": s.equity,
+                "currency": s.currency,
+                "is_cent": s.is_cent,
                 "ready": s.ready,
+                "positions": list(s.positions or []),
                 "last_seen_sec": round(now - s.last_seen, 1),
                 "online": (now - s.last_seen) < 30,
             })
@@ -103,6 +109,12 @@ class AgentHub:
                 continue
             out.append(s)
         return out
+
+    def get_positions(self, user_id: int) -> list:
+        s = self._agents.get(user_id)
+        if not s:
+            return []
+        return list(s.positions or [])
 
     def master_online(self) -> Optional[AgentSession]:
         now = time.time()

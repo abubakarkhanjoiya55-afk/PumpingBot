@@ -72,10 +72,18 @@ class PumpingAgent:
         self.password = _env("MT5_PASSWORD", "")
         self.server = _env("MT5_SERVER", "")
         self.mt5_path = _env("MT5_PATH")
+        # Default: Exness CENT symbols (*c). Override with SYMBOLS=... if needed.
+        self.account_type = (_env("ACCOUNT_TYPE", "cent") or "cent").strip().lower()
+        default_symbols = (
+            "XAUUSDc,XAGUSDc,BTCUSDc,ETHUSDc,EURUSDc,GBPUSDc,USDJPYc,AUDUSDc"
+            if self.account_type in ("cent", "cents", "usc")
+            else "XAUUSDm,EURUSDm,GBPUSDm,BTCUSDm"
+        )
         self.symbols = [
-            s.strip() for s in (_env("SYMBOLS", "XAUUSDm,EURUSDm,GBPUSDm,BTCUSDm") or "").split(",")
+            s.strip() for s in (_env("SYMBOLS", default_symbols) or "").split(",")
             if s.strip()
         ]
+        self.prefer_suffix = "c" if self.account_type in ("cent", "cents", "usc") else "m"
 
         if not self.token:
             raise SystemExit("ACCESS_TOKEN missing — login via /token and set it")
@@ -91,7 +99,17 @@ class PumpingAgent:
 
     # ── MT5 ────────────────────────────────────────────────────────────
     def connect_mt5(self) -> bool:
-        return self.mt5.connect()
+        ok = self.mt5.connect()
+        if ok:
+            # Resolve *c / *m against what this broker account actually has
+            resolved = self.mt5.resolve_symbols(self.symbols, prefer_suffix=self.prefer_suffix)
+            if resolved:
+                self.symbols = resolved
+            print(f"[AGENT] ACCOUNT_TYPE={self.account_type} symbols={self.symbols}")
+            acc = self.mt5.account()
+            if acc.get("is_cent"):
+                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')}")
+        return ok
 
     # ── WebSocket ──────────────────────────────────────────────────────
     def start_ws(self):
@@ -107,10 +125,13 @@ class PumpingAgent:
                 "server": self.server,
                 "balance": acc.get("balance", 0),
                 "equity": acc.get("equity", 0),
+                "currency": acc.get("currency", ""),
+                "is_cent": bool(acc.get("is_cent")),
                 "ready": self.mt5.ready,
             }
             ws.send(json.dumps(hello))
-            print(f"[AGENT] Hello sent role={self.role} ready={self.mt5.ready}")
+            print(f"[AGENT] Hello sent role={self.role} ready={self.mt5.ready} "
+                  f"bal={acc.get('balance')} {acc.get('currency')}")
 
         def on_message(ws, message):
             try:
@@ -272,6 +293,8 @@ class PumpingAgent:
                     "type": "heartbeat",
                     "balance": acc.get("balance", 0),
                     "equity": acc.get("equity", 0),
+                    "currency": acc.get("currency", ""),
+                    "is_cent": bool(acc.get("is_cent")),
                     "ready": self.mt5.ready,
                     "positions": self.mt5.positions(),
                 })
@@ -283,13 +306,14 @@ class PumpingAgent:
     def master_loop(self):
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
-            get_breakout_profit_target, MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
-            MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
+            MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
+            MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC, SESSION_MAX_DD_PCT,
         )
 
-        print(f"[MASTER] Local M1 strategy started (no MetaAPI) bot_active={self.bot_active}")
+        print(f"[MASTER] SAFE MODE: max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s no_auto_close")
         last_close = {}
-        # Tiny shim so trading_engine can call copy_rates / symbol helpers
+        session_start_equity = None
+        entries_halted = False
         bridge = MasterMT5Bridge(self.mt5)
 
         while not self._stop.is_set():
@@ -299,23 +323,37 @@ class PumpingAgent:
                     continue
 
                 open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
-                # Manage closes → notify server for fan-out
                 self._master_manage_positions(open_pos, bridge)
 
-                # Start Bot OFF → manage open trades only, no new entries
                 if not self.bot_active:
                     time.sleep(SCAN_INTERVAL_SEC)
+                    continue
+
+                acc = self.mt5.account()
+                balance = acc.get("balance") or 0
+                equity = float(acc.get("equity") or balance or 0)
+                if session_start_equity is None and equity > 0:
+                    session_start_equity = equity
+                if session_start_equity and equity < session_start_equity * (1.0 - SESSION_MAX_DD_PCT):
+                    if not entries_halted:
+                        print(
+                            f"[MASTER HALT] equity {equity:.2f} hit {SESSION_MAX_DD_PCT*100:.0f}% DD "
+                            f"from {session_start_equity:.2f} — STOPPING NEW ENTRIES"
+                        )
+                        entries_halted = True
+                    time.sleep(10)
                     continue
 
                 if len(open_pos) >= MAX_OPEN_TRADES:
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
-                acc = self.mt5.account()
-                balance = acc.get("balance") or 0
                 now = time.time()
+                opened_this_cycle = False
 
                 for symbol in self.symbols:
+                    if opened_this_cycle:
+                        break
                     open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
                     if len(open_pos) >= MAX_OPEN_TRADES:
                         break
@@ -337,11 +375,11 @@ class PumpingAgent:
                     levels = analysis.get("breakout_levels") or {}
                     tick = analysis["tick"]
                     entry = tick.ask if trend == "BUY" else tick.bid
-                    sl = calc_breakout_sl(symbol, trend, entry, levels, bridge)
-                    if sl is None:
-                        sl = entry - atr if trend == "BUY" else entry + atr
+                    sl_for_size = calc_breakout_sl(symbol, trend, entry, levels, bridge)
+                    if sl_for_size is None:
+                        sl_for_size = entry - atr if trend == "BUY" else entry + atr
                     lot = calculate_lot(balance, atr, symbol, score, bridge,
-                                        sl_distance=abs(entry - sl))
+                                        sl_distance=abs(entry - sl_for_size))
                     if not lot:
                         continue
 
@@ -349,27 +387,31 @@ class PumpingAgent:
                         symbol=symbol,
                         side=trend,
                         volume=lot,
-                        sl=sl or 0,
+                        sl=0.0,
+                        tp=0.0,
                         magic=BOT_MAGIC,
-                        comment=f"M1_S{int(score)}"[:31],
+                        comment=f"PB_S{int(score)}"[:31],
                     )
                     if not result.get("ok"):
                         print(f"[MASTER FAIL] {symbol} {result}")
                         continue
 
                     ticket = result["ticket"]
-                    target = get_breakout_profit_target(
-                        entry, trend, levels, lot, symbol, bridge, score)
-                    print(f"[MASTER OPEN] {symbol} {trend} score={score} "
-                          f"lot={lot} ticket={ticket} tp~${target}")
-
+                    from trading_engine import calc_margin_used
+                    margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+                    print(
+                        f"[MASTER OPEN] {symbol} {trend} score={score} lot={lot} "
+                        f"ticket={ticket} margin={margin:.2f} NO_SL NO_AUTO_CLOSE"
+                    )
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
-                        "entry": entry, "sl": sl, "score": score,
+                        "entry": entry, "sl": None, "score": score,
+                        "atr": atr, "levels": levels, "margin_used": margin,
                         "opened_at": time.time(),
                     }
+                    last_close[symbol] = time.time()
+                    opened_this_cycle = True
 
-                    # Instant fan-out via server hub
                     self.send({
                         "type": "master_trade_open",
                         "master_ticket": ticket,
@@ -378,7 +420,7 @@ class PumpingAgent:
                         "lot": lot,
                         "balance": balance,
                         "entry": entry,
-                        "sl": sl,
+                        "sl": 0,
                         "score": score,
                         "atr": atr,
                         "source": "BOT",
@@ -390,13 +432,10 @@ class PumpingAgent:
                 time.sleep(2)
 
     def _master_manage_positions(self, open_pos, bridge):
-        """Simple TP/SL style exits for master; broadcast close."""
-        from trading_engine import (
-            get_profit_target, is_scalp_trade, get_locked_profit,
-            EARLY_LOSS_CUT_PCT, TRADE_MAX_LOSS_PCT,
-        )
+        """Track positions only. No auto closes while MASTER_AUTO_CLOSE=False."""
+        from trading_engine import MASTER_AUTO_CLOSE, calc_margin_used, MARGIN_PROFIT_TRIGGER
+
         live_tickets = {p["ticket"] for p in open_pos}
-        # Detect broker-closed
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
                 info = self._master_open.pop(ticket)
@@ -405,30 +444,36 @@ class PumpingAgent:
                     "master_ticket": ticket,
                     "symbol": info["symbol"],
                     "reason": "BrokerClose",
+                    "profit": info.get("last_profit"),
                 })
 
-        acc = self.mt5.account()
-        balance = acc.get("balance") or 1000
         for pos in open_pos:
             ticket = pos["ticket"]
             meta = self._master_open.get(ticket) or {
-                "symbol": pos["symbol"], "side": "BUY" if pos["type"] == 0 else "SELL",
-                "score": 60, "lot": pos["volume"], "entry": pos["price_open"],
+                "symbol": pos["symbol"],
+                "side": "BUY" if pos["type"] == 0 else "SELL",
+                "score": 60,
+                "lot": pos["volume"],
+                "entry": pos["price_open"],
             }
-            profit = pos["profit"]
-            score = meta.get("score", 60)
-            # Early loss cut
-            if profit < -(balance * EARLY_LOSS_CUT_PCT) or profit < -(balance * TRADE_MAX_LOSS_PCT):
-                self._master_close(ticket, meta, "LossCut")
-                continue
-            target = get_profit_target(score, 0, pos["symbol"], bridge)
-            if profit >= target:
-                self._master_close(ticket, meta, "TP")
-                continue
-            if is_scalp_trade(score):
-                locked = get_locked_profit(profit)
-                if locked and profit < locked:
-                    self._master_close(ticket, meta, "Trail")
+            meta["last_profit"] = float(pos["profit"] or 0)
+            self._master_open[ticket] = meta
+
+            if not MASTER_AUTO_CLOSE:
+                continue  # owner manages all exits in MT5
+
+            margin = meta.get("margin_used")
+            if margin is None:
+                margin = calc_margin_used(
+                    meta.get("lot") or pos["volume"],
+                    pos["symbol"],
+                    meta.get("entry") or pos["price_open"],
+                    bridge,
+                )
+                if margin:
+                    meta["margin_used"] = margin
+            if margin and float(pos["profit"] or 0) >= float(margin) * float(MARGIN_PROFIT_TRIGGER):
+                self._master_close(ticket, meta, "Margin100")
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
         result = self.mt5.close_position(ticket, comment=f"PB_{reason}"[:31])
@@ -484,6 +529,7 @@ class MasterMT5Bridge:
     """Adapt LocalMT5 to the interface trading_engine expects."""
 
     TIMEFRAME_M1 = "1m"
+    TIMEFRAME_M5 = "5m"
     TIMEFRAME_M15 = "15m"
     TIMEFRAME_H1 = "1h"
     TIMEFRAME_H4 = "4h"
@@ -494,6 +540,7 @@ class MasterMT5Bridge:
         self._mt5 = local._mt5
         self._ready = local.ready
         self.TIMEFRAME_M1 = self._mt5.TIMEFRAME_M1
+        self.TIMEFRAME_M5 = getattr(self._mt5, "TIMEFRAME_M5", self._mt5.TIMEFRAME_M1)
         self.TIMEFRAME_M15 = self._mt5.TIMEFRAME_M15
         self.TIMEFRAME_H1 = self._mt5.TIMEFRAME_H1
         self.TIMEFRAME_H4 = self._mt5.TIMEFRAME_H4

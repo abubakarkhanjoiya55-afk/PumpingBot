@@ -33,8 +33,20 @@ class LocalMT5:
         if self.path:
             kwargs["path"] = self.path
 
-        if not mt5.initialize(**kwargs):
-            print(f"[LOCAL MT5] initialize failed: {mt5.last_error()}")
+        # IPC timeout (-10005) is common while terminal is still booting
+        last_err = None
+        for attempt in range(1, 6):
+            if mt5.initialize(**kwargs):
+                break
+            last_err = mt5.last_error()
+            print(f"[LOCAL MT5] initialize failed (try {attempt}/5): {last_err}")
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(5)
+        else:
+            print(f"[LOCAL MT5] initialize failed: {last_err}")
             return False
 
         authorized = mt5.login(self.login, password=self.password, server=self.server)
@@ -45,8 +57,9 @@ class LocalMT5:
 
         self.ready = True
         info = mt5.account_info()
+        cur = getattr(info, "currency", "") if info else ""
         print(f"[LOCAL MT5] Connected {self.login}@{self.server} "
-              f"balance={getattr(info, 'balance', '?')}")
+              f"balance={getattr(info, 'balance', '?')} currency={cur}")
         return True
 
     def shutdown(self):
@@ -60,7 +73,10 @@ class LocalMT5:
     def account(self) -> dict:
         info = self._mt5.account_info() if self._mt5 else None
         if not info:
-            return {"balance": 0, "equity": 0}
+            return {"balance": 0, "equity": 0, "currency": "", "is_cent": False}
+        currency = str(getattr(info, "currency", "") or "")
+        # Exness / broker cent books often use USC (US cent) or *cent* names
+        is_cent = currency.upper() in ("USC", "EURC", "GBPC") or "cent" in currency.lower()
         return {
             "balance": float(info.balance),
             "equity": float(info.equity),
@@ -70,7 +86,43 @@ class LocalMT5:
             "leverage": int(info.leverage or 100),
             "login": int(info.login),
             "server": info.server,
+            "currency": currency,
+            "is_cent": is_cent,
         }
+
+    def resolve_symbols(self, bases: list[str], prefer_suffix: str = "c") -> list[str]:
+        """
+        Map base symbols (XAUUSD) → broker symbols that exist on this account.
+        Cent accounts: prefer 'c' (XAUUSDc). Standard often 'm' (XAUUSDm).
+        """
+        mt5 = self._mt5
+        if not mt5:
+            return []
+        order = [prefer_suffix] + [s for s in ("c", "m", "", "z", "r") if s != prefer_suffix]
+        resolved = []
+        for base in bases:
+            base = (base or "").strip()
+            if not base:
+                continue
+            # Already a concrete symbol with suffix?
+            if mt5.symbol_info(base) is not None:
+                mt5.symbol_select(base, True)
+                resolved.append(base)
+                continue
+            stem = base.rstrip("cmzrCMZR")
+            found = None
+            for suf in order:
+                cand = f"{stem}{suf}"
+                if mt5.symbol_info(cand) is not None:
+                    mt5.symbol_select(cand, True)
+                    found = cand
+                    break
+            if found:
+                resolved.append(found)
+                print(f"[LOCAL MT5] symbol {base} → {found}")
+            else:
+                print(f"[LOCAL MT5] symbol missing for base={base}")
+        return resolved
 
     def symbol_tick(self, symbol: str):
         return self._mt5.symbol_info_tick(symbol)

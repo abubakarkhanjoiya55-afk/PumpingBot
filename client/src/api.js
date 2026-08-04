@@ -49,17 +49,27 @@ export async function register(username, email, password, referral_code) {
 
 export async function fetchDashboard() {
   const headers = authHeaders();
-  const [me, signals, trades, positions] = await Promise.all([
+  const settled = await Promise.allSettled([
     api.get('/me', { headers }),
     api.get('/signals', { headers }),
     api.get('/trades', { headers }),
     api.get('/open_positions', { headers }),
   ]);
+  const val = (i, fallback) =>
+    settled[i].status === 'fulfilled' ? settled[i].value.data : fallback;
+
+  const meRes = settled[0];
+  if (meRes.status === 'rejected') {
+    const err = meRes.reason;
+    if (err?.response?.status === 401) throw err;
+    throw err || new Error('Failed to load /me');
+  }
+
   return {
-    me: me.data,
-    signals: signals.data,
-    trades: trades.data,
-    positions: positions.data,
+    me: val(0, null),
+    signals: val(1, []) || [],
+    trades: val(2, []) || [],
+    positions: val(3, []) || [],
   };
 }
 

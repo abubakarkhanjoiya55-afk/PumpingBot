@@ -54,6 +54,7 @@ class ManagedAgent:
         self.balance = 0.0
         self.equity = 0.0
         self.status = "starting"
+        self.restart_after = 0.0  # cooldown before next restart
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -125,8 +126,11 @@ class Supervisor:
                 "MT5_PATH": mt5_path,
                 "AGENT_ROLE": agent.role,
                 "BOT_ACTIVE": "1" if user.get("bot_active") else "0",
+                "ACCOUNT_TYPE": os.environ.get("ACCOUNT_TYPE", "cent"),
                 "PYTHONUNBUFFERED": "1",
             })
+            if os.environ.get("SYMBOLS"):
+                env["SYMBOLS"] = os.environ["SYMBOLS"]
             agent.bot_active = bool(user.get("bot_active"))
             agent_py = REPO_DIR / "local_agent" / "agent.py"
             if not agent_py.is_file():
@@ -216,8 +220,27 @@ class Supervisor:
                 continue
 
             if not existing.alive():
+                # Avoid restart spam (MT5 IPC timeout needs breathing room)
+                now = time.time()
+                if now < getattr(existing, "restart_after", 0):
+                    existing.status = "waiting_restart"
+                    continue
                 print(f"[VPS] Restart dead agent {existing.username}")
-                self.agents[uid] = self.start_agent(user)
+                self.stop_agent(existing)
+                # Kill stray terminals for this login before relaunch
+                try:
+                    if os.name == "nt":
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", "terminal64.exe"],
+                            capture_output=True,
+                            check=False,
+                        )
+                except Exception:
+                    pass
+                time.sleep(3)
+                fresh = self.start_agent(user)
+                fresh.restart_after = time.time() + 25
+                self.agents[uid] = fresh
                 continue
 
             # Refresh fields — do NOT mark ready just because process is alive

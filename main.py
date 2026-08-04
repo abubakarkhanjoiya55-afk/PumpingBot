@@ -142,11 +142,11 @@ else:
               f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
-    "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
-    "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
+    "XAUUSDc", "XAGUSDc", "BTCUSDc", "ETHUSDc",
+    "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.3"   # PumpingBot go-live; fixed VPS_SECRET for Windows supervisor
+API_VERSION = "3.28.6"   # Start/Stop + trades UI hardened; safe-mode trading
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -445,14 +445,14 @@ class TradeOut(BaseModel):
     symbol: str
     trade_type: str
     lot: float
-    open_price: float
+    open_price: float = 0.0
     close_price: float | None = None
-    profit: float
-    score: float
+    profit: float | None = None
+    score: float = 0.0
     mt5_ticket: int | None = None
     master_ticket: int | None = None
     status: str
-    opened_at: datetime
+    opened_at: datetime | None = None
     closed_at: datetime | None = None
 
     class Config:
@@ -2067,10 +2067,13 @@ def get_me(request: Request,
         amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
     # Prefer live MetaAPI info; else VPS-reported balance
+    currency = ""
+    is_cent = False
     if info:
         balance = info.balance
         equity = info.equity
         floating_pl = round(equity - balance, 2)
+        currency = str(getattr(info, "currency", "") or "")
     else:
         balance = float(current_user.vps_balance or 0)
         equity = balance
@@ -2080,7 +2083,16 @@ def get_me(request: Request,
                 balance = float(a.get("balance") or balance)
                 equity = float(a.get("equity") or balance)
                 floating_pl = round(equity - balance, 2)
+                currency = str(a.get("currency") or "")
+                is_cent = bool(a.get("is_cent"))
                 break
+        if not is_cent:
+            is_cent = currency.upper() in ("USC", "EURC", "GBPC")
+
+    # Cent books: show USD-equivalent for humans (100 USC = $1)
+    display_balance = balance / 100.0 if is_cent else balance
+    display_equity = equity / 100.0 if is_cent else equity
+    display_pl = floating_pl / 100.0 if is_cent else floating_pl
 
     mt5_ready = _user_trading_ready(current_user)
 
@@ -2111,10 +2123,13 @@ def get_me(request: Request,
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
         "bot_active":        current_user.bot_active,
-        "balance":           balance,
-        "profit":            floating_pl,
-        "floating_pl":       floating_pl,
-        "equity":            equity,
+        "balance":           display_balance,
+        "balance_raw":       balance,
+        "profit":            display_pl,
+        "floating_pl":       display_pl,
+        "equity":            display_equity,
+        "account_currency":  currency,
+        "is_cent_account":   is_cent,
         "open_trades_count": open_trades_count,
         "referral_code":     ref_code,
         "invite_url":        invite_url,
@@ -2496,9 +2511,9 @@ def start_bot(current_user: User = Depends(get_current_user),
     active_bots[current_user.id] = True
     current_user.bot_active = True
     current_user.vps_desired = True
-    if not current_user.vps_ready:
-        current_user.vps_status = current_user.vps_status or "starting"
+    current_user.vps_status = "starting"
     db.commit()
+    db.refresh(current_user)
 
     # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
@@ -2506,23 +2521,17 @@ def start_bot(current_user: User = Depends(get_current_user),
             a["user_id"] == current_user.id and a.get("ready")
             for a in agent_hub.list_agents()
         )
-        if is_master_user(current_user):
-            return {
-                "message": (
-                    "Master bot ON. VPS pe master agent auto chalega — "
-                    "group users sirf mobile se MT5 login karein, trades copy ho jayengi."
-                ),
-                "trading_backend": "vps_agent",
-                "agent_online": online,
-                "vps_status": current_user.vps_status,
-            }
+        msg = (
+            "Master bot ON. VPS pe master agent auto chalega."
+            if is_master_user(current_user)
+            else "Copy trading ON. VPS pe account connect ho raha hai."
+        )
         return {
-            "message": (
-                "Copy trading ON. Aapka account VPS pe connect ho raha hai — "
-                "mobile se bas itna kaafi. Jab status ready ho, master trades mirror hongi."
-            ),
+            "message": msg,
             "trading_backend": "vps_agent",
             "agent_online": online,
+            "bot_active": True,
+            "vps_desired": True,
             "vps_status": current_user.vps_status,
         }
 
@@ -2551,10 +2560,16 @@ def stop_bot(current_user: User = Depends(get_current_user),
     active_bots[current_user.id] = False
     current_user.bot_active = False
     current_user.vps_desired = False
-    current_user.vps_status = "stopped"
-    current_user.vps_ready = False
+    # Keep vps_ready until agent actually drops — UI uses bot_active for button
+    current_user.vps_status = "stopping"
     db.commit()
-    return {"message": "Bot stopped — VPS agent bhi band ho jayega"}
+    db.refresh(current_user)
+    return {
+        "message": "Bot stopped — VPS agent band ho jayega",
+        "bot_active": False,
+        "vps_desired": False,
+        "vps_status": current_user.vps_status,
+    }
 
 @app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
@@ -2564,33 +2579,91 @@ def get_signals(current_user: User = Depends(get_current_user),
 @app.get("/trades", response_model=list[TradeOut])
 def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
-    conn = user_connection(current_user)
-    reconcile_trades_with_mt5(current_user.id, conn)
-    trades = db.query(Trade).filter(
-        Trade.user_id == current_user.id
-    ).order_by(
-        Trade.closed_at.desc().nullslast(),
-        Trade.opened_at.desc()
-    ).limit(500).all()
+    try:
+        conn = user_connection(current_user)
+        if USE_METAAPI:
+            reconcile_trades_with_mt5(current_user.id, conn)
+        trades = db.query(Trade).filter(
+            Trade.user_id == current_user.id
+        ).order_by(
+            Trade.opened_at.desc()
+        ).limit(500).all()
 
-    if conn and conn._ready:
-        live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
-        backfilled = 0
-        for t in trades:
-            if t.status == "open" and t.mt5_ticket:
-                p = live_map.get(_as_int_ticket(t.mt5_ticket))
-                if p:
-                    t.profit = round(p.profit, 2)
-            elif t.status == "closed" and backfilled < 25:
-                if backfill_closed_trade_profit(conn, t, db):
-                    backfilled += 1
-        if backfilled:
-            db.commit()
+        live_map = {}
+        is_cent = False
+        if conn and getattr(conn, "_ready", False):
+            live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
+            backfilled = 0
+            for t in trades:
+                if t.status == "open" and t.mt5_ticket:
+                    p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                    if p:
+                        t.profit = round(float(p.profit), 2)
+                elif t.status == "closed" and backfilled < 25:
+                    if backfill_closed_trade_profit(conn, t, db):
+                        backfilled += 1
+            if backfilled:
+                db.commit()
+        elif agent_mode_enabled() and not USE_METAAPI:
+            for a in agent_hub.list_agents():
+                if a["user_id"] == current_user.id:
+                    is_cent = bool(a.get("is_cent"))
+                    break
+            for p in agent_hub.get_positions(current_user.id) or []:
+                if isinstance(p, dict) and p.get("ticket"):
+                    live_map[int(p["ticket"])] = p
+            for t in trades:
+                if t.status == "open" and t.mt5_ticket:
+                    p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                    if p:
+                        raw = float(p.get("profit") or 0)
+                        t.profit = round(raw / 100.0, 2) if is_cent else round(raw, 2)
+                elif t.status == "closed" and is_cent and t.profit is not None:
+                    # Agent stores USC — expose USD for UI (in-memory only)
+                    t.profit = round(float(t.profit) / 100.0, 2)
 
-    return trades
+        # Sort closed first by closed_at in Python (SQLite-safe)
+        def _sort_key(t):
+            if t.status == "closed" and t.closed_at:
+                return (0, t.closed_at)
+            return (1, t.opened_at or datetime.min)
+
+        trades = sorted(trades, key=_sort_key, reverse=True)
+        return trades
+    except Exception as e:
+        print(f"[TRADES] error: {e}")
+        # Never break the dashboard — return empty rather than 500
+        return []
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):
+    # Agent / VPS mode: live positions come from agent heartbeat cache
+    if agent_mode_enabled() and not USE_METAAPI:
+        raw = agent_hub.get_positions(current_user.id) or []
+        is_cent = any(
+            a["user_id"] == current_user.id and a.get("is_cent")
+            for a in agent_hub.list_agents()
+        )
+        out = []
+        for p in raw:
+            if isinstance(p, dict):
+                profit = float(p.get("profit") or 0)
+                if is_cent:
+                    profit = profit / 100.0
+                out.append({
+                    "ticket": p.get("ticket"),
+                    "symbol": p.get("symbol"),
+                    "profit": round(profit, 2),
+                    "type": "BUY" if int(p.get("type") or 0) == 0 else "SELL",
+                    "lot": p.get("volume") or p.get("lot") or 0,
+                    "open_price": p.get("price_open") or p.get("open_price") or 0,
+                    "current_price": 0,
+                    "score": 0,
+                    "magic": p.get("magic") or 0,
+                    "comment": p.get("comment") or "",
+                })
+        return out
+
     conn = user_connection(current_user)
     reconcile_trades_with_mt5(current_user.id, conn)
     positions = conn.positions_get() if conn else []
@@ -2847,6 +2920,7 @@ def _handle_master_trade_close(user: "User", msg: dict):
     ticket = int(msg.get("master_ticket") or 0)
     symbol = msg.get("symbol") or ""
     profit = msg.get("profit")
+    close_price = msg.get("price") or msg.get("close_price")
 
     db = SessionLocal()
     try:
@@ -2860,6 +2934,13 @@ def _handle_master_trade_close(user: "User", msg: dict):
             row.closed_at = datetime.utcnow()
             if profit is not None:
                 row.profit = float(profit)
+            elif row.profit is None:
+                row.profit = 0.0
+            if close_price is not None:
+                try:
+                    row.close_price = float(close_price)
+                except Exception:
+                    pass
             db.commit()
     finally:
         db.close()
@@ -2869,7 +2950,7 @@ def _handle_master_trade_close(user: "User", msg: dict):
         args=(ticket, symbol),
         daemon=True,
     ).start()
-    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol}")
+    print(f"[AGENT HUB] master_trade_close ticket={ticket} {symbol} profit={profit}")
 
 
 @app.websocket("/ws/agent")
@@ -2910,6 +2991,8 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                 session.server = msg.get("server") or session.server
                 session.balance = float(msg.get("balance") or 0)
                 session.equity = float(msg.get("equity") or 0)
+                session.currency = str(msg.get("currency") or "")
+                session.is_cent = bool(msg.get("is_cent"))
                 session.ready = bool(msg.get("ready"))
                 session.last_seen = time.time()
                 await websocket.send_text(json.dumps({
@@ -2921,11 +3004,15 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                 continue
 
             if mtype in ("heartbeat", "pong"):
+                positions = msg.get("positions") or []
                 await agent_hub.touch(
                     user.id,
                     balance=msg.get("balance"),
                     equity=msg.get("equity"),
+                    currency=msg.get("currency"),
+                    is_cent=msg.get("is_cent"),
                     ready=msg.get("ready"),
+                    positions=positions if isinstance(positions, list) else [],
                 )
                 # Persist for /me dashboard (mobile) without waiting on supervisor
                 try:
@@ -2938,6 +3025,46 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                         row.vps_status = "running" if msg.get("ready") else "starting"
                         row.vps_last_seen = datetime.utcnow()
                         row.vps_last_error = None
+                        # Upsert open trades from live MT5 positions (agent mode UI)
+                        if isinstance(positions, list):
+                            live_tickets = set()
+                            for p in positions:
+                                if not isinstance(p, dict):
+                                    continue
+                                ticket = int(p.get("ticket") or 0)
+                                if not ticket:
+                                    continue
+                                live_tickets.add(ticket)
+                                existing = dbh.query(Trade).filter(
+                                    Trade.user_id == user.id,
+                                    Trade.mt5_ticket == ticket,
+                                    Trade.status == "open",
+                                ).first()
+                                side = "BUY" if int(p.get("type") or 0) == 0 else "SELL"
+                                if not existing:
+                                    dbh.add(Trade(
+                                        user_id=user.id,
+                                        symbol=p.get("symbol") or "",
+                                        trade_type=side,
+                                        lot=float(p.get("volume") or 0.01),
+                                        open_price=float(p.get("price_open") or 0),
+                                        profit=float(p.get("profit") or 0),
+                                        score=0,
+                                        mt5_ticket=ticket,
+                                        master_ticket=ticket if (msg.get("role") or session.role) == "master" else None,
+                                        status="open",
+                                    ))
+                                else:
+                                    existing.profit = float(p.get("profit") or existing.profit or 0)
+                            # Positions gone from MT5 → mark closed (keep last profit)
+                            opens = dbh.query(Trade).filter(
+                                Trade.user_id == user.id,
+                                Trade.status == "open",
+                            ).all()
+                            for tr in opens:
+                                if tr.mt5_ticket and int(tr.mt5_ticket) not in live_tickets:
+                                    tr.status = "closed"
+                                    tr.closed_at = datetime.utcnow()
                         dbh.commit()
                     dbh.close()
                 except Exception as e:
