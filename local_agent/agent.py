@@ -432,6 +432,7 @@ class PumpingAgent:
 
         acc = self.mt5.account()
         balance = acc.get("balance") or 1000
+        is_cent = bool(acc.get("is_cent"))
         for pos in open_pos:
             ticket = pos["ticket"]
             meta = self._master_open.get(ticket) or {
@@ -439,18 +440,20 @@ class PumpingAgent:
                 "score": 60, "lot": pos["volume"], "entry": pos["price_open"],
             }
             profit = pos["profit"]
+            # Profit targets in trading_engine are USD; cent books report USC
+            profit_usd = (profit / 100.0) if is_cent else profit
             score = meta.get("score", 60)
-            # Early loss cut
+            # Early loss cut (same currency as balance — OK as-is)
             if profit < -(balance * EARLY_LOSS_CUT_PCT) or profit < -(balance * TRADE_MAX_LOSS_PCT):
                 self._master_close(ticket, meta, "LossCut")
                 continue
             target = get_profit_target(score, 0, pos["symbol"], bridge)
-            if profit >= target:
+            if profit_usd >= target:
                 self._master_close(ticket, meta, "TP")
                 continue
             if is_scalp_trade(score):
-                locked = get_locked_profit(profit)
-                if locked and profit < locked:
+                locked = get_locked_profit(profit_usd)
+                if locked and profit_usd < locked:
                     self._master_close(ticket, meta, "Trail")
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
