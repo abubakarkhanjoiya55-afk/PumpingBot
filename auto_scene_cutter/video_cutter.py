@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 from presets import DEFAULT_QUALITY, get_quality_settings
+from procutil import run_hidden
 from progress import ProgressLogger
 from scene_matcher import match_scenes
 from srt_parser import parse_narration_srt, parse_srt
@@ -76,7 +77,7 @@ def create_sample_video(
     ]
 
     try:
-        subprocess.run(
+        run_hidden(
             cmd,
             check=True,
             capture_output=True,
@@ -93,7 +94,8 @@ def create_sample_video(
 def _run_ffmpeg(cmd: list[str], error_label: str) -> None:
     """Run an ffmpeg command and turn failures into clear Python errors."""
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # CREATE_NO_WINDOW: no black ffmpeg console (closing it used to kill the app)
+        run_hidden(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or "").strip()
         raise RuntimeError(f"{error_label}\n{details}") from exc

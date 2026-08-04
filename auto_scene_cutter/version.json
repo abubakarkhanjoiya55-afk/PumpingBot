@@ -1,10 +1,10 @@
 {
-  "version": "1.5.3",
-  "title": "Embedded CapCut home — black screen killed",
+  "version": "1.5.4",
+  "title": "ffmpeg black console kill app fix",
   "notes": [
-    "Home ab window ke andar embed — Flask 404 black screen mumkin nahi",
-    "Purani Setup khud silent update ho kar 1.5.3 ban jati hai",
-    "Version stamp bug fix — stale install ab stuck nahi rehti"
+    "Auto Cut pe ffmpeg black CMD band — ab silent background mein chalta hai",
+    "Us CMD ko band karne se app close hone wala bug fix",
+    "CapCut-style native window + embedded home pehle jaisa"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"

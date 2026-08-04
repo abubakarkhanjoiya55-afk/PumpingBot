@@ -25,12 +25,13 @@ from final_render import (
 )
 from matching_engine import summarize_match_plan
 from progress import ProgressLogger
+from procutil import run_hidden
 from video_cutter import create_sample_video, ensure_ffmpeg
 
 
 def _run_ffmpeg(cmd: list[str], error_label: str) -> None:
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        run_hidden(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or "").strip()
         raise RuntimeError(f"{error_label}\n{details}") from exc

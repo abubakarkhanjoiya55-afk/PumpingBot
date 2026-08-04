@@ -31,6 +31,7 @@ hiddenimports = [
     "waitress",
     "desktop_update",
     "desktop_shell",
+    "procutil",
     "webview",
     "webview.platforms",
     "webview.platforms.edgechromium",

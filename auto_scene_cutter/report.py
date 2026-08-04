@@ -14,13 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from presets import DEFAULT_QUALITY
+from procutil import run_hidden
 from project import load_project
 from video_cutter import ensure_ffmpeg
 
 
 def _run_ffmpeg(cmd: list[str], error_label: str) -> None:
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        run_hidden(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or "").strip()
         raise RuntimeError(f"{error_label}\n{details}") from exc
