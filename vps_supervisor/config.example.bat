@@ -10,6 +10,6 @@ set REPO_DIR=C:\PumpingBot\PumpingBot
 set MT5_TEMPLATE_DIR=C:\PumpingBot\MT5_Template
 set MT5_INSTANCES_DIR=C:\PumpingBot\MT5_Instances
 set AGENT_LOG_DIR=C:\PumpingBot\logs
-set MT5_BOOT_WAIT_SEC=8
+set MT5_BOOT_WAIT_SEC=20
 set POLL_SEC=10
 set PYTHONUNBUFFERED=1

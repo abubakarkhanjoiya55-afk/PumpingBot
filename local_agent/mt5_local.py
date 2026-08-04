@@ -33,8 +33,20 @@ class LocalMT5:
         if self.path:
             kwargs["path"] = self.path
 
-        if not mt5.initialize(**kwargs):
-            print(f"[LOCAL MT5] initialize failed: {mt5.last_error()}")
+        # IPC timeout (-10005) is common while terminal is still booting
+        last_err = None
+        for attempt in range(1, 6):
+            if mt5.initialize(**kwargs):
+                break
+            last_err = mt5.last_error()
+            print(f"[LOCAL MT5] initialize failed (try {attempt}/5): {last_err}")
+            try:
+                mt5.shutdown()
+            except Exception:
+                pass
+            time.sleep(5)
+        else:
+            print(f"[LOCAL MT5] initialize failed: {last_err}")
             return False
 
         authorized = mt5.login(self.login, password=self.password, server=self.server)
