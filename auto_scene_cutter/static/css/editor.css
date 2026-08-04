@@ -544,6 +544,12 @@ body {
   font-variant-numeric: tabular-nums; color: var(--muted);
   font-size: 0.74rem; margin-left: 8px;
 }
+.tl-hint {
+  margin-left: auto;
+  color: var(--accent-hi);
+  font-weight: 600;
+  opacity: 0.9;
+}
 
 .timeline-body {
   display: grid; grid-template-columns: 148px 1fr;
