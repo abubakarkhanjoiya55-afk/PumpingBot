@@ -133,10 +133,18 @@
 
   async function quitDesktop() {
     try {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
+        await window.pywebview.api.quit();
+        return;
+      }
       await fetch("/api/shutdown", { method: "POST" });
       setTimeout(() => window.close(), 300);
     } catch (err) {
-      alert(err.message || String(err));
+      try {
+        window.close();
+      } catch (_) {
+        alert(err.message || String(err));
+      }
     }
   }
 
@@ -177,11 +185,21 @@
   async function boot() {
     wire();
     try {
-      const desk = await fetch("/api/desktop").then((r) => r.json());
       const q = new URLSearchParams(location.search).get("desktop");
-      if ((desk && desk.desktop) || q === "1") {
+      let desk = null;
+      try {
+        desk = await fetch("/api/desktop").then((r) => r.json());
+      } catch (_) {
+        desk = null;
+      }
+      const isDesktop = (desk && desk.desktop) || q === "1" || Boolean(window.pywebview);
+      if (isDesktop) {
         const btn = $("btnQuitHome");
         if (btn) btn.hidden = false;
+        const badge = $("liveBadge");
+        if (badge && !location.hostname.includes("127.0.0.1") && location.hostname !== "localhost") {
+          badge.hidden = false;
+        }
       }
     } catch (_) {
       /* web */

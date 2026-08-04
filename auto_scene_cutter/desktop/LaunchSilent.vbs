@@ -1,4 +1,4 @@
-' SceneCut Pro+ — silent desktop launch (NO console / CMD window)
+' SceneCut Pro+ — silent desktop launch (NO browser tab / NO CMD)
 Option Explicit
 
 Dim sh, fso, root, pythonw, script, exe, cmd, ffmpegBin
@@ -7,10 +7,11 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 
 root = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
 
-' Prefer packaged .exe (professional app) when present
 exe = root & "\SceneCutProPlus.exe"
 If fso.FileExists(exe) Then
   sh.CurrentDirectory = root
+  sh.Environment("Process")("SCENECUT_DESKTOP") = "1"
+  sh.Environment("Process")("SCENECUT_LIVE_URL") = "https://scenecut-production.up.railway.app"
   sh.Run """" & exe & """", 1, False
   WScript.Quit 0
 End If
@@ -20,7 +21,7 @@ pythonw = root & "\.venv\Scripts\pythonw.exe"
 
 If Not fso.FileExists(pythonw) Then
   MsgBox "SceneCut Pro+ install incomplete." & vbCrLf & _
-         "Run ""Install SceneCut Pro.vbs"" from the download folder.", _
+         "Download Setup.exe again from the website.", _
          vbCritical, "SceneCut Pro+"
   WScript.Quit 1
 End If
@@ -30,6 +31,9 @@ If Not fso.FileExists(script) Then
   WScript.Quit 1
 End If
 
+' Native window dependency
+sh.Run """" & pythonw & """ -m pip install -q pywebview", 0, True
+
 ffmpegBin = root & "\tools\ffmpeg\bin"
 If fso.FolderExists(ffmpegBin) Then
   sh.Environment("Process")("PATH") = ffmpegBin & ";" & sh.Environment("Process")("PATH")
@@ -37,6 +41,6 @@ End If
 
 sh.CurrentDirectory = root
 sh.Environment("Process")("SCENECUT_DESKTOP") = "1"
+sh.Environment("Process")("SCENECUT_LIVE_URL") = "https://scenecut-production.up.railway.app"
 cmd = """" & pythonw & """ """ & script & """"
-' 0 = hide any console
 sh.Run cmd, 0, False

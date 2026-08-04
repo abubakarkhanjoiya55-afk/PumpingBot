@@ -28,6 +28,7 @@ hiddenimports = [
     "flask",
     "waitress",
     "webview",
+    "desktop_update",
     "export_engine",
     "cutting_engine",
     "matching_engine",

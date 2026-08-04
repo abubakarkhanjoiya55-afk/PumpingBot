@@ -1,12 +1,13 @@
 """
 SceneCut Pro+ — desktop launcher
 
-Starts local server and opens a native app window (pywebview).
-Falls back to the system browser if native window is unavailable.
+Opens a REAL native app window (pywebview) — not Chrome/Edge tabs.
+When online, the window loads the LIVE site so desktop stays updated.
+When offline, falls back to the local server.
 
 Usage:
   python desktop_app.py
-  python desktop_app.py --port 5000
+  python desktop_app.py --local
   python desktop_app.py --browser
 """
 
@@ -18,8 +19,8 @@ import socket
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
+
 
 def _app_root() -> Path:
     """Source tree OR PyInstaller extract folder."""
@@ -37,14 +38,39 @@ os.chdir(BASE_DIR)
 os.environ.setdefault("SCENECUT_DESKTOP", "1")
 
 from app import JOB, SESSION, _ensure_dirs, app  # noqa: E402
+from desktop_update import (  # noqa: E402
+    ensure_webview_installed,
+    is_online,
+    live_base,
+    sync_from_live,
+)
 
 
 SHUTDOWN = threading.Event()
 WINDOW = None
 
 
+class DesktopApi:
+    """JS bridge so Quit works even when UI is loaded from the live site."""
+
+    def quit(self) -> None:
+        SHUTDOWN.set()
+        _close_window()
+
+    def ping(self) -> str:
+        return "scenecut-desktop"
+
+
+def _install_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    local = Path(os.environ.get("LOCALAPPDATA") or "") / "SceneCutProPlus"
+    if local.exists():
+        return local
+    return BASE_DIR
+
+
 def _free_port(preferred: int) -> int:
-    """Use preferred port if free, otherwise pick an open one."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -67,7 +93,6 @@ def _wait_until_up(port: int, timeout: float = 20.0) -> bool:
 
 
 def _run_server(port: int) -> None:
-    # Desktop: localhost only (safer on shared PCs)
     try:
         from waitress import serve
 
@@ -102,7 +127,6 @@ def _close_window() -> None:
 
 @app.post("/api/shutdown")
 def api_shutdown():
-    """Quit desktop app from the UI."""
     if os.environ.get("SCENECUT_DESKTOP") != "1":
         return {"ok": False, "error": "Shutdown only in desktop mode"}, 400
 
@@ -110,7 +134,6 @@ def api_shutdown():
         SHUTDOWN.set()
         _close_window()
 
-    # Delay so the HTTP response can flush
     threading.Timer(0.25, _do).start()
     return {"ok": True, "message": "Closing SceneCut Pro+…"}
 
@@ -119,30 +142,34 @@ def api_shutdown():
 def api_desktop():
     return {
         "ok": True,
-        "desktop": os.environ.get("SCENECUT_DESKTOP") == "1",
+        "desktop": True,
         "native_window": WINDOW is not None,
+        "live_url": live_base(),
         "job": JOB.snapshot().get("status"),
         "project": SESSION.get("project_name"),
     }
 
 
 def _open_native_window(url: str) -> bool:
-    """Open CapCut-like native window. Return False to fall back to browser."""
+    """Open CapCut-like native window. Never opens a browser tab."""
     global WINDOW
-    try:
-        import webview
-    except ImportError:
+    if not ensure_webview_installed():
+        print("ERROR: pywebview install fail — desktop window nahi khul sakti.")
         return False
 
     try:
+        import webview
+
+        api = DesktopApi()
         WINDOW = webview.create_window(
             "SceneCut Pro+",
             url,
             width=1360,
             height=860,
             min_size=(1024, 680),
-            background_color="#0e0e10",
+            background_color="#07080c",
             text_select=True,
+            js_api=api,
         )
 
         def _on_closed() -> None:
@@ -153,74 +180,112 @@ def _open_native_window(url: str) -> bool:
         except Exception:  # noqa: BLE001
             pass
 
-        # Blocks until window closes
         webview.start(debug=False)
         SHUTDOWN.set()
         return True
     except Exception as exc:  # noqa: BLE001
-        print(f"Native window fail — browser fallback ({exc})")
+        print(f"Native window fail: {exc}")
         WINDOW = None
         return False
 
 
 def _prepend_bundled_ffmpeg() -> None:
-    """Use portable ffmpeg next to the app when present (Setup.exe / student pack)."""
     candidates = [
         BASE_DIR / "tools" / "ffmpeg" / "bin",
+        _install_dir() / "tools" / "ffmpeg" / "bin",
         Path(os.environ.get("LOCALAPPDATA", "")) / "SceneCutProPlus" / "tools" / "ffmpeg" / "bin",
     ]
     for folder in candidates:
-        exe = folder / "ffmpeg.exe"
-        if exe.exists():
+        if (folder / "ffmpeg.exe").exists():
             os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
             return
+
+
+def _pick_ui_url(port: int, force_local: bool) -> tuple[str, str]:
+    """
+    Returns (url, mode) where mode is 'live' or 'local'.
+    Live = always latest landing/home from production inside the app window.
+    """
+    local = f"http://127.0.0.1:{port}/home?desktop=1"
+    if force_local:
+        return local, "local"
+    if is_online():
+        return f"{live_base()}/home?desktop=1", "live"
+    return local, "local"
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Force local UI (skip live site)",
+    )
     parser.add_argument(
         "--browser",
         action="store_true",
-        help="Force system browser instead of native window",
+        help="Debug only: open system browser",
+    )
+    parser.add_argument(
+        "--no-update",
+        action="store_true",
+        help="Skip live file sync for local installs",
     )
     args = parser.parse_args(argv)
 
     _ensure_dirs()
     _prepend_bundled_ffmpeg()
+
+    # Keep non-frozen installs fresh from the live student pack
+    if not args.no_update and not getattr(sys, "frozen", False):
+        try:
+            result = sync_from_live(_install_dir())
+            if result.get("updated"):
+                print(f"  Updated from live ({result.get('files')} files).")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  Update skip: {exc}")
+
     port = _free_port(args.port)
-    # CapCut-style home landing inside the app window
-    url = f"http://127.0.0.1:{port}/home?desktop=1"
+    force_local = args.local or os.environ.get("SCENECUT_FORCE_LOCAL") == "1"
+    url, mode = _pick_ui_url(port, force_local)
 
     print("")
     print("  SceneCut Pro+ Desktop")
-    print(f"  Home: {url}")
-    print("  Quit from app Quit button, or close the window.")
+    print(f"  Mode: {mode}")
+    print(f"  Window: {url}")
+    print("  Native app window — browser tab nahi.")
     print("")
 
+    # Local API server always available (offline / local mode)
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     thread.start()
-
     if not _wait_until_up(port):
-        print("ERROR: server start fail — port busy / firewall?")
+        print("ERROR: local server start fail")
         return 1
 
-    use_browser = args.browser or args.no_browser
-    opened_native = False
-    if not use_browser and not args.no_browser:
-        opened_native = _open_native_window(url)
+    if args.browser:
+        import webbrowser
 
-    if not opened_native:
-        if args.no_browser:
-            print(f"Server only — open manually: {url}")
-        else:
-            try:
-                webbrowser.open(url)
-                print("Browser mode (native window unavailable).")
-            except Exception:  # noqa: BLE001
-                print(f"Browser open fail — manually open: {url}")
+        webbrowser.open(url)
+        try:
+            while not SHUTDOWN.is_set():
+                time.sleep(0.25)
+        except KeyboardInterrupt:
+            pass
+        return 0
 
+    if not _open_native_window(url):
+        # Last resort: still do NOT silently dump users into a random browser
+        # without saying so — open browser only if native window impossible.
+        print("Native window unavailable. Opening browser fallback…")
+        try:
+            import webbrowser
+
+            webbrowser.open(url)
+        except Exception:  # noqa: BLE001
+            print(f"Open manually: {url}")
+            return 1
         try:
             while not SHUTDOWN.is_set():
                 time.sleep(0.25)

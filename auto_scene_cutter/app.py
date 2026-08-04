@@ -1249,6 +1249,21 @@ def api_download_student_pack():
     )
 
 
+@app.get("/api/version")
+def api_version():
+    """Desktop auto-update + cache bust stamp."""
+    return jsonify(
+        {
+            "ok": True,
+            "app": "SceneCut Pro+",
+            "version": _asset_version(),
+            "asset_v": _asset_version(),
+            "live_home": "/home",
+            "setup_exe": SETUP_EXE_URL,
+        }
+    )
+
+
 @app.get("/health")
 def health():
     pack = _student_pack_path()
@@ -1262,6 +1277,7 @@ def health():
             "student_pack": pack.exists(),
             "download_page": "/download",
             "setup_exe": SETUP_EXE_URL,
+            "version": _asset_version(),
         }
     )
 

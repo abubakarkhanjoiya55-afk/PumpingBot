@@ -1698,13 +1698,21 @@ function wireControls() {
 
 async function quitDesktop() {
   try {
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
+      await window.pywebview.api.quit();
+      return;
+    }
     await fetch("/api/shutdown", { method: "POST" });
     showOk("Closing SceneCut Pro+…");
     setTimeout(() => {
       window.close();
     }, 400);
   } catch (err) {
-    showError(err.message || String(err));
+    try {
+      window.close();
+    } catch (_) {
+      showError(err.message || String(err));
+    }
   }
 }
 
