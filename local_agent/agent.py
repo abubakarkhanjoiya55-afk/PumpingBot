@@ -360,11 +360,13 @@ class PumpingAgent:
                     levels = analysis.get("breakout_levels") or {}
                     tick = analysis["tick"]
                     entry = tick.ask if trend == "BUY" else tick.bid
-                    sl = calc_breakout_sl(symbol, trend, entry, levels, bridge)
-                    if sl is None:
-                        sl = entry - atr if trend == "BUY" else entry + atr
+                    # SL only for lot sizing math — master orders go WITHOUT broker SL
+                    # (owner manages losses manually in MT5)
+                    sl_for_size = calc_breakout_sl(symbol, trend, entry, levels, bridge)
+                    if sl_for_size is None:
+                        sl_for_size = entry - atr if trend == "BUY" else entry + atr
                     lot = calculate_lot(balance, atr, symbol, score, bridge,
-                                        sl_distance=abs(entry - sl))
+                                        sl_distance=abs(entry - sl_for_size))
                     if not lot:
                         continue
 
@@ -372,7 +374,8 @@ class PumpingAgent:
                         symbol=symbol,
                         side=trend,
                         volume=lot,
-                        sl=sl or 0,
+                        sl=0.0,
+                        tp=0.0,
                         magic=BOT_MAGIC,
                         comment=f"M1_S{int(score)}"[:31],
                     )
@@ -386,13 +389,13 @@ class PumpingAgent:
                     print(
                         f"[MASTER OPEN] {symbol} {trend} score={score} "
                         f"lot={lot} ticket={ticket} margin={margin:.2f} "
-                        f"tp@100%={margin * MARGIN_PROFIT_TRIGGER:.2f} "
+                        f"tp@100%={margin * MARGIN_PROFIT_TRIGGER:.2f} NO_BROKER_SL "
                         f"src={analysis.get('entry_source')} h1={analysis.get('h1_bias')}"
                     )
 
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
-                        "entry": entry, "sl": sl, "score": score,
+                        "entry": entry, "sl": None, "score": score,
                         "atr": atr, "levels": levels, "margin_used": margin,
                         "opened_at": time.time(),
                     }
@@ -406,7 +409,7 @@ class PumpingAgent:
                         "lot": lot,
                         "balance": balance,
                         "entry": entry,
-                        "sl": sl,
+                        "sl": 0,
                         "score": score,
                         "atr": atr,
                         "source": "BOT",
