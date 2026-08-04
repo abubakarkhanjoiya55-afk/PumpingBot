@@ -1,10 +1,10 @@
 {
-  "version": "1.6.0",
-  "title": "CapCut-style timeline drag + scrub cursor",
+  "version": "1.6.1",
+  "title": "App update — CapCut timeline ab desktop pe",
   "notes": [
-    "Timeline pe clip drag-drop reorder — CapCut jaisa",
-    "Playhead/cursor drag + click se aage-peeche seek",
-    "Clip edges se trim · Arrow keys se scrub"
+    "Desktop ab LIVE se compare karke khud update hota hai",
+    "CapCut timeline: clip drag-drop + scrub cursor + edge trim",
+    "Update Now dabao ya app dubara kholo — silent install"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"
