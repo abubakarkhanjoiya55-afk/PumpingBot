@@ -1,14 +1,14 @@
 {
-  "name": "My Signals",
-  "short_name": "My Signals",
-  "description": "4H + 1D LIVE crypto breakout alerts",
+  "name": "Joy Signals",
+  "short_name": "Joy Signals",
+  "description": "1H · 4H · 1D breakouts + Smart Money Concepts alerts",
   "id": "/my-signals/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#07070d",
-  "theme_color": "#07070d",
+  "background_color": "#061018",
+  "theme_color": "#061018",
   "icons": [
     {
       "src": "icon-192.png",

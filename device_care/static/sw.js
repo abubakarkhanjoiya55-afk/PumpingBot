@@ -1,5 +1,5 @@
 const BASE = "/my-signals";
-const CACHE = "my-signals-v3.24.0";
+const CACHE = "joy-signals-v4.0.0";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,
@@ -45,7 +45,7 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("message", (e) => {
   if (e.data?.type !== "breakout") return;
   const a = e.data.alert;
-  const title = "My Signals";
+  const title = "Joy Signals";
   const body = `${a.symbol} ${a.direction || ""} @ ${a.close}`;
   self.registration.showNotification(title, {
     body,
