@@ -19,7 +19,8 @@ Option B — Is ZIP se
 
 APP KAISE CHALTI HAI
 --------------------
-- Apni window mein khulti hai (browser tab / CMD nahi)
+- Apni native window mein khulti hai (browser tab / CMD nahi)
+- Online ho to LIVE site load hoti hai — updates turant milte hain
 - Home → New project → files import → Export
 - Dost ko Setup.exe share kar sakte ho
 
