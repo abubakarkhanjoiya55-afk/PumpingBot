@@ -74,6 +74,8 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  text-decoration: none;
+  color: inherit;
 }
 .home-brand strong {
   font-size: 1.05rem;

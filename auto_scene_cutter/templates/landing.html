@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07080c" />
+  <title>SceneCut Pro — AI Movie Scene Editor</title>
+  <meta name="description" content="SceneCut Pro auto-cuts movie scenes from narration timestamps. Download the Windows app or try the editor in your browser." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/landing.css') }}?v={{ asset_v }}" />
+</head>
+<body>
+  <div class="lp">
+    <header class="lp-nav">
+      <a class="lp-brand" href="/">
+        <span class="lp-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2.2">
+            <path d="M4 7h10l6 5-6 5H4V7z"/><path d="M9 7v10"/>
+          </svg>
+        </span>
+        <span>SceneCut Pro</span>
+      </a>
+      <nav class="lp-links">
+        <a href="#how">How it works</a>
+        <a href="/home">Open app</a>
+        <a class="lp-nav-cta" href="{{ setup_url }}">Download</a>
+      </nav>
+    </header>
+
+    <section class="lp-hero" aria-label="Hero">
+      <div class="lp-hero-media" aria-hidden="true">
+        <video class="lp-hero-video" autoplay muted loop playsinline poster="">
+          <source src="/media/hero.mp4" type="video/mp4" />
+        </video>
+        <div class="lp-hero-shade"></div>
+        <div class="lp-hero-grain"></div>
+      </div>
+
+      <div class="lp-hero-copy">
+        <p class="lp-brand-hero">SceneCut Pro</p>
+        <h1>Movie scenes, cut to your narration.</h1>
+        <p class="lp-sub">SRT timestamps se matching clips auto-cut — desktop app jaisi speed, CapCut jaisi simple start.</p>
+        <div class="lp-cta-row">
+          <a class="lp-btn lp-btn-primary" href="{{ setup_url }}">Download for Windows</a>
+          <a class="lp-btn lp-btn-ghost" href="/home">Open in browser</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="lp-section" id="how">
+      <p class="lp-eyebrow">How it works</p>
+      <h2>Three steps. Full cut.</h2>
+      <p class="lp-section-sub">Import movie + SRTs, run Auto Cut, export the explanation timeline.</p>
+      <ol class="lp-steps">
+        <li>
+          <strong>Import</strong>
+          <span>Movie, movie SRT, narration SRT — Project Files mein drop.</span>
+        </li>
+        <li>
+          <strong>Auto Cut</strong>
+          <span>AI match + ffmpeg cut — timeline pe scenes ready.</span>
+        </li>
+        <li>
+          <strong>Export</strong>
+          <span>Final video, timeline SRT, report — share-ready.</span>
+        </li>
+      </ol>
+    </section>
+
+    <section class="lp-section lp-download" id="download">
+      <p class="lp-eyebrow">Windows desktop</p>
+      <h2>Install once. Share the Setup.</h2>
+      <p class="lp-section-sub">CapCut / VLC jaisa Setup.exe — Desktop shortcut, apni app window, CMD nahi.</p>
+      <div class="lp-cta-row">
+        <a class="lp-btn lp-btn-primary" href="{{ setup_url }}">Get SceneCutPro-Setup.exe</a>
+        <a class="lp-btn lp-btn-ghost" href="/api/download/student-pack">ZIP backup</a>
+      </div>
+    </section>
+
+    <footer class="lp-foot">
+      <span>SceneCut Pro</span>
+      <a href="/home">App</a>
+      <a href="/editor">Editor</a>
+      <a href="/download">Download</a>
+    </footer>
+  </div>
+  <script src="{{ url_for('static', filename='js/landing.js') }}?v={{ asset_v }}"></script>
+</body>
+</html>

@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, redirect, render_template, request, send_file
 
 from cutting_engine import cut_from_match_plan
 from export_engine import export_final_video, run_stage1_to_stage5
@@ -474,6 +474,8 @@ def _asset_version() -> str:
             RESOURCE_DIR / "static" / "css" / "editor.css",
             RESOURCE_DIR / "static" / "js" / "home.js",
             RESOURCE_DIR / "static" / "css" / "home.css",
+            RESOURCE_DIR / "static" / "js" / "landing.js",
+            RESOURCE_DIR / "static" / "css" / "landing.css",
         ]
         stamp = max(p.stat().st_mtime_ns for p in paths if p.exists())
         return str(stamp)
@@ -481,22 +483,47 @@ def _asset_version() -> str:
         return "1"
 
 
-def _html(template: str):
-    resp = app.make_response(render_template(template, asset_v=_asset_version()))
+def _html(template: str, **ctx):
+    resp = app.make_response(
+        render_template(template, asset_v=_asset_version(), **ctx)
+    )
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
 
 
+# Shareable CapCut-style Windows installer (published by CI → GitHub Release)
+SETUP_EXE_URL = os.environ.get(
+    "SCENECUT_SETUP_URL",
+    "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
+)
+
+
 @app.get("/")
 def index():
-    """CapCut-style home: New project / Open / Recent."""
+    """Professional marketing landing. Desktop app opens /home instead."""
+    if request.args.get("desktop") == "1":
+        return redirect("/home?desktop=1")
+    return _html("landing.html", setup_url=SETUP_EXE_URL)
+
+
+@app.get("/home")
+def app_home():
+    """In-app CapCut-style home: New project / Open / Recent."""
     return _html("home.html")
 
 
 @app.get("/editor")
 def editor_page():
     return _html("editor.html")
+
+
+@app.get("/media/hero.mp4")
+def media_hero():
+    path = RESOURCE_DIR / "sample_movie.mp4"
+    if not path.exists():
+        return jsonify({"error": "Hero media missing"}), 404
+    return send_file(path, mimetype="video/mp4")
 
 
 @app.after_request
@@ -1196,33 +1223,10 @@ def _fmt_bytes(n: int) -> str:
     return f"{max(1, n // 1024)} KB"
 
 
-# Shareable CapCut-style Windows installer (published by CI → GitHub Release)
-SETUP_EXE_URL = os.environ.get(
-    "SCENECUT_SETUP_URL",
-    "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
-)
-
-
 @app.get("/download")
 def download_page():
-    """Public Windows download landing page."""
-    pack = _student_pack_path()
-    ready = pack.exists()
-    mtime = ""
-    size = ""
-    if ready:
-        st = pack.stat()
-        size = _fmt_bytes(st.st_size)
-        mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
-    return render_template(
-        "download.html",
-        pack_ready=ready,
-        pack_name="SceneCut-Pro-Student.zip",
-        pack_size=size or "—",
-        pack_mtime=mtime or "—",
-        setup_url=SETUP_EXE_URL,
-        setup_ready=True,
-    )
+    """Send visitors to the professional landing download section."""
+    return redirect("/#download")
 
 
 @app.get("/api/download/student-pack")

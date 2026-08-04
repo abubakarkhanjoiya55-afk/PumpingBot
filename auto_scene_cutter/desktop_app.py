@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     _prepend_bundled_ffmpeg()
     port = _free_port(args.port)
     # CapCut-style home landing inside the app window
-    url = f"http://127.0.0.1:{port}/?desktop=1"
+    url = f"http://127.0.0.1:{port}/home?desktop=1"
 
     print("")
     print("  SceneCut Pro+ Desktop")

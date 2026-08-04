@@ -1377,7 +1377,7 @@ function wireControls() {
   $("btnHome")?.addEventListener("click", () => {
     closeMoreMenu();
     const q = new URLSearchParams(location.search).get("desktop") === "1" ? "?desktop=1" : "";
-    location.href = `/${q}`;
+    location.href = `/home${q}`;
   });
   $("btnNewProject")?.addEventListener("click", async () => {
     closeMoreMenu();
@@ -1398,11 +1398,9 @@ function wireControls() {
     }
   });
   $("brandHome")?.addEventListener("click", (e) => {
+    e.preventDefault();
     const q = new URLSearchParams(location.search).get("desktop") === "1" ? "?desktop=1" : "";
-    if (q) {
-      e.preventDefault();
-      location.href = `/${q}`;
-    }
+    location.href = `/home${q}`;
   });
   $("btnResetProps")?.addEventListener("click", () => {
     if (!state.selectedClipKey) {
