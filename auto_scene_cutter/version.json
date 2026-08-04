@@ -1,10 +1,10 @@
 {
-  "version": "1.4.3",
-  "title": "Fixed desktop 404 Not Found",
+  "version": "1.5.0",
+  "title": "CapCut-style native window (final)",
   "notes": [
-    "Desktop /home 404 fix — /d entry + auto-update before launch",
-    "Purani install khud sync ho kar restart hoti hai",
-    "Edge app window stable (no .NET master crash)"
+    "Desktop ab native SceneCut window — Microsoft Edge browser nahi",
+    "Hamesha App Home (/d) — landing page desktop mein nahi",
+    "2GB local cut + stable file pick — setup ek dafa, phir updates andar"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"

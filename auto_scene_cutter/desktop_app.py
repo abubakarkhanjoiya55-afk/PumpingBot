@@ -1,11 +1,11 @@
 """
-SceneCut Pro+ — desktop launcher
+SceneCut Pro+ — CapCut-style desktop launcher
 
-Stable Windows shell:
-  - Sync latest code FIRST (before importing app) so /home never 404s
-  - Edge/Chrome --app window
-  - Local Flask for fast 2GB+ cuts
-  - PowerShell file dialog for local paths
+FIXED behavior (do not thrash):
+  1) Native pywebview window titled "SceneCut Pro+" (NOT Microsoft Edge UI)
+  2) Always opens APP HOME at /d  (never marketing landing)
+  3) Local server for fast 2GB cuts + PowerShell file pick
+  4) Edge --app only if native window fails to start
 
 Usage:
   python desktop_app.py
@@ -19,10 +19,10 @@ import socket
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import webbrowser
 from pathlib import Path
+
+from flask import jsonify, request
 
 
 def _app_root() -> Path:
@@ -35,7 +35,6 @@ BASE_DIR = _app_root()
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 os.chdir(BASE_DIR)
-
 os.environ.setdefault("SCENECUT_DESKTOP", "1")
 
 
@@ -49,10 +48,6 @@ def _install_dir() -> Path:
 
 
 def _bootstrap_sync(force: bool = False) -> bool:
-    """
-    Update install files BEFORE importing app.
-    Returns True if files changed (caller should re-exec).
-    """
     if getattr(sys, "frozen", False):
         return False
     try:
@@ -60,31 +55,26 @@ def _bootstrap_sync(force: bool = False) -> bool:
 
         result = sync_from_live(_install_dir(), force=force)
         if result.get("updated"):
-            print(f"  Updated from live ({result.get('files')} files) — restarting…")
+            print(f"  Updated ({result.get('files')} files) — restarting…")
             return True
-        if not result.get("ok"):
-            print(f"  Update skip: {result.get('reason')}")
     except Exception as exc:  # noqa: BLE001
         print(f"  Update skip: {exc}")
     return False
 
 
 def _reexec() -> None:
-    """Restart this process so newly synced app.py is loaded."""
     script = str(Path(__file__).resolve())
-    args = [sys.executable, script, "--no-update", *sys.argv[1:]]
-    # Avoid infinite loop
-    if "--no-update" not in sys.argv:
-        os.execv(sys.executable, args)
+    args = [sys.executable, script, "--no-update"]
+    for a in sys.argv[1:]:
+        if a != "--no-update":
+            args.append(a)
+    os.execv(sys.executable, args)
 
 
-# Optional early sync (skipped when --no-update already in argv during re-exec)
 if "--no-update" not in sys.argv and "--help" not in sys.argv:
     if _bootstrap_sync(force=False):
         _reexec()
 
-
-from flask import jsonify, request  # noqa: E402
 
 from app import (  # noqa: E402
     JOB,
@@ -97,10 +87,13 @@ from app import (  # noqa: E402
 )
 from desktop_shell import (  # noqa: E402
     open_app_window,
+    open_native_window,
     pick_file_path,
+    start_native_gui,
     wait_app_process,
 )
 from desktop_update import (  # noqa: E402
+    ensure_webview_installed,
     live_base,
     local_version,
     remote_manifest,
@@ -113,6 +106,8 @@ from desktop_update import (  # noqa: E402
 
 SHUTDOWN = threading.Event()
 APP_PROC = None
+WINDOW = None
+_WINDOW_LIVE = False
 
 
 def _free_port(preferred: int) -> int:
@@ -137,39 +132,6 @@ def _wait_until_up(port: int, timeout: float = 20.0) -> bool:
     return False
 
 
-def _http_ok(url: str) -> bool:
-    try:
-        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "SceneCutPro-Desktop"})
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            return 200 <= getattr(resp, "status", 200) < 400
-    except urllib.error.HTTPError as exc:
-        return 200 <= exc.code < 400
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _pick_working_url(port: int) -> str:
-    """
-    Prefer /d (short desktop entry), then /home, then /editor, then /.
-    Avoids white Flask 404 when an old build is still somehow loaded.
-    """
-    candidates = [
-        f"http://127.0.0.1:{port}/d",
-        f"http://127.0.0.1:{port}/home",
-        f"http://127.0.0.1:{port}/editor",
-        f"http://127.0.0.1:{port}/",
-    ]
-    for url in candidates:
-        if _http_ok(url):
-            # Keep desktop flag for UI (query may be stripped by some --app parsers)
-            if url.endswith("/d") or url.rstrip("/").endswith("/home"):
-                return url if "desktop=" in url else (url + ("&" if "?" in url else "?") + "desktop=1")
-            if url.endswith("/editor"):
-                return url + "?desktop=1"
-            return url + "?desktop=1" if "?" not in url else url
-    return f"http://127.0.0.1:{port}/d"
-
-
 def _run_server(port: int) -> None:
     try:
         from waitress import serve
@@ -192,6 +154,31 @@ def _run_server(port: int) -> None:
         )
 
 
+def _mark_window_dead() -> None:
+    global WINDOW, _WINDOW_LIVE
+    _WINDOW_LIVE = False
+    WINDOW = None
+    SHUTDOWN.set()
+
+
+def _safe_destroy_once() -> None:
+    """Never double-destroy — that caused .NET KeyError: 'master'."""
+    global WINDOW, _WINDOW_LIVE
+    if not _WINDOW_LIVE:
+        return
+    _WINDOW_LIVE = False
+    w = WINDOW
+    WINDOW = None
+    if w is None:
+        return
+    try:
+        w.destroy()
+    except KeyError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _kill_app_proc() -> None:
     global APP_PROC
     proc = APP_PROC
@@ -204,16 +191,18 @@ def _kill_app_proc() -> None:
         pass
 
 
+def _exit_soon() -> None:
+    SHUTDOWN.set()
+    _kill_app_proc()
+    _safe_destroy_once()
+    threading.Timer(0.5, lambda: os._exit(0)).start()
+
+
 @app.post("/api/shutdown")
 def api_shutdown():
     if os.environ.get("SCENECUT_DESKTOP") != "1":
-        return jsonify({"ok": False, "error": "Shutdown only in desktop mode"}), 400
-
-    def _do() -> None:
-        SHUTDOWN.set()
-        _kill_app_proc()
-
-    threading.Timer(0.2, _do).start()
+        return jsonify({"ok": False, "error": "desktop only"}), 400
+    threading.Timer(0.12, _exit_soon).start()
     return jsonify({"ok": True, "message": "Closing SceneCut Pro+…"})
 
 
@@ -223,9 +212,10 @@ def api_desktop():
         {
             "ok": True,
             "desktop": True,
-            "native_window": True,
-            "shell": "edge-app",
+            "native_window": bool(_WINDOW_LIVE),
+            "shell": "native" if _WINDOW_LIVE else ("edge-fallback" if APP_PROC else "server"),
             "local_fast": True,
+            "entry": "/d",
             "live_url": live_base(),
             "local_version": local_version(_install_dir()),
             "job": JOB.snapshot().get("status"),
@@ -274,12 +264,12 @@ def api_desktop_update():
     if getattr(sys, "frozen", False):
         result = update_frozen_app()
         if result.get("ok"):
-            threading.Timer(0.8, lambda: (SHUTDOWN.set(), _kill_app_proc())).start()
+            threading.Timer(0.8, _exit_soon).start()
         return jsonify(result)
     result = sync_from_live(install, force=True)
     if result.get("ok"):
         restart_desktop(install)
-        threading.Timer(0.9, lambda: (SHUTDOWN.set(), _kill_app_proc())).start()
+        threading.Timer(0.9, _exit_soon).start()
     return jsonify(result)
 
 
@@ -295,23 +285,22 @@ def _prepend_bundled_ffmpeg() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global APP_PROC
+    global APP_PROC, WINDOW, _WINDOW_LIVE
+
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
-    parser.add_argument("--browser", action="store_true", help="Classic browser tab")
+    parser.add_argument("--browser", action="store_true")
     parser.add_argument("--no-update", action="store_true")
+    parser.add_argument("--edge-fallback", action="store_true")
     args = parser.parse_args(argv)
 
-    # If launched without --no-update and files are stale, force one more sync+reexec
     if not args.no_update and not getattr(sys, "frozen", False):
-        # Ensure home template exists; if not, force sync
-        home_html = _install_dir() / "templates" / "home.html"
-        if not home_html.exists() and _bootstrap_sync(force=True):
-            _reexec()
+        if not (_install_dir() / "templates" / "home.html").exists():
+            if _bootstrap_sync(force=True):
+                _reexec()
 
     _ensure_dirs()
     _prepend_bundled_ffmpeg()
-
     try:
         man = remote_manifest()
         ver = str(man.get("version") or "")
@@ -321,28 +310,20 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     port = _free_port(args.port)
+    # STABLE desktop entry — app home only (never landing page)
+    url = f"http://127.0.0.1:{port}/d"
 
     print("")
-    print("  SceneCut Pro+ Desktop")
-    print("  Shell: Edge/Chrome app window")
+    print("  SceneCut Pro+")
+    print("  CapCut-style native window")
+    print(f"  {url}")
     print("")
 
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     thread.start()
     if not _wait_until_up(port):
-        print("ERROR: local server start fail")
+        print("ERROR: server start fail")
         return 1
-
-    url = _pick_working_url(port)
-    print(f"  Window: {url}")
-
-    # If still 404 on /home|/d — force sync + restart once
-    if (not _http_ok(f"http://127.0.0.1:{port}/d")) and (not _http_ok(f"http://127.0.0.1:{port}/home")):
-        if not args.no_update and not getattr(sys, "frozen", False):
-            print("  Local app outdated — forcing update…")
-            if _bootstrap_sync(force=True):
-                _kill_app_proc()
-                _reexec()
 
     if args.browser:
         webbrowser.open(url)
@@ -353,9 +334,24 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 0
 
+    force_edge = args.edge_fallback or os.environ.get("SCENECUT_EDGE_FALLBACK") == "1"
+
+    if not force_edge:
+        ensure_webview_installed()
+        WINDOW, ok = open_native_window(url, on_closed=_mark_window_dead)
+        if ok and WINDOW is not None:
+            _WINDOW_LIVE = True
+            print("  Window: native (WebView2)")
+            if start_native_gui():
+                return 0
+            # start failed after create
+            _mark_window_dead()
+            print("  Native GUI start fail — trying fallback…")
+
+    # Fallback only
+    print("  Fallback: Edge/Chrome app window")
     APP_PROC = open_app_window(url)
     if APP_PROC is None:
-        print("Edge/Chrome nahi mila — browser tab fallback.")
         webbrowser.open(url)
         try:
             while not SHUTDOWN.is_set():
@@ -369,7 +365,6 @@ def main(argv: list[str] | None = None) -> int:
             SHUTDOWN.set()
             _kill_app_proc()
 
-    print("SceneCut Pro+ closed.")
     return 0
 
 

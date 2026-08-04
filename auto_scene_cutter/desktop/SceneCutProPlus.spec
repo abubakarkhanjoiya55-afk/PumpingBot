@@ -30,6 +30,9 @@ hiddenimports = [
     "waitress",
     "desktop_update",
     "desktop_shell",
+    "webview",
+    "clr_loader",
+    "pythonnet",
     "export_engine",
     "cutting_engine",
     "matching_engine",
@@ -47,7 +50,7 @@ hiddenimports = [
 ]
 
 if collect_all is not None:
-    for pkg in ("flask", "waitress"):
+    for pkg in ("flask", "waitress", "webview"):
         try:
             d, b, h = collect_all(pkg)
             datas += d

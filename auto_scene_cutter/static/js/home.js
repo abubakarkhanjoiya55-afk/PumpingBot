@@ -192,10 +192,6 @@
       if (isDesktop) {
         const btn = $("btnQuitHome");
         if (btn) btn.hidden = false;
-        const badge = $("liveBadge");
-        if (badge && !location.hostname.includes("127.0.0.1") && location.hostname !== "localhost") {
-          badge.hidden = false;
-        }
       }
     } catch (_) {
       /* web */

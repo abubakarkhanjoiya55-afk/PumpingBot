@@ -1,4 +1,4 @@
-' SceneCut Pro+ — silent desktop launch (NO CMD, NO pywebview/.NET)
+' SceneCut Pro+ — silent native launch (CapCut-style window)
 Option Explicit
 
 Dim sh, fso, root, pythonw, script, exe, cmd, ffmpegBin
@@ -20,15 +20,18 @@ pythonw = root & "\.venv\Scripts\pythonw.exe"
 
 If Not fso.FileExists(pythonw) Then
   MsgBox "SceneCut Pro+ install incomplete." & vbCrLf & _
-         "Download Setup.exe again from the website.", _
+         "Naya Setup.exe install karo website se.", _
          vbCritical, "SceneCut Pro+"
   WScript.Quit 1
 End If
 
 If Not fso.FileExists(script) Then
-  MsgBox "desktop_app.py missing in:" & vbCrLf & root, vbCritical, "SceneCut Pro+"
+  MsgBox "desktop_app.py missing:" & vbCrLf & root, vbCritical, "SceneCut Pro+"
   WScript.Quit 1
 End If
+
+' Native window engine (WebView2 via pywebview) — not Edge browser tabs
+sh.Run """" & pythonw & """ -m pip install -q ""pywebview>=5.1""", 0, True
 
 ffmpegBin = root & "\tools\ffmpeg\bin"
 If fso.FolderExists(ffmpegBin) Then

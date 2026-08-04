@@ -1,8 +1,9 @@
 """
-Stable Windows desktop shell without pywebview/.NET 'master' crashes.
+Desktop window helpers.
 
-1) Microsoft Edge / Chrome --app= window (real app frame, no tabs)
-2) PowerShell OpenFileDialog for local multi‑GB paths (no upload)
+Primary: pywebview native window (CapCut-like, not a browser).
+Fallback: Edge/Chrome --app= only if native window cannot start.
+File pick: PowerShell OpenFileDialog (stable, no pywebview destroy bugs).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 _EDGE_CANDIDATES = (
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -41,7 +43,6 @@ def _first_existing(paths: tuple[str, ...]) -> str | None:
     for p in paths:
         if p and Path(p).is_file():
             return p
-    # PATH lookup
     for name in ("msedge", "msedge.exe", "chrome", "chrome.exe"):
         found = shutil.which(name)
         if found:
@@ -50,7 +51,6 @@ def _first_existing(paths: tuple[str, ...]) -> str | None:
 
 
 def find_app_browser() -> tuple[str, str] | None:
-    """Return (exe, kind) where kind is edge|chrome."""
     edge = _first_existing(_EDGE_CANDIDATES)
     if edge:
         return edge, "edge"
@@ -60,16 +60,64 @@ def find_app_browser() -> tuple[str, str] | None:
     return None
 
 
+def open_native_window(url: str, on_closed: Callable[[], None] | None = None):
+    """
+    Create a CapCut-like native window with pywebview.
+    Returns (window, True) or (None, False).
+    Caller must call webview.start() afterward.
+    """
+    try:
+        import webview
+    except ImportError:
+        return None, False
+
+    try:
+        window = webview.create_window(
+            "SceneCut Pro+",
+            url,
+            width=1360,
+            height=860,
+            min_size=(1100, 700),
+            background_color="#0e0e10",
+            text_select=True,
+            confirm_close=False,
+        )
+
+        if on_closed is not None:
+            try:
+                window.events.closed += on_closed
+            except Exception:  # noqa: BLE001
+                pass
+
+        return window, True
+    except Exception:  # noqa: BLE001
+        return None, False
+
+
+def start_native_gui() -> bool:
+    """Block until native window closes. Returns False if start failed."""
+    try:
+        import webview
+    except ImportError:
+        return False
+    try:
+        # edgechromium = real app window using WebView2 (not Edge browser UI)
+        webview.start(gui="edgechromium", debug=False)
+        return True
+    except Exception:
+        try:
+            webview.start(debug=False)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+
 def open_app_window(url: str) -> subprocess.Popen | None:
-    """
-    Open a tab-less app window. Returns the Popen handle (wait on it),
-    or None if no Edge/Chrome found.
-    """
+    """Last-resort Edge/Chrome --app window (only if native fails)."""
     found = find_app_browser()
     if not found:
         return None
-    exe, kind = found
-    # Dedicated profile so it doesn't clash with user's normal browser session
+    exe, _kind = found
     profile = Path(os.environ.get("LOCALAPPDATA") or ".") / "SceneCutProPlus" / "app_profile"
     profile.mkdir(parents=True, exist_ok=True)
     args = [
@@ -81,13 +129,8 @@ def open_app_window(url: str) -> subprocess.Popen | None:
         "--disable-extensions",
         "--new-window",
     ]
-    # Windows: hide console; browser is GUI
     creation = 0
     if sys.platform.startswith("win"):
-        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        # DETACHED so pythonw isn't tied oddly — still wait via Popen
-        creation |= getattr(subprocess, "DETACHED_PROCESS", 0)
-        # Actually DETACHED_PROCESS can break wait(); use CREATE_NEW_PROCESS_GROUP only
         creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         return subprocess.Popen(args, close_fds=True, creationflags=creation)
@@ -99,11 +142,10 @@ def open_app_window(url: str) -> subprocess.Popen | None:
 
 
 def pick_file_path(kind: str) -> str | None:
-    """Native WinForms OpenFileDialog via PowerShell STA — no pywebview."""
+    """Native WinForms OpenFileDialog via PowerShell STA."""
     if not sys.platform.startswith("win"):
         return None
     filt = _FILTERS.get(kind) or "All files|*.*"
-    # Escape for PowerShell single-quoted string
     filt_ps = filt.replace("'", "''")
     script = f"""
 Add-Type -AssemblyName System.Windows.Forms
@@ -112,8 +154,7 @@ $d.Filter = '{filt_ps}'
 $d.Multiselect = $false
 $d.Title = 'SceneCut Pro+ — Select file'
 [System.Windows.Forms.Application]::EnableVisualStyles() | Out-Null
-$code = $d.ShowDialog()
-if ($code -eq [System.Windows.Forms.DialogResult]::OK) {{
+if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{
   Write-Output $d.FileName
 }}
 """
@@ -134,17 +175,16 @@ if ($code -eq [System.Windows.Forms.DialogResult]::OK) {{
         )
     except Exception:  # noqa: BLE001
         return None
-    path = (proc.stdout or "").strip().splitlines()
-    if not path:
+    lines = (proc.stdout or "").strip().splitlines()
+    if not lines:
         return None
-    candidate = path[-1].strip()
+    candidate = lines[-1].strip()
     if candidate and Path(candidate).is_file():
         return candidate
     return None
 
 
 def wait_app_process(proc: subprocess.Popen, shutdown_event, poll: float = 0.4) -> None:
-    """Block until app window process exits or shutdown_event is set."""
     try:
         while True:
             if shutdown_event is not None and shutdown_event.is_set():
@@ -153,8 +193,7 @@ def wait_app_process(proc: subprocess.Popen, shutdown_event, poll: float = 0.4) 
                 except Exception:  # noqa: BLE001
                     pass
                 break
-            code = proc.poll()
-            if code is not None:
+            if proc.poll() is not None:
                 break
             time.sleep(poll)
     finally:

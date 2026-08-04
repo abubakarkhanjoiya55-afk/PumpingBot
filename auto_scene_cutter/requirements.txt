@@ -1,3 +1,4 @@
 pysrt
 flask
 waitress
+pywebview>=5.1
