@@ -6,8 +6,12 @@ import {
   confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
 } from './api';
 
-function fmt(n) {
-  return `$${Number(n || 0).toFixed(2)}`;
+function fmt(n, me) {
+  const v = Number(n || 0);
+  if (me?.is_cent_account) {
+    return `$${v.toFixed(2)} (cent)`;
+  }
+  return `$${v.toFixed(2)}`;
 }
 
 function getFloatingPl(me) {
@@ -407,19 +411,19 @@ export default function App() {
             <div className="stats-grid">
               <div className="stat-card">
                 <div className="stat-label">Balance</div>
-                <div className="stat-value">{fmt(me?.balance)}</div>
+                <div className="stat-value">{fmt(me?.balance, me)}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Equity</div>
-                <div className="stat-value">{fmt(me?.equity)}</div>
+                <div className="stat-value">{fmt(me?.equity, me)}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Floating P/L</div>
-                <div className={`stat-value ${floatingPl >= 0 ? 'green' : 'red'}`}>{fmt(floatingPl)}</div>
+                <div className={`stat-value ${floatingPl >= 0 ? 'green' : 'red'}`}>{fmt(floatingPl, me)}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Net P&L</div>
-                <div className={`stat-value ${netPl >= 0 ? 'green' : 'red'}`}>{fmt(netPl)}</div>
+                <div className={`stat-value ${netPl >= 0 ? 'green' : 'red'}`}>{fmt(netPl, me)}</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Open Trades</div>
@@ -591,7 +595,10 @@ export default function App() {
                 <div className="mt5-status-details">
                   <p><span>Login:</span> {me.mt5_login}</p>
                   <p><span>Server:</span> {me.mt5_server}</p>
-                  <p><span>Balance:</span> {fmt(me.balance)}</p>
+                  <p><span>Balance:</span> {fmt(me.balance, me)}</p>
+                  {me.is_cent_account && (
+                    <p><span>Type:</span> Cent account ({me.account_currency || 'USC'})</p>
+                  )}
                   {me.vps_status && <p><span>VPS:</span> {me.vps_status}</p>}
                 </div>
                 {!mt5Live && me?.bot_active && (

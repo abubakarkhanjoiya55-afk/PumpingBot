@@ -50,7 +50,27 @@ SYMBOL_MAX_SPREAD = {
     "USDCADm":  2000,
     "GBPJPYm":  8000,
     "NZDUSDm":  2000,
+    # Exness CENT (*c) — same point budgets as standard
+    "XAUUSDc":  30000,
+    "XAGUSDc":  5000,
+    "BTCUSDc":  2000000,
+    "ETHUSDc":  200000,
+    "EURUSDc":  2000,
+    "GBPUSDc":  2000,
+    "USDJPYc":  2000,
+    "AUDUSDc":  2000,
 }
+
+
+def symbol_spread_limit(symbol: str) -> float:
+    if symbol in SYMBOL_MAX_SPREAD:
+        return SYMBOL_MAX_SPREAD[symbol]
+    stem = symbol.rstrip("cmzrCMZR")
+    for suf in ("m", "c", "", "z", "r"):
+        key = f"{stem}{suf}"
+        if key in SYMBOL_MAX_SPREAD:
+            return SYMBOL_MAX_SPREAD[key]
+    return MAX_SPREAD_POINTS
 
 TRAILING_LEVELS = [
     (2.0,  1.0), (5.0,  3.0), (8.0,  5.0), (10.0, 7.0),
@@ -574,7 +594,7 @@ def analyze_symbol(symbol, mt5_manager):
         return None
 
     spread = (tick.ask - tick.bid) / sym_info.point
-    max_spread = SYMBOL_MAX_SPREAD.get(symbol, MAX_SPREAD_POINTS)
+    max_spread = symbol_spread_limit(symbol)
     if spread > max_spread:
         return {"skip": True, "reason": "spread", "symbol": symbol, "spread": spread}
 

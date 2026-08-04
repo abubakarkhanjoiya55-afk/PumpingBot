@@ -142,11 +142,11 @@ else:
               f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
-    "XAUUSDm", "XAGUSDm", "BTCUSDm", "ETHUSDm", "SOLUSDm",
-    "EURUSDm", "GBPUSDm", "USDJPYm", "AUDUSDm", "USDCADm", "GBPJPYm", "NZDUSDm",
+    "XAUUSDc", "XAGUSDc", "BTCUSDc", "ETHUSDc",
+    "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.3"   # PumpingBot go-live; fixed VPS_SECRET for Windows supervisor
+API_VERSION = "3.28.4"   # Cent-account symbols + USC balance display
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -2050,10 +2050,13 @@ def get_me(request: Request,
         amount_owed = current_user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
 
     # Prefer live MetaAPI info; else VPS-reported balance
+    currency = ""
+    is_cent = False
     if info:
         balance = info.balance
         equity = info.equity
         floating_pl = round(equity - balance, 2)
+        currency = str(getattr(info, "currency", "") or "")
     else:
         balance = float(current_user.vps_balance or 0)
         equity = balance
@@ -2063,7 +2066,16 @@ def get_me(request: Request,
                 balance = float(a.get("balance") or balance)
                 equity = float(a.get("equity") or balance)
                 floating_pl = round(equity - balance, 2)
+                currency = str(a.get("currency") or "")
+                is_cent = bool(a.get("is_cent"))
                 break
+        if not is_cent:
+            is_cent = currency.upper() in ("USC", "EURC", "GBPC")
+
+    # Cent books: show USD-equivalent for humans (100 USC = $1)
+    display_balance = balance / 100.0 if is_cent else balance
+    display_equity = equity / 100.0 if is_cent else equity
+    display_pl = floating_pl / 100.0 if is_cent else floating_pl
 
     mt5_ready = _user_trading_ready(current_user)
 
@@ -2094,10 +2106,13 @@ def get_me(request: Request,
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
         "bot_active":        current_user.bot_active,
-        "balance":           balance,
-        "profit":            floating_pl,
-        "floating_pl":       floating_pl,
-        "equity":            equity,
+        "balance":           display_balance,
+        "balance_raw":       balance,
+        "profit":            display_pl,
+        "floating_pl":       display_pl,
+        "equity":            display_equity,
+        "account_currency":  currency,
+        "is_cent_account":   is_cent,
         "open_trades_count": open_trades_count,
         "referral_code":     ref_code,
         "invite_url":        invite_url,
@@ -2893,6 +2908,8 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                 session.server = msg.get("server") or session.server
                 session.balance = float(msg.get("balance") or 0)
                 session.equity = float(msg.get("equity") or 0)
+                session.currency = str(msg.get("currency") or "")
+                session.is_cent = bool(msg.get("is_cent"))
                 session.ready = bool(msg.get("ready"))
                 session.last_seen = time.time()
                 await websocket.send_text(json.dumps({
@@ -2908,6 +2925,8 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                     user.id,
                     balance=msg.get("balance"),
                     equity=msg.get("equity"),
+                    currency=msg.get("currency"),
+                    is_cent=msg.get("is_cent"),
                     ready=msg.get("ready"),
                 )
                 # Persist for /me dashboard (mobile) without waiting on supervisor

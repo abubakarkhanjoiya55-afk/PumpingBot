@@ -25,6 +25,8 @@ class AgentSession:
     server: Optional[str] = None
     balance: float = 0.0
     equity: float = 0.0
+    currency: str = ""
+    is_cent: bool = False
     ready: bool = False
     connected_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
@@ -85,6 +87,8 @@ class AgentHub:
                 "server": s.server,
                 "balance": s.balance,
                 "equity": s.equity,
+                "currency": s.currency,
+                "is_cent": s.is_cent,
                 "ready": s.ready,
                 "last_seen_sec": round(now - s.last_seen, 1),
                 "online": (now - s.last_seen) < 30,

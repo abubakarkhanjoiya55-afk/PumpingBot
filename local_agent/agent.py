@@ -72,10 +72,18 @@ class PumpingAgent:
         self.password = _env("MT5_PASSWORD", "")
         self.server = _env("MT5_SERVER", "")
         self.mt5_path = _env("MT5_PATH")
+        # Default: Exness CENT symbols (*c). Override with SYMBOLS=... if needed.
+        self.account_type = (_env("ACCOUNT_TYPE", "cent") or "cent").strip().lower()
+        default_symbols = (
+            "XAUUSDc,XAGUSDc,BTCUSDc,ETHUSDc,EURUSDc,GBPUSDc,USDJPYc,AUDUSDc"
+            if self.account_type in ("cent", "cents", "usc")
+            else "XAUUSDm,EURUSDm,GBPUSDm,BTCUSDm"
+        )
         self.symbols = [
-            s.strip() for s in (_env("SYMBOLS", "XAUUSDm,EURUSDm,GBPUSDm,BTCUSDm") or "").split(",")
+            s.strip() for s in (_env("SYMBOLS", default_symbols) or "").split(",")
             if s.strip()
         ]
+        self.prefer_suffix = "c" if self.account_type in ("cent", "cents", "usc") else "m"
 
         if not self.token:
             raise SystemExit("ACCESS_TOKEN missing — login via /token and set it")
@@ -91,7 +99,17 @@ class PumpingAgent:
 
     # ── MT5 ────────────────────────────────────────────────────────────
     def connect_mt5(self) -> bool:
-        return self.mt5.connect()
+        ok = self.mt5.connect()
+        if ok:
+            # Resolve *c / *m against what this broker account actually has
+            resolved = self.mt5.resolve_symbols(self.symbols, prefer_suffix=self.prefer_suffix)
+            if resolved:
+                self.symbols = resolved
+            print(f"[AGENT] ACCOUNT_TYPE={self.account_type} symbols={self.symbols}")
+            acc = self.mt5.account()
+            if acc.get("is_cent"):
+                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')}")
+        return ok
 
     # ── WebSocket ──────────────────────────────────────────────────────
     def start_ws(self):
@@ -107,10 +125,13 @@ class PumpingAgent:
                 "server": self.server,
                 "balance": acc.get("balance", 0),
                 "equity": acc.get("equity", 0),
+                "currency": acc.get("currency", ""),
+                "is_cent": bool(acc.get("is_cent")),
                 "ready": self.mt5.ready,
             }
             ws.send(json.dumps(hello))
-            print(f"[AGENT] Hello sent role={self.role} ready={self.mt5.ready}")
+            print(f"[AGENT] Hello sent role={self.role} ready={self.mt5.ready} "
+                  f"bal={acc.get('balance')} {acc.get('currency')}")
 
         def on_message(ws, message):
             try:
@@ -272,6 +293,8 @@ class PumpingAgent:
                     "type": "heartbeat",
                     "balance": acc.get("balance", 0),
                     "equity": acc.get("equity", 0),
+                    "currency": acc.get("currency", ""),
+                    "is_cent": bool(acc.get("is_cent")),
                     "ready": self.mt5.ready,
                     "positions": self.mt5.positions(),
                 })
