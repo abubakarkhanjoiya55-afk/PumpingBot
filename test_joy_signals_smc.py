@@ -98,6 +98,34 @@ class FairValueGapTests(unittest.TestCase):
         self.assertIn("Fair Value Gap", hit["advice"])
 
 
+class OrderBlockDisabledTests(unittest.TestCase):
+    def test_order_block_flag_off_by_default(self):
+        from device_care import scanner as sc
+        self.assertFalse(sc.ENABLE_ORDER_BLOCK)
+
+    def test_scan_smc_skips_order_block_by_default(self):
+        n = 30
+        highs, lows, opens, closes = _flat(n, 100, 1.5)
+        highs[12], lows[12], opens[12], closes[12] = 101.0, 97.0, 100.5, 97.5
+        highs[13], lows[13], opens[13], closes[13] = 106.0, 98.0, 98.0, 105.0
+        highs[14], lows[14], opens[14], closes[14] = 112.0, 104.0, 105.0, 111.0
+        highs[15], lows[15], opens[15], closes[15] = 118.0, 110.0, 111.0, 117.0
+        for i in range(16, n - 2):
+            highs[i], lows[i], opens[i], closes[i] = 120.0, 114.0, 116.0, 118.0
+        highs[-2], lows[-2], opens[-2], closes[-2] = 102.0, 97.5, 98.0, 101.0
+        ohlc = _ohlc(highs, lows, opens, closes)
+        # Detector itself may still find OB
+        raw = detect_order_block(ohlc, timeframe="4H")
+        self.assertIsNotNone(raw)
+        # But orchestrator default enable_ob=False
+        hits = scan_smc(ohlc, timeframe="4H")
+        self.assertFalse(any(h["pattern"] == "Order Block" for h in hits))
+        # And scan_ohlc must not emit OB
+        from device_care.scanner import scan_ohlc
+        out = scan_ohlc(ohlc, timeframe="4H")
+        self.assertFalse(any(h["pattern"] == "Order Block" for h in out))
+
+
 class OrderBlockTests(unittest.TestCase):
     def test_bullish_ob_mitigation(self):
         n = 30

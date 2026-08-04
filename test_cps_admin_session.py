@@ -65,7 +65,7 @@ class BrandingAssetTests(unittest.TestCase):
         self.assertIn("updateBanner", html)
         self.assertIn("SKIP_WAITING", html)
         sw = (root / "sw.js").read_text(encoding="utf-8")
-        self.assertIn("cps-v4.1.1", sw)
+        self.assertIn("cps-v4.1.2", sw)
         self.assertIn("SKIP_WAITING", sw)
         self.assertNotIn("skipWaiting()", sw.split("message")[0])  # no auto skip on install
 

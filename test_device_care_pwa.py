@@ -92,7 +92,7 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertIn('"/my-signals"', service_worker)
         self.assertIn("Crypto Pumping", service_worker)
         self.assertIn("SKIP_WAITING", service_worker)
-        self.assertIn("cps-v4.1.1", service_worker)
+        self.assertIn("cps-v4.1.2", service_worker)
         for icon in manifest["icons"]:
             self.assertIn(f"${{BASE}}/{icon['src']}", service_worker)
         self.assertIn('e.request.method !== "GET"', service_worker)
