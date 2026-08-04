@@ -3,40 +3,50 @@ setlocal EnableExtensions
 title SceneCut Pro+
 cd /d "%~dp0\.."
 
-if exist ".venv\Scripts\activate.bat" (
-  call ".venv\Scripts\activate.bat"
-) else if exist "%LOCALAPPDATA%\SceneCutProPlus\.venv\Scripts\activate.bat" (
-  cd /d "%LOCALAPPDATA%\SceneCutProPlus"
-  call ".venv\Scripts\activate.bat"
-)
+set "APP_DIR=%CD%"
+set "ACTIVATE=%APP_DIR%\.venv\Scripts\activate.bat"
+if exist "%ACTIVATE%" goto HAVE_VENV
+
+set "APP_DIR=%LOCALAPPDATA%\SceneCutProPlus"
+set "ACTIVATE=%APP_DIR%\.venv\Scripts\activate.bat"
+if exist "%ACTIVATE%" goto HAVE_VENV
+goto AFTER_VENV
+
+:HAVE_VENV
+cd /d "%APP_DIR%"
+call "%ACTIVATE%"
+:AFTER_VENV
 
 REM Prefer bundled portable ffmpeg if present
-if exist "%CD%\tools\ffmpeg\bin\ffmpeg.exe" (
-  set "PATH=%CD%\tools\ffmpeg\bin;%PATH%"
-)
-if exist "%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin\ffmpeg.exe" (
-  set "PATH=%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin;%PATH%"
-)
+if exist "%APP_DIR%\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%APP_DIR%\tools\ffmpeg\bin;%PATH%"
+if exist "%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin;%PATH%"
 
 where ffmpeg >nul 2>&1
-if errorlevel 1 (
-  echo WARNING: ffmpeg nahi mila - Auto Cut fail ho sakta hai.
-  echo 1_DOUBLE_CLICK.bat dobara chalao (ffmpeg auto install karega).
-  echo.
-)
+if errorlevel 1 goto NO_FFMPEG
+goto AFTER_FFMPEG
+:NO_FFMPEG
+echo WARNING: ffmpeg nahi mila - Auto Cut fail ho sakta hai.
+echo 1_DOUBLE_CLICK.bat dobara chalao - ffmpeg auto install karega.
+echo.
+:AFTER_FFMPEG
 
-REM Ensure native-window dep (pywebview) after updates
 python -c "import webview" >nul 2>&1
-if errorlevel 1 (
-  echo Installing app window support...
-  python -m pip install -q pywebview
-)
+if errorlevel 1 goto NEED_WEBVIEW
+goto AFTER_WEBVIEW
+:NEED_WEBVIEW
+echo Installing app window support...
+python -m pip install -q pywebview
+:AFTER_WEBVIEW
 
 set SCENECUT_DESKTOP=1
 python desktop_app.py
-if errorlevel 1 (
-  echo.
-  echo App error - window band mat karo, yeh message padho.
-  pause
-)
+if errorlevel 1 goto APP_ERR
 endlocal
+exit /b 0
+
+:APP_ERR
+echo.
+echo App error - window band mat karo, yeh message padho.
+pause
+endlocal
+exit /b 1

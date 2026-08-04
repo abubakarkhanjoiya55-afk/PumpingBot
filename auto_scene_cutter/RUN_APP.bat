@@ -1,12 +1,13 @@
 @echo off
+setlocal EnableExtensions
 REM App open - agar install ho chuka ho
-setlocal
 set "LAUNCH=%LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat"
-if exist "%LAUNCH%" (
-  start "" "%LAUNCH%"
-  exit /b 0
-)
+if exist "%LAUNCH%" goto DO_LAUNCH
 echo Install abhi nahi hua.
 echo Pehle 1_DOUBLE_CLICK.bat chalao.
 pause
-endlocal
+exit /b 1
+
+:DO_LAUNCH
+start "" "%LAUNCH%"
+exit /b 0
