@@ -155,7 +155,21 @@
     hideToast();
     hideModal();
 
-    // Native desktop bridge (best)
+    // Desktop update endpoint (Edge app shell)
+    try {
+      const resDesk = await fetch("/api/desktop/update", { method: "POST" });
+      if (resDesk.ok) {
+        const data = await resDesk.json();
+        if (data.ok || data.updated) {
+          markSeen(info.version);
+          return;
+        }
+      }
+    } catch (_) {
+      /* fall through */
+    }
+
+    // Legacy pywebview bridge
     try {
       if (window.pywebview?.api?.apply_update) {
         await window.pywebview.api.apply_update();
@@ -165,19 +179,17 @@
       /* fall through */
     }
 
-    // Local desktop server
+    // Generic apply
     try {
       const res = await fetch("/api/update/apply", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         if (data.ok) {
           markSeen(info.version);
-          // Live UI: soft reload is enough
           if (data.action === "reload" || !isDesktopShell()) {
             location.reload();
             return;
           }
-          // Local apply will restart app process
           return;
         }
       }

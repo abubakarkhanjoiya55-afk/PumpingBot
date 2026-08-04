@@ -1,10 +1,10 @@
 {
-  "version": "1.4.1",
-  "title": "2GB Export speed fix",
+  "version": "1.4.2",
+  "title": "Fixed .NET 'master' crash",
   "notes": [
-    "Desktop ab LOCAL mode — 2GB movie cloud pe upload nahi hoti",
-    "File pick local path se — Preparing movie 1% hang khatam",
-    "Export seedha cutting pe jata hai (CapCut jaisi speed)"
+    "pywebview/.NET error ('master') hata diya",
+    "Ab Edge/Chrome app window use hoti hai — stable",
+    "2GB movie local path se — Preparing hang nahi"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"

@@ -17,7 +17,6 @@ cd /d "%APP_DIR%"
 call "%ACTIVATE%"
 :AFTER_VENV
 
-REM Prefer bundled portable ffmpeg if present
 if exist "%APP_DIR%\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%APP_DIR%\tools\ffmpeg\bin;%PATH%"
 if exist "%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin\ffmpeg.exe" set "PATH=%LOCALAPPDATA%\SceneCutProPlus\tools\ffmpeg\bin;%PATH%"
 
@@ -26,17 +25,8 @@ if errorlevel 1 goto NO_FFMPEG
 goto AFTER_FFMPEG
 :NO_FFMPEG
 echo WARNING: ffmpeg nahi mila - Auto Cut fail ho sakta hai.
-echo 1_DOUBLE_CLICK.bat dobara chalao - ffmpeg auto install karega.
 echo.
 :AFTER_FFMPEG
-
-python -c "import webview" >nul 2>&1
-if errorlevel 1 goto NEED_WEBVIEW
-goto AFTER_WEBVIEW
-:NEED_WEBVIEW
-echo Installing app window support...
-python -m pip install -q pywebview
-:AFTER_WEBVIEW
 
 set SCENECUT_DESKTOP=1
 python desktop_app.py

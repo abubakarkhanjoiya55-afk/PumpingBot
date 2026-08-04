@@ -596,9 +596,25 @@ async function ensureMovieSynced() {
 
 async function desktopPickFile(key, kind) {
   try {
-    if (!window.pywebview?.api?.pick_file) return false;
-    const data = await window.pywebview.api.pick_file(kind);
-    if (!data || data.cancelled) return true; // handled, user cancelled
+    // Prefer stable /api/desktop/pick (Edge app shell). pywebview optional legacy.
+    let data = null;
+    if (state.isDesktop || new URLSearchParams(location.search).get("desktop") === "1") {
+      try {
+        const res = await fetch("/api/desktop/pick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind }),
+        });
+        data = await res.json();
+      } catch (_) {
+        data = null;
+      }
+    }
+    if ((!data || data.error === "desktop only") && window.pywebview?.api?.pick_file) {
+      data = await window.pywebview.api.pick_file(kind);
+    }
+    if (!data) return false;
+    if (data.cancelled) return true;
     if (!data.ok) {
       showError(data.error || "File pick fail");
       return true;
@@ -618,7 +634,6 @@ async function desktopPickFile(key, kind) {
       `${data.meta || ""} · local`
     );
     if (kind === "movie") {
-      // Preview via server media route (file already in SESSION)
       const player = $("videoPlayer");
       if (player) {
         player.src = `/api/media/movie?t=${Date.now()}`;
@@ -697,10 +712,18 @@ function bindFileInput(inputId, key, kind) {
   if (!input) return;
   // Desktop: intercept click → native path pick (2GB movie, no prepare upload)
   input.addEventListener("click", async (e) => {
-    if (!window.pywebview?.api?.pick_file) return;
+    const desk =
+      state.isDesktop ||
+      new URLSearchParams(location.search).get("desktop") === "1" ||
+      Boolean(window.pywebview);
+    if (!desk) return;
     e.preventDefault();
     e.stopPropagation();
-    await desktopPickFile(key, kind);
+    const handled = await desktopPickFile(key, kind);
+    if (!handled) {
+      // fallback to normal file input
+      return;
+    }
   });
   input.addEventListener("change", (e) => {
     const file = e.target.files && e.target.files[0];
@@ -1770,22 +1793,18 @@ function wireControls() {
 
 async function quitDesktop() {
   try {
-    if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
-      await window.pywebview.api.quit();
-      return;
-    }
     await fetch("/api/shutdown", { method: "POST" });
-    showOk("Closing SceneCut Pro+…");
-    setTimeout(() => {
-      window.close();
-    }, 400);
-  } catch (err) {
+  } catch (_) {
+    /* ignore */
+  }
+  showOk("Closing SceneCut Pro+…");
+  setTimeout(() => {
     try {
       window.close();
     } catch (_) {
-      showError(err.message || String(err));
+      /* ignore */
     }
-  }
+  }, 200);
 }
 
 /* ——— CapCut-style mobile sheets ——— */

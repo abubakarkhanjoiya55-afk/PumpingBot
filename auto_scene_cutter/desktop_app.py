@@ -1,12 +1,13 @@
 """
 SceneCut Pro+ — desktop launcher
 
-Native window on LOCAL server (fast 2GB+ cuts — no cloud upload).
-Background sync keeps code updated CapCut-style.
+Stable Windows shell:
+  - Edge/Chrome --app window (avoids pywebview .NET KeyError: 'master')
+  - Local Flask server for fast 2GB+ cuts
+  - PowerShell file dialog for local paths (no upload)
 
 Usage:
   python desktop_app.py
-  python desktop_app.py --live   # UI from website (slower for big movies)
 """
 
 from __future__ import annotations
@@ -17,7 +18,10 @@ import socket
 import sys
 import threading
 import time
+import webbrowser
 from pathlib import Path
+
+from flask import jsonify, request
 
 
 def _app_root() -> Path:
@@ -42,9 +46,12 @@ from app import (  # noqa: E402
     _validate_upload_kind,
     app,
 )
+from desktop_shell import (  # noqa: E402
+    open_app_window,
+    pick_file_path,
+    wait_app_process,
+)
 from desktop_update import (  # noqa: E402
-    ensure_webview_installed,
-    is_online,
     live_base,
     local_version,
     remote_manifest,
@@ -56,7 +63,7 @@ from desktop_update import (  # noqa: E402
 
 
 SHUTDOWN = threading.Event()
-WINDOW = None
+APP_PROC = None
 
 
 def _install_dir() -> Path:
@@ -66,87 +73,6 @@ def _install_dir() -> Path:
     if local.exists():
         return local
     return BASE_DIR
-
-
-_FILE_FILTERS = {
-    "movie": ("Video (*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v)", "*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v"),
-    "movie_srt": ("Subtitles (*.srt;*.txt)", "*.srt;*.txt"),
-    "narration_srt": ("Subtitles (*.srt;*.txt)", "*.srt;*.txt"),
-    "narration_audio": ("Audio (*.mp3;*.m4a;*.wav;*.aac;*.ogg;*.flac)", "*.mp3;*.m4a;*.wav;*.aac;*.ogg;*.flac"),
-}
-
-
-class DesktopApi:
-    """JS bridge: Quit, Update, and local file pick (no multi‑GB upload)."""
-
-    def ping(self) -> str:
-        return "scenecut-desktop"
-
-    def quit(self) -> None:
-        SHUTDOWN.set()
-        _close_window()
-
-    def get_local_version(self) -> str:
-        return local_version(_install_dir()) or ""
-
-    def apply_update(self) -> dict:
-        install = _install_dir()
-        if getattr(sys, "frozen", False):
-            result = update_frozen_app()
-            if result.get("ok"):
-                threading.Timer(0.8, lambda: (SHUTDOWN.set(), _close_window())).start()
-            return result
-        result = sync_from_live(install, force=True)
-        if result.get("ok"):
-            restart_desktop(install)
-            threading.Timer(0.9, lambda: (SHUTDOWN.set(), _close_window())).start()
-        return result
-
-    def pick_file(self, kind: str) -> dict:
-        """Native file dialog → register path in SESSION (instant, no upload)."""
-        kind = (kind or "").strip()
-        if kind not in UPLOAD_KIND_MAP:
-            return {"ok": False, "error": "invalid kind"}
-        try:
-            import webview
-        except ImportError:
-            return {"ok": False, "error": "webview missing"}
-
-        windows = getattr(webview, "windows", None) or []
-        window = windows[0] if windows else WINDOW
-        if window is None:
-            return {"ok": False, "error": "no window"}
-
-        label, pattern = _FILE_FILTERS.get(kind, ("All files (*.*)", "*.*"))
-        try:
-            selection = window.create_file_dialog(
-                webview.OPEN_DIALOG,
-                allow_multiple=False,
-                file_types=(f"{label} ({pattern})",),
-            )
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": str(exc)}
-
-        if not selection:
-            return {"ok": False, "cancelled": True}
-        path = Path(selection[0] if isinstance(selection, (list, tuple)) else selection)
-        path = path.expanduser().resolve()
-        if not path.is_file():
-            return {"ok": False, "error": "file missing"}
-        err, _ = _validate_upload_kind(kind, path.name)
-        if err:
-            return {"ok": False, "error": err}
-
-        SESSION[UPLOAD_KIND_MAP[kind]] = str(path)
-        return {
-            "ok": True,
-            "kind": kind,
-            "filename": path.name,
-            "meta": _file_meta(path),
-            "path": str(path),
-            "size": path.stat().st_size,
-            "local": True,
-        }
 
 
 def _free_port(preferred: int) -> int:
@@ -193,80 +119,97 @@ def _run_server(port: int) -> None:
         )
 
 
-def _close_window() -> None:
-    global WINDOW
-    w = WINDOW
-    WINDOW = None
-    if w is not None:
-        try:
-            w.destroy()
-        except Exception:  # noqa: BLE001
-            pass
+def _kill_app_proc() -> None:
+    global APP_PROC
+    proc = APP_PROC
+    APP_PROC = None
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @app.post("/api/shutdown")
 def api_shutdown():
     if os.environ.get("SCENECUT_DESKTOP") != "1":
-        return {"ok": False, "error": "Shutdown only in desktop mode"}, 400
+        return jsonify({"ok": False, "error": "Shutdown only in desktop mode"}), 400
 
     def _do() -> None:
         SHUTDOWN.set()
-        _close_window()
+        _kill_app_proc()
 
-    threading.Timer(0.25, _do).start()
-    return {"ok": True, "message": "Closing SceneCut Pro+…"}
+    threading.Timer(0.2, _do).start()
+    return jsonify({"ok": True, "message": "Closing SceneCut Pro+…"})
 
 
 @app.get("/api/desktop")
 def api_desktop():
-    return {
-        "ok": True,
-        "desktop": True,
-        "native_window": WINDOW is not None,
-        "local_fast": True,
-        "live_url": live_base(),
-        "local_version": local_version(_install_dir()),
-        "job": JOB.snapshot().get("status"),
-        "project": SESSION.get("project_name"),
-        "has_movie": bool(SESSION.get("movie")),
-    }
+    return jsonify(
+        {
+            "ok": True,
+            "desktop": True,
+            "native_window": True,
+            "shell": "edge-app",
+            "local_fast": True,
+            "live_url": live_base(),
+            "local_version": local_version(_install_dir()),
+            "job": JOB.snapshot().get("status"),
+            "project": SESSION.get("project_name"),
+            "has_movie": bool(SESSION.get("movie")),
+        }
+    )
 
 
-def _open_native_window(url: str) -> bool:
-    global WINDOW
-    if not ensure_webview_installed():
-        print("ERROR: pywebview install fail")
-        return False
-    try:
-        import webview
+@app.post("/api/desktop/pick")
+def api_desktop_pick_file():
+    """Native file dialog — registers absolute path (no multi‑GB upload)."""
+    if os.environ.get("SCENECUT_DESKTOP") != "1":
+        return jsonify({"ok": False, "error": "desktop only"}), 400
+    payload = request.get_json(silent=True) or {}
+    kind = (payload.get("kind") or "").strip()
+    if kind not in UPLOAD_KIND_MAP:
+        return jsonify({"ok": False, "error": "invalid kind"}), 400
+    path_str = pick_file_path(kind)
+    if not path_str:
+        return jsonify({"ok": False, "cancelled": True})
+    path = Path(path_str).expanduser().resolve()
+    if not path.is_file():
+        return jsonify({"ok": False, "error": "file missing"}), 400
+    err, _ = _validate_upload_kind(kind, path.name)
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    SESSION[UPLOAD_KIND_MAP[kind]] = str(path)
+    return jsonify(
+        {
+            "ok": True,
+            "kind": kind,
+            "filename": path.name,
+            "meta": _file_meta(path),
+            "path": str(path),
+            "size": path.stat().st_size,
+            "local": True,
+        }
+    )
 
-        api = DesktopApi()
-        WINDOW = webview.create_window(
-            "SceneCut Pro+",
-            url,
-            width=1360,
-            height=860,
-            min_size=(1024, 680),
-            background_color="#07080c",
-            text_select=True,
-            js_api=api,
-        )
 
-        def _on_closed() -> None:
-            SHUTDOWN.set()
-
-        try:
-            WINDOW.events.closed += _on_closed
-        except Exception:  # noqa: BLE001
-            pass
-
-        webview.start(debug=False)
-        SHUTDOWN.set()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print(f"Native window fail: {exc}")
-        WINDOW = None
-        return False
+@app.post("/api/desktop/update")
+def api_desktop_update():
+    """Apply update + restart desktop."""
+    if os.environ.get("SCENECUT_DESKTOP") != "1":
+        return jsonify({"ok": False, "error": "desktop only"}), 400
+    install = _install_dir()
+    if getattr(sys, "frozen", False):
+        result = update_frozen_app()
+        if result.get("ok"):
+            threading.Timer(0.8, lambda: (SHUTDOWN.set(), _kill_app_proc())).start()
+        return jsonify(result)
+    result = sync_from_live(install, force=True)
+    if result.get("ok"):
+        restart_desktop(install)
+        threading.Timer(0.9, lambda: (SHUTDOWN.set(), _kill_app_proc())).start()
+    return jsonify(result)
 
 
 def _prepend_bundled_ffmpeg() -> None:
@@ -278,17 +221,6 @@ def _prepend_bundled_ffmpeg() -> None:
         if (folder / "ffmpeg.exe").exists():
             os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
             return
-
-
-def _pick_ui_url(port: int, prefer_live: bool) -> tuple[str, str]:
-    """
-    Default LOCAL — big movie Export stays on disk (fast).
-    --live only for testing website UI inside the window.
-    """
-    local = f"http://127.0.0.1:{port}/home?desktop=1"
-    if prefer_live and is_online():
-        return f"{live_base()}/home?desktop=1", "live"
-    return local, "local"
 
 
 def _quiet_background_sync() -> None:
@@ -303,15 +235,10 @@ def _quiet_background_sync() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global APP_PROC
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Load website UI (slow for 2GB+ movies — not recommended)",
-    )
-    parser.add_argument("--local", action="store_true", help="Force local UI (default)")
-    parser.add_argument("--browser", action="store_true")
+    parser.add_argument("--browser", action="store_true", help="Classic browser tab")
     parser.add_argument("--no-update", action="store_true")
     args = parser.parse_args(argv)
 
@@ -329,14 +256,11 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
     port = _free_port(args.port)
-    prefer_live = args.live and not args.local
-    if os.environ.get("SCENECUT_FORCE_LIVE") == "1":
-        prefer_live = True
-    url, mode = _pick_ui_url(port, prefer_live)
+    url = f"http://127.0.0.1:{port}/home?desktop=1"
 
     print("")
     print("  SceneCut Pro+ Desktop")
-    print(f"  Mode: {mode} (local = fast Export for 2GB+ movies)")
+    print("  Shell: Edge/Chrome app window (stable — no .NET crash)")
     print(f"  Window: {url}")
     print("")
 
@@ -347,8 +271,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.browser:
-        import webbrowser
-
         webbrowser.open(url)
         try:
             while not SHUTDOWN.is_set():
@@ -357,20 +279,21 @@ def main(argv: list[str] | None = None) -> int:
             pass
         return 0
 
-    if not _open_native_window(url):
-        print("Native window unavailable. Opening browser fallback…")
-        try:
-            import webbrowser
-
-            webbrowser.open(url)
-        except Exception:  # noqa: BLE001
-            print(f"Open manually: {url}")
-            return 1
+    APP_PROC = open_app_window(url)
+    if APP_PROC is None:
+        print("Edge/Chrome nahi mila — browser tab fallback.")
+        webbrowser.open(url)
         try:
             while not SHUTDOWN.is_set():
                 time.sleep(0.25)
         except KeyboardInterrupt:
             pass
+    else:
+        try:
+            wait_app_process(APP_PROC, SHUTDOWN)
+        except KeyboardInterrupt:
+            SHUTDOWN.set()
+            _kill_app_proc()
 
     print("SceneCut Pro+ closed.")
     return 0

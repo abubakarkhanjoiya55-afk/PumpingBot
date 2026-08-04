@@ -133,18 +133,14 @@
 
   async function quitDesktop() {
     try {
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.quit) {
-        await window.pywebview.api.quit();
-        return;
-      }
       await fetch("/api/shutdown", { method: "POST" });
-      setTimeout(() => window.close(), 300);
-    } catch (err) {
-      try {
-        window.close();
-      } catch (_) {
-        alert(err.message || String(err));
-      }
+    } catch (_) {
+      /* ignore */
+    }
+    try {
+      window.close();
+    } catch (_) {
+      /* ignore */
     }
   }
 
