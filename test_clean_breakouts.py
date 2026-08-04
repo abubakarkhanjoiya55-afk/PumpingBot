@@ -201,11 +201,13 @@ class WickTipLineTests(unittest.TestCase):
     def test_default_tfs_focus_4h_d1(self):
         self.assertTrue(sc.enabled_tfs.get("4H"))
         self.assertTrue(sc.enabled_tfs.get("D1"))
-        self.assertFalse(sc.enabled_tfs.get("1h"))
+        self.assertTrue(sc.enabled_tfs.get("1h"))  # Crypto Pumping Signals: 1H+4H+1D focus
         self.assertFalse(sc.enabled_tfs.get("1W"))
         self.assertTrue(sc.ENABLE_CANDLE_PATTERNS)
         self.assertTrue(sc.ENABLE_SR_BREAKOUTS)
         self.assertTrue(sc.ENABLE_TRIANGLE_BREAK)
+        self.assertTrue(sc.ENABLE_SMC)
+        self.assertTrue(sc.ENABLE_RANGE_BREAKOUT)
 
     def test_scan_no_break_setup_noise(self):
         ohlc = _build_sol_style_triangle()

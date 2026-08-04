@@ -1,14 +1,14 @@
 {
-  "name": "My Signals",
-  "short_name": "My Signals",
-  "description": "4H + 1D LIVE crypto breakout alerts",
+  "name": "Crypto Pumping Signals",
+  "short_name": "CPS Signals",
+  "description": "1H · 4H · 1D crypto breakouts + Smart Money Concepts alerts",
   "id": "/my-signals/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#07070d",
-  "theme_color": "#07070d",
+  "background_color": "#061018",
+  "theme_color": "#061018",
   "icons": [
     {
       "src": "icon-192.png",
@@ -21,6 +21,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

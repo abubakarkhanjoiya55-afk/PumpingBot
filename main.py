@@ -493,9 +493,18 @@ def verify_password(plain, hashed):
     return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 def create_access_token(data: dict, expires_minutes: int | None = None):
+    """
+    JWT builder.
+    expires_minutes=None → default ACCESS_TOKEN_EXPIRE_MINUTES
+    expires_minutes=0 or negative → far-future (admin never-expire sessions)
+    """
     to_encode = data.copy()
-    minutes = ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else int(expires_minutes)
-    expire = datetime.utcnow() + timedelta(minutes=minutes)
+    if expires_minutes is not None and int(expires_minutes) <= 0:
+        # ~10 years — admin login practically never expires
+        expire = datetime.utcnow() + timedelta(days=3650)
+    else:
+        minutes = ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else int(expires_minutes)
+        expire = datetime.utcnow() + timedelta(minutes=minutes)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -2013,7 +2022,15 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         raise HTTPException(401, "Wrong email/username or password")
     refresh_subscription_status(user)
     db.commit()
-    return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
+    # Admin session never expires; users get normal JWT (access gated by 24h trial/sub)
+    if is_master_user(user):
+        token = create_access_token(
+            {"sub": user.username, "role": "admin"},
+            expires_minutes=0,  # never-expire admin JWT
+        )
+    else:
+        token = create_access_token({"sub": user.username})
+    return {"access_token": token, "token_type": "bearer"}
 
 def _agent_session_ready(user_id: int) -> bool:
     for a in agent_hub.list_agents():

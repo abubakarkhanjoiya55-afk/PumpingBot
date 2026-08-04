@@ -12,7 +12,7 @@ if [ -z "${RAILWAY_TOKEN:-}" ]; then
   exit 1
 fi
 
-echo "=== My Signals deploy ==="
+echo "=== Crypto Pumping Signals deploy ==="
 echo "service=$SERVICE (token-scoped project)"
 
 # railway up reads root railway.toml — temporarily use My Signals Dockerfile
@@ -28,7 +28,7 @@ trap cleanup EXIT
 upload() {
   local svc="$1"
   echo "Uploading → service=$svc (dockerfilePath=my_signals_service/Dockerfile)"
-  railway up --service "$svc" --detach -m "My Signals standalone (auto)"
+  railway up --service "$svc" --detach -m "Crypto Pumping Signals v4.1 (auto)"
 }
 
 if upload "$SERVICE"; then

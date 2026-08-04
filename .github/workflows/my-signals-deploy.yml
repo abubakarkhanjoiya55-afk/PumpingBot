@@ -1,11 +1,32 @@
-name: Deploy My Signals (standalone)
+name: Deploy Crypto Pumping Signals (My Signals)
 
-# Disabled for now — focus is PumpingBot. Manual only if needed later.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "device_care/**"
+      - "my_signals_service/**"
+      - "scripts/railway-deploy-my-signals.sh"
+      - ".github/workflows/my-signals-deploy.yml"
 
 jobs:
-  skip:
+  deploy:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "My Signals auto-deploy paused — PumpingBot only"
+      - uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli@5.2.0
+
+      - name: Deploy Crypto Pumping Signals
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_MY_SIGNALS_SERVICE: ${{ secrets.RAILWAY_MY_SIGNALS_SERVICE || 'web' }}
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::warning::RAILWAY_TOKEN missing — relying on Railway GitHub auto-deploy / PumpingBot embed"
+            exit 0
+          fi
+          chmod +x scripts/railway-deploy-my-signals.sh
+          ./scripts/railway-deploy-my-signals.sh

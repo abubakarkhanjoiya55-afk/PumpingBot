@@ -22,9 +22,9 @@ from device_care.scanner import (  # noqa: E402
     APP_PREFIX,
 )
 
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "1.0.0")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.0")
 
-app = FastAPI(title="My Signals", version=APP_VERSION)
+app = FastAPI(title="Crypto Pumping Signals", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,9 +41,9 @@ app.include_router(legacy_router)
 @app.get("/health")
 def health():
     return {
-        "message": "My Signals API",
+        "message": "Crypto Pumping Signals API",
         "version": APP_VERSION,
-        "app": "my-signals",
+        "app": "crypto-pumping-signals",
         "prefix": APP_PREFIX or "/",
         "embedded_in_pumpingbot": False,
     }
@@ -60,6 +60,6 @@ if APP_PREFIX:
 async def on_startup():
     start_device_care_scanner()
     print(
-        f"[My Signals] Standalone service v{APP_VERSION} "
+        f"[CPS] Standalone service v{APP_VERSION} "
         f"prefix={APP_PREFIX or '/'} scanner started"
     )

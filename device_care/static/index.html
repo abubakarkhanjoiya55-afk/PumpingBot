@@ -3,37 +3,103 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#07070d">
+  <meta name="theme-color" content="#061018">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="My Signals">
+  <meta name="apple-mobile-web-app-title" content="Crypto Pumping Signals">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <title>My Signals</title>
+  <title>Crypto Pumping Signals</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
     :root {
-      --bg: #07070d;
-      --card: rgba(18, 18, 30, 0.85);
-      --border: rgba(99, 102, 241, 0.18);
-      --text: #eef0ff;
-      --muted: #7c7f9a;
-      --blue: #60a5fa;
+      --bg: #061018;
+      --bg2: #0a1a24;
+      --card: rgba(10, 28, 38, 0.78);
+      --border: rgba(45, 212, 191, 0.16);
+      --text: #e8f4f2;
+      --muted: #7a9aa3;
+      --accent: #2dd4bf;
+      --accent2: #38bdf8;
       --green: #34d399;
-      --red: #f87171;
+      --red: #fb7185;
       --amber: #fbbf24;
-      --purple: #a78bfa;
+      --ink: #042f2e;
+      --glow: rgba(45, 212, 191, 0.28);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-family: 'DM Sans', system-ui, sans-serif;
       background: var(--bg);
       background-image:
-        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(99,102,241,0.22), transparent),
-        radial-gradient(ellipse 60% 40% at 100% 0%, rgba(52,211,153,0.08), transparent);
+        radial-gradient(ellipse 90% 55% at 10% -10%, rgba(56,189,248,0.18), transparent 55%),
+        radial-gradient(ellipse 70% 45% at 100% 0%, rgba(45,212,191,0.14), transparent 50%),
+        linear-gradient(180deg, #061018 0%, #0a1620 40%, #07141c 100%);
       color: var(--text);
       min-height: 100vh;
       padding: 14px;
       padding-bottom: calc(20px + env(safe-area-inset-bottom));
+      -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, .sym, .brand-mark {
+      font-family: 'Syne', 'DM Sans', sans-serif;
+      letter-spacing: -0.03em;
+    }
+    @keyframes riseIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes shimmer {
+      0% { background-position: 0% 50%; }
+      100% { background-position: 100% 50%; }
+    }
+    .card { animation: riseIn 0.35s ease both; }
+    .logo {
+      background: linear-gradient(135deg, #0f766e, #0369a1) !important;
+      box-shadow: 0 8px 32px var(--glow) !important;
+      border-color: rgba(45,212,191,0.35) !important;
+    }
+    .activate-btn, .btn-gold {
+      background: linear-gradient(135deg, #0d9488, #0284c7) !important;
+      box-shadow: 0 5px 22px rgba(13,148,136,0.35) !important;
+    }
+    .reasons-box {
+      margin-top: 8px; padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(45,212,191,0.06);
+      border: 1px solid rgba(45,212,191,0.18);
+      font-size: 0.74rem; line-height: 1.55; color: #b6e4dc;
+    }
+    .reasons-box b { color: var(--accent); display:block; margin-bottom: 4px; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+    .reasons-box li { margin-left: 1.1em; margin-bottom: 3px; }
+
+    .logo img {
+      width: 100%; height: 100%; object-fit: cover; border-radius: 14px;
+      display: block;
+    }
+    .update-banner {
+      display: none; position: sticky; top: 36px; z-index: 60;
+      margin: 0 0 12px; padding: 12px 14px;
+      background: linear-gradient(135deg, rgba(13,148,136,0.95), rgba(2,132,199,0.92));
+      border: 1px solid rgba(253,230,138,0.35);
+      border-radius: 14px; color: #ecfeff;
+      box-shadow: 0 10px 28px rgba(13,148,136,0.28);
+      animation: riseIn 0.35s ease both;
+    }
+    .update-banner.show { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .update-banner .ub-text { flex: 1; min-width: 180px; font-size: 0.82rem; line-height: 1.4; font-weight: 600; }
+    .update-banner button {
+      border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer;
+      font-weight: 800; font-size: 0.8rem;
+    }
+    .update-banner .ub-go { background: #fbbf24; color: #111; }
+    .update-banner .ub-later { background: rgba(255,255,255,0.12); color: #ecfeff; }
+
+    .strategy-tag {
+      display: inline-block; margin-top: 6px; font-size: 0.68rem; font-weight: 700;
+      padding: 3px 8px; border-radius: 6px;
+      background: rgba(56,189,248,0.12); color: #7dd3fc;
+      border: 1px solid rgba(56,189,248,0.25);
     }
 
     .header { text-align: center; padding: 10px 0 14px; }
@@ -411,11 +477,17 @@
     </div>
   </div>
 
+  <div class="update-banner" id="updateBanner" role="status" aria-live="polite">
+    <div class="ub-text">Naya update ready hai — app delete nahi hogi. Tap karke latest version chalu karo.</div>
+    <button type="button" class="ub-go" id="updateNowBtn">Update Now</button>
+    <button type="button" class="ub-later" id="updateLaterBtn">Baad mein</button>
+  </div>
+
   <!-- LOGIN / REGISTER -->
   <section class="auth-screen" id="authScreen">
     <div class="header" style="padding-top:0">
-      <div class="logo">📡</div>
-      <h1>My Signals</h1>
+      <div class="logo"><img src="icon-192.png" alt="Crypto Pumping Signals" width="56" height="56"></div>
+      <h1>Crypto Pumping Signals</h1>
       <p class="sub" id="authSubtitle">24h FREE trial · then $10 / 30 days</p>
     </div>
     <div class="auth-tabs">
@@ -475,16 +547,16 @@
     </div>
   </div>
   <div class="nav-pills" id="mainNav">
-    <button type="button" class="on" data-view="signals" id="navSignals">📡 Signals</button>
+    <button type="button" class="on" data-view="signals" id="navSignals">Signals</button>
     <button type="button" data-view="referral" id="navReferral">🎁 Referral</button>
     <button type="button" data-view="admin" id="navAdmin" class="hidden">⚡ Admin</button>
   </div>
 
   <div id="signalsView">
   <div class="header">
-    <div class="logo">⚙️</div>
-    <h1>My Signals</h1>
-    <p class="sub">MEXC Futures · simple candles · Doji@support · S/R retest · Triangle break</p>
+    <div class="logo"><img src="icon-192.png" alt="Crypto Pumping Signals" width="56" height="56"></div>
+    <h1>Crypto Pumping Signals</h1>
+    <p class="sub">1H · 4H · 1D · Smart Money Concepts · pro breakouts</p>
   </div>
   <div class="trial-banner hidden" id="trialBanner">
     🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
@@ -509,11 +581,11 @@
 
   <section class="tf-section" aria-label="Timeframe toggles">
     <div class="section-title" style="margin-bottom:10px;">Signal timeframes</div>
-    <p class="tf-note">Trades: <b>1D support Doji/Hammer+green</b> · <b>S/R break→retest</b> · <b>Triangle break up/down</b>. Chart = simple candles (no line draw).</p>
+    <p class="tf-note">Focus: <b>1H · 4H · 1D</b> Range breakouts + <b>SMC</b> (BOS / CHoCH / Order Block / FVG / Liquidity). Har trade ki mukammal wazahat.</p>
     <div class="tf-toggle-row" id="tfToggleRow">
       <button type="button" class="tf-toggle" data-tf="5m">5m</button>
       <button type="button" class="tf-toggle" data-tf="15m">15m</button>
-      <button type="button" class="tf-toggle" data-tf="1h">1H</button>
+      <button type="button" class="tf-toggle on" data-tf="1h">1H</button>
       <button type="button" class="tf-toggle on" data-tf="4H">4H</button>
       <button type="button" class="tf-toggle on" data-tf="D1">1D</button>
       <button type="button" class="tf-toggle" data-tf="1W">1W</button>
@@ -542,10 +614,10 @@
       <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
       <div class="scan-detail" id="scanDetail">Loading...</div>
       <div class="tf-pills">
-        <span class="tf-pill">Simple chart</span>
-        <span class="tf-pill">Doji@support</span>
-        <span class="tf-pill">S/R retest</span>
-        <span class="tf-pill">Triangle break</span>
+        <span class="tf-pill">1H 4H 1D</span>
+        <span class="tf-pill">SMC</span>
+        <span class="tf-pill">BOS · OB · FVG</span>
+        <span class="tf-pill">Range Break</span>
       </div>
     </div>
     <div class="stat-card">
@@ -574,7 +646,7 @@
     <div class="empty" id="empty">
       <div class="empty-icon">📡</div>
       Abhi koi alert nahi — scan chal raha hai<br>
-      <span style="font-size:0.75rem;color:#3a3a50">Simple candles · Doji@support · S/R retest · Triangle break</span>
+      <span style="font-size:0.75rem;color:#3a3a50">1H/4H/1D breakouts · SMC strategies · full trade thesis</span>
     </div>
   </div>
 
@@ -1405,7 +1477,7 @@
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
         const mode = s.morningWindow ? ' · subah D1 zor' : '';
-        liveText.textContent = `${s.totalCoins || '?'} coins · 4H/1D LIVE${mode}`;
+        liveText.textContent = `${s.totalCoins || '?'} coins · CPS 1H/4H/1D${mode}`;
       }
 
       let detail = '';
@@ -1523,12 +1595,30 @@
              <div class="lvl tp"><div class="lbl">TP</div><div class="val">${a.tp ?? '—'}</div></div>
            </div>`
         : '';
-      const adviceHtml = a.advice
-        ? `<div class="meta" style="margin-top:6px;color:#93c5fd"><b>Detail:</b> ${a.advice}</div>`
+      const reasons = Array.isArray(a.reasons) ? a.reasons : [];
+      const reasonsHtml = reasons.length
+        ? `<div class="reasons-box"><b>Trade basis — kyun ye trade</b><ul>${
+            reasons.map((r) => `<li>${r}</li>`).join('')
+          }</ul></div>`
+        : (a.advice
+          ? `<div class="reasons-box"><b>Trade basis</b>${a.advice}</div>`
+          : '');
+      const strategyHtml = a.strategy
+        ? `<span class="strategy-tag">${a.strategy}</span>`
+        : '';
+      const adviceHtml = (a.advice && reasons.length)
+        ? `<div class="meta" style="margin-top:6px;color:#99f6e4"><b>Thesis:</b> ${a.advice}</div>`
         : '';
       const chartHtml = a.chartImage
         ? `<img class="alert-chart" alt="breakout chart" src="data:image/png;base64,${a.chartImage}" />`
         : '';
+      const smcSet = ['BOS','CHoCH','Order Block','Fair Value Gap','Liquidity Sweep','Equal Liquidity','Range Breakout'];
+      const isSmc = smcSet.includes(a.pattern);
+      if (isSmc) {
+        dirLabel = up
+          ? `▲ ${a.pattern} · LONG`
+          : `▼ ${a.pattern} · SHORT`;
+      }
       const c = document.createElement('div');
       c.className = 'card' + (up ? '' : ' down');
       c.dataset.alertId = id;
@@ -1539,8 +1629,10 @@
         </div>
         <div class="dir ${up ? 'up' : 'down'}">${dirLabel}</div>
         <div class="pattern">${a.pattern || 'Alert'}${a.patternDetail ? ' · ' + a.patternDetail : ''}</div>
+        ${strategyHtml}
         ${scoreHtml}
         ${levelsHtml}
+        ${reasonsHtml}
         ${adviceHtml}
         ${chartHtml}
         <div class="meta">
@@ -1859,10 +1951,62 @@
       activateBtn.disabled = false;
     }
 
+    const APP_BUILD = '4.1.0';
+    let waitingWorker = null;
+    const updateBanner = document.getElementById('updateBanner');
+    function showUpdateBanner() {
+      if (updateBanner) updateBanner.classList.add('show');
+    }
+    function hideUpdateBanner() {
+      if (updateBanner) updateBanner.classList.remove('show');
+    }
+    async function applyAppUpdate() {
+      if (waitingWorker) {
+        waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+        return;
+      }
+      // Fallback soft reload — installed PWA stays, just refreshes shell
+      location.reload();
+    }
+    document.getElementById('updateNowBtn')?.addEventListener('click', applyAppUpdate);
+    document.getElementById('updateLaterBtn')?.addEventListener('click', hideUpdateBanner);
+
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' })
-        .then(registration => { serviceWorkerRegistration = registration; })
+        .then((registration) => {
+          serviceWorkerRegistration = registration;
+          // Periodic update check — pehli app destroy nahi hoti
+          setInterval(() => registration.update().catch(() => {}), 5 * 60 * 1000);
+          registration.addEventListener('updatefound', () => {
+            const nw = registration.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', () => {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                waitingWorker = nw;
+                showUpdateBanner();
+              }
+            });
+          });
+          if (registration.waiting && navigator.serviceWorker.controller) {
+            waitingWorker = registration.waiting;
+            showUpdateBanner();
+          }
+        })
         .catch(e => console.warn('Service worker register nahi hua', e));
+
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        // Soft reload — home-screen app same rehti hai, sirf content update
+        location.reload();
+      });
+      navigator.serviceWorker.addEventListener('message', (ev) => {
+        const msg = ev.data || {};
+        if (msg.type === 'SW_ACTIVATED') {
+          hideUpdateBanner();
+        }
+      });
     }
 
     activateBtn.addEventListener('click', activateAlarm);
