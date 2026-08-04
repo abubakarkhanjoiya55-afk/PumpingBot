@@ -596,7 +596,7 @@ async function ensureMovieSynced() {
 
 async function desktopPickFile(key, kind) {
   try {
-    // Prefer stable /api/desktop/pick (Edge app shell). pywebview optional legacy.
+    // Prefer stable /api/desktop/pick (PowerShell dialog). Native window stays open.
     let data = null;
     if (state.isDesktop || new URLSearchParams(location.search).get("desktop") === "1") {
       try {

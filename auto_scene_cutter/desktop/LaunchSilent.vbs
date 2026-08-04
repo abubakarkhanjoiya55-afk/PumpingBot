@@ -30,8 +30,8 @@ If Not fso.FileExists(script) Then
   WScript.Quit 1
 End If
 
-' Native window engine (WebView2 via pywebview) — not Edge browser tabs
-sh.Run """" & pythonw & """ -m pip install -q ""pywebview>=5.1""", 0, True
+' Native CapCut-style window: pywebview + pythonnet (WebView2) — NEVER Edge browser
+sh.Run """" & pythonw & """ -m pip install -q ""pywebview>=5.1"" ""pythonnet>=3.0.3""", 0, True
 
 ffmpegBin = root & "\tools\ffmpeg\bin"
 If fso.FolderExists(ffmpegBin) Then

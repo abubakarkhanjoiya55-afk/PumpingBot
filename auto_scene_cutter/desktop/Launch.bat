@@ -28,7 +28,7 @@ echo WARNING: ffmpeg nahi mila - Auto Cut fail ho sakta hai.
 echo.
 :AFTER_FFMPEG
 
-python -m pip install -q "pywebview>=5.1" >nul 2>&1
+python -m pip install -q "pywebview>=5.1" "pythonnet>=3.0.3" >nul 2>&1
 set SCENECUT_DESKTOP=1
 python desktop_app.py
 if errorlevel 1 goto APP_ERR

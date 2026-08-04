@@ -94,7 +94,7 @@ jobs:
 
             1. Download **SceneCutPro-Setup.exe**
             2. Double-click → Install
-            3. Desktop shortcut **SceneCut Pro+** opens the app window (no CMD)
+            3. Desktop shortcut **SceneCut Pro+** opens a CapCut-style native window (not Edge browser)
 
             Live demo: https://scenecut-production.up.railway.app/
           files: auto_scene_cutter/releases/SceneCutPro-Setup.exe

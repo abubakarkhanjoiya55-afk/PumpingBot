@@ -1,11 +1,12 @@
 """
 SceneCut Pro+ — CapCut-style desktop launcher
 
-FIXED behavior (do not thrash):
-  1) Native pywebview window titled "SceneCut Pro+" (NOT Microsoft Edge UI)
-  2) Always opens APP HOME at /d  (never marketing landing)
-  3) Local server for fast 2GB cuts + PowerShell file pick
-  4) Edge --app only if native window fails to start
+LOCKED (do not thrash again):
+  1) Native pywebview window titled "SceneCut Pro+"  → CapCut / VLC feel
+  2) NEVER open Microsoft Edge / Chrome browser automatically
+  3) Always open APP HOME at /d  (website landing stays on / only)
+  4) Local Flask for 2GB cuts + PowerShell file pick
+  5) Edge --app= ONLY with --edge-fallback (emergency debug)
 
 Usage:
   python desktop_app.py
@@ -19,7 +20,6 @@ import socket
 import sys
 import threading
 import time
-import webbrowser
 from pathlib import Path
 
 from flask import jsonify, request
@@ -47,6 +47,17 @@ def _install_dir() -> Path:
     return BASE_DIR
 
 
+def _log(msg: str) -> None:
+    line = f"[SceneCut] {msg}"
+    print(line)
+    try:
+        log_path = _install_dir() / "desktop.log"
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _bootstrap_sync(force: bool = False) -> bool:
     if getattr(sys, "frozen", False):
         return False
@@ -55,10 +66,10 @@ def _bootstrap_sync(force: bool = False) -> bool:
 
         result = sync_from_live(_install_dir(), force=force)
         if result.get("updated"):
-            print(f"  Updated ({result.get('files')} files) — restarting…")
+            _log(f"Updated ({result.get('files')} files) — restarting…")
             return True
     except Exception as exc:  # noqa: BLE001
-        print(f"  Update skip: {exc}")
+        _log(f"Update skip: {exc}")
     return False
 
 
@@ -91,6 +102,8 @@ from desktop_shell import (  # noqa: E402
     pick_file_path,
     start_native_gui,
     wait_app_process,
+    webview2_runtime_ok,
+    win_message,
 )
 from desktop_update import (  # noqa: E402
     ensure_webview_installed,
@@ -213,7 +226,7 @@ def api_desktop():
             "ok": True,
             "desktop": True,
             "native_window": bool(_WINDOW_LIVE),
-            "shell": "native" if _WINDOW_LIVE else ("edge-fallback" if APP_PROC else "server"),
+            "shell": "native" if _WINDOW_LIVE else ("edge-debug" if APP_PROC else "server"),
             "local_fast": True,
             "entry": "/d",
             "live_url": live_base(),
@@ -284,14 +297,37 @@ def _prepend_bundled_ffmpeg() -> None:
             return
 
 
+def _native_fail_message() -> str:
+    setup = (
+        "https://scenecut-production.up.railway.app/download"
+    )
+    return (
+        "SceneCut Pro+ native window start nahi hua.\n\n"
+        "Yeh Microsoft Edge browser NAHI kholega (CapCut jaisa app chahiye).\n\n"
+        "Fix:\n"
+        "1) Naya Setup.exe install karo:\n"
+        f"   {setup}\n"
+        "2) Phir Desktop shortcut 'SceneCut Pro+' se kholo.\n\n"
+        "Agar WebView2 missing ho to Windows Update / Edge update chalao."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     global APP_PROC, WINDOW, _WINDOW_LIVE
 
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
-    parser.add_argument("--browser", action="store_true")
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Debug only: open default browser (not for students)",
+    )
     parser.add_argument("--no-update", action="store_true")
-    parser.add_argument("--edge-fallback", action="store_true")
+    parser.add_argument(
+        "--edge-fallback",
+        action="store_true",
+        help="Emergency only: Edge --app= (looks like browser)",
+    )
     args = parser.parse_args(argv)
 
     if not args.no_update and not getattr(sys, "frozen", False):
@@ -310,22 +346,25 @@ def main(argv: list[str] | None = None) -> int:
         pass
 
     port = _free_port(args.port)
-    # STABLE desktop entry — app home only (never landing page)
+    # STABLE desktop entry — app home only (never marketing landing)
     url = f"http://127.0.0.1:{port}/d"
 
     print("")
     print("  SceneCut Pro+")
-    print("  CapCut-style native window")
+    print("  CapCut-style native window (not Edge)")
     print(f"  {url}")
     print("")
 
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     thread.start()
     if not _wait_until_up(port):
-        print("ERROR: server start fail")
+        win_message("SceneCut Pro+", "Local server start fail. Dubara try karo.", 0x10)
         return 1
 
+    # Debug browser path only
     if args.browser:
+        import webbrowser
+
         webbrowser.open(url)
         try:
             while not SHUTDOWN.is_set():
@@ -336,35 +375,42 @@ def main(argv: list[str] | None = None) -> int:
 
     force_edge = args.edge_fallback or os.environ.get("SCENECUT_EDGE_FALLBACK") == "1"
 
+    # ——— PRIMARY: native CapCut-like window ———
     if not force_edge:
-        ensure_webview_installed()
+        ready = ensure_webview_installed()
+        if not ready:
+            _log("pywebview/pythonnet install failed")
+        if not webview2_runtime_ok():
+            _log("WebView2 runtime not detected")
+
         WINDOW, ok = open_native_window(url, on_closed=_mark_window_dead)
         if ok and WINDOW is not None:
             _WINDOW_LIVE = True
-            print("  Window: native (WebView2)")
+            _log("Window: native WebView2 (SceneCut Pro+)")
             if start_native_gui():
                 return 0
-            # start failed after create
             _mark_window_dead()
-            print("  Native GUI start fail — trying fallback…")
+            _log("Native GUI start failed")
 
-    # Fallback only
-    print("  Fallback: Edge/Chrome app window")
+        # Do NOT open Edge. Show clear fix message.
+        win_message("SceneCut Pro+", _native_fail_message(), 0x30)
+        return 2
+
+    # ——— Emergency Edge path (explicit flag only) ———
+    _log("EMERGENCY edge-fallback requested")
     APP_PROC = open_app_window(url)
     if APP_PROC is None:
-        webbrowser.open(url)
-        try:
-            while not SHUTDOWN.is_set():
-                time.sleep(0.25)
-        except KeyboardInterrupt:
-            pass
-    else:
-        try:
-            wait_app_process(APP_PROC, SHUTDOWN)
-        except KeyboardInterrupt:
-            SHUTDOWN.set()
-            _kill_app_proc()
-
+        win_message(
+            "SceneCut Pro+",
+            "Edge fallback bhi fail. Naya Setup.exe install karo.",
+            0x10,
+        )
+        return 3
+    try:
+        wait_app_process(APP_PROC, SHUTDOWN)
+    except KeyboardInterrupt:
+        SHUTDOWN.set()
+        _kill_app_proc()
     return 0
 
 

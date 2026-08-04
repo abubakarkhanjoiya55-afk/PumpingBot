@@ -189,21 +189,45 @@ def update_frozen_app(manifest: dict | None = None) -> dict:
 
 
 def ensure_webview_installed() -> bool:
-    try:
-        import webview  # noqa: F401
+    """Install/verify pywebview + pythonnet (needed for CapCut-like WebView2 window)."""
 
+    def _ok() -> bool:
+        try:
+            import webview  # noqa: F401
+
+            return True
+        except ImportError:
+            return False
+
+    if _ok():
+        # pythonnet often required for edgechromium on Windows
+        try:
+            import clr  # noqa: F401
+        except ImportError:
+            try:
+                subprocess.run(
+                    [sys_executable(), "-m", "pip", "install", "-q", "pythonnet>=3.0.3"],
+                    check=False,
+                    timeout=240,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return True
-    except ImportError:
-        pass
     try:
         subprocess.run(
-            [sys_executable(), "-m", "pip", "install", "-q", "pywebview"],
+            [
+                sys_executable(),
+                "-m",
+                "pip",
+                "install",
+                "-q",
+                "pywebview>=5.1",
+                "pythonnet>=3.0.3",
+            ],
             check=False,
-            timeout=180,
+            timeout=300,
         )
-        import webview  # noqa: F401
-
-        return True
+        return _ok()
     except Exception:  # noqa: BLE001
         return False
 

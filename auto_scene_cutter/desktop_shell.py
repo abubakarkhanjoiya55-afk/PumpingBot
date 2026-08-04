@@ -1,35 +1,23 @@
 """
-Desktop window helpers.
+Desktop window helpers — LOCKED contract (do not thrash):
 
-Primary: pywebview native window (CapCut-like, not a browser).
-Fallback: Edge/Chrome --app= only if native window cannot start.
-File pick: PowerShell OpenFileDialog (stable, no pywebview destroy bugs).
+  PRIMARY: pywebview + WebView2 native window titled "SceneCut Pro+"
+           (CapCut-like app window — NOT Microsoft Edge browser UI)
+  NEVER auto-open msedge.exe / chrome.exe / webbrowser
+  File pick: PowerShell OpenFileDialog (stable, no pywebview destroy bugs)
+
+Edge --app= exists only behind explicit force_edge=True for emergency debug.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Callable
 
-_EDGE_CANDIDATES = (
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-    os.path.expandvars(r"%PROGRAMFILES(X86)%\Microsoft\Edge\Application\msedge.exe"),
-    os.path.expandvars(r"%PROGRAMFILES%\Microsoft\Edge\Application\msedge.exe"),
-    os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe"),
-)
-_CHROME_CANDIDATES = (
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
-    os.path.expandvars(r"%PROGRAMFILES(X86)%\Google\Chrome\Application\chrome.exe"),
-    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-)
 
 _FILTERS = {
     "movie": "Video files|*.mp4;*.mov;*.mkv;*.webm;*.avi;*.m4v|All files|*.*",
@@ -39,37 +27,68 @@ _FILTERS = {
 }
 
 
-def _first_existing(paths: tuple[str, ...]) -> str | None:
-    for p in paths:
-        if p and Path(p).is_file():
-            return p
-    for name in ("msedge", "msedge.exe", "chrome", "chrome.exe"):
-        found = shutil.which(name)
-        if found:
-            return found
-    return None
+def win_message(title: str, text: str, icon: int = 0x40) -> None:
+    """Show a native Windows MessageBox (no browser)."""
+    if not sys.platform.startswith("win"):
+        print(f"{title}: {text}")
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, str(text), str(title), int(icon))
+    except Exception:  # noqa: BLE001
+        print(f"{title}: {text}")
 
 
-def find_app_browser() -> tuple[str, str] | None:
-    edge = _first_existing(_EDGE_CANDIDATES)
-    if edge:
-        return edge, "edge"
-    chrome = _first_existing(_CHROME_CANDIDATES)
-    if chrome:
-        return chrome, "chrome"
-    return None
+def webview2_runtime_ok() -> bool:
+    """True if WebView2 Evergreen runtime looks installed."""
+    if not sys.platform.startswith("win"):
+        return True
+    try:
+        import winreg
+    except ImportError:
+        return True
+    keys = (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+    )
+    for hive, path in keys:
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                ver, _ = winreg.QueryValueEx(key, "pv")
+                if ver and str(ver) not in ("", "0.0.0.0"):
+                    return True
+        except OSError:
+            continue
+    # Edge browser install usually ships WebView2 bits too
+    for p in (
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ):
+        if Path(p).is_file():
+            return True
+    return False
 
 
 def open_native_window(url: str, on_closed: Callable[[], None] | None = None):
     """
-    Create a CapCut-like native window with pywebview.
+    Create CapCut-like native window (WebView2 engine, custom title bar).
     Returns (window, True) or (None, False).
-    Caller must call webview.start() afterward.
+    Caller must call start_native_gui() afterward.
     """
     try:
         import webview
     except ImportError:
         return None, False
+
+    # Keep WebView2 profile under our app folder (not Edge browser profile)
+    profile = Path(os.environ.get("LOCALAPPDATA") or ".") / "SceneCutProPlus" / "webview2"
+    try:
+        profile.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("WEBVIEW2_USER_DATA_FOLDER", str(profile))
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
         window = webview.create_window(
@@ -81,14 +100,13 @@ def open_native_window(url: str, on_closed: Callable[[], None] | None = None):
             background_color="#0e0e10",
             text_select=True,
             confirm_close=False,
+            easy_drag=False,
         )
-
         if on_closed is not None:
             try:
                 window.events.closed += on_closed
             except Exception:  # noqa: BLE001
                 pass
-
         return window, True
     except Exception:  # noqa: BLE001
         return None, False
@@ -100,24 +118,34 @@ def start_native_gui() -> bool:
         import webview
     except ImportError:
         return False
-    try:
-        # edgechromium = real app window using WebView2 (not Edge browser UI)
-        webview.start(gui="edgechromium", debug=False)
-        return True
-    except Exception:
+
+    # Prefer WebView2 host (looks like real app). Never use Edge browser chrome.
+    for gui in ("edgechromium", None):
         try:
-            webview.start(debug=False)
+            if gui:
+                webview.start(gui=gui, debug=False, private_mode=False)
+            else:
+                webview.start(debug=False, private_mode=False)
             return True
         except Exception:  # noqa: BLE001
-            return False
+            continue
+    return False
 
 
 def open_app_window(url: str) -> subprocess.Popen | None:
-    """Last-resort Edge/Chrome --app window (only if native fails)."""
-    found = find_app_browser()
-    if not found:
+    """
+    EMERGENCY ONLY — Edge/Chrome --app= (looks like browser).
+    Do not call from normal launch path.
+    """
+    candidates = (
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    )
+    exe = next((p for p in candidates if Path(p).is_file()), None)
+    if not exe:
         return None
-    exe, _kind = found
     profile = Path(os.environ.get("LOCALAPPDATA") or ".") / "SceneCutProPlus" / "app_profile"
     profile.mkdir(parents=True, exist_ok=True)
     args = [
@@ -129,9 +157,7 @@ def open_app_window(url: str) -> subprocess.Popen | None:
         "--disable-extensions",
         "--new-window",
     ]
-    creation = 0
-    if sys.platform.startswith("win"):
-        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    creation = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform.startswith("win") else 0
     try:
         return subprocess.Popen(args, close_fds=True, creationflags=creation)
     except Exception:  # noqa: BLE001

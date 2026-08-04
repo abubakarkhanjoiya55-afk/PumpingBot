@@ -1,10 +1,10 @@
 {
-  "version": "1.5.0",
-  "title": "CapCut-style native window (final)",
+  "version": "1.5.1",
+  "title": "Native desktop window only — no Edge",
   "notes": [
-    "Desktop ab native SceneCut window — Microsoft Edge browser nahi",
-    "Hamesha App Home (/d) — landing page desktop mein nahi",
-    "2GB local cut + stable file pick — setup ek dafa, phir updates andar"
+    "CapCut jaisa native SceneCut window — Microsoft Edge browser auto-open band",
+    "Hamesha App Home (/d) — website landing sirf browser pe",
+    "pywebview + pythonnet + WebView2 — Setup ek dafa, phir andar updates"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"

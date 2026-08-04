@@ -503,9 +503,13 @@ SETUP_EXE_URL = os.environ.get(
 
 @app.get("/")
 def index():
-    """Professional marketing landing. Desktop app opens /home instead."""
-    if request.args.get("desktop") == "1":
-        return redirect("/home?desktop=1")
+    """Website marketing landing only.
+
+    Desktop app NEVER lands here — launcher always opens /d.
+    If desktop mode somehow hits /, bounce to app home.
+    """
+    if os.environ.get("SCENECUT_DESKTOP") == "1" or request.args.get("desktop") == "1":
+        return redirect("/d")
     return _html("landing.html", setup_url=SETUP_EXE_URL)
 
 
@@ -1329,7 +1333,7 @@ def _load_version_manifest() -> dict:
     data["ok"] = True
     data["app"] = "SceneCut Pro+"
     data["asset_v"] = _asset_version()
-    data["live_home"] = "/home"
+    data["live_home"] = "/d"
     data["setup_exe"] = data.get("setup_url") or SETUP_EXE_URL
     data["setup_url"] = data.get("setup_url") or SETUP_EXE_URL
     return data
