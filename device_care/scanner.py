@@ -1,5 +1,5 @@
 """
-Joy Signals (My Signals) — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
+Crypto Pumping Signals (My Signals) — MEXC Futures multi-TF alert PWA (trade nahi, sirf alarm).
 Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
@@ -36,7 +36,8 @@ from device_care.smc import (
     scan_smc,
 )
 
-APP_NAME = "Joy Signals"
+APP_NAME = "Crypto Pumping Signals"
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.0")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -106,7 +107,7 @@ hourly_symbols: dict[str, list[str]] = {}  # hour_key -> ["BTC_USDT|4H", ...]
 hourly_alert_count: dict[str, int] = {}
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "pumpingbot-signals")
 NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
-NTFY_TITLE = os.environ.get("NTFY_TITLE", "Joy Signals")
+NTFY_TITLE = os.environ.get("NTFY_TITLE", "Crypto Pumping Signals")
 
 FUTURES_BASE = "https://contract.mexc.com"
 CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
@@ -194,6 +195,7 @@ scan_stats = {
     "alertsTotal": 0,
     "errors": 0,
     "appName": APP_NAME,
+    "appVersion": APP_VERSION,
     "timeframes": [tf[1] for tf in TIMEFRAMES],
     "tfButtons": TF_BUTTONS,
     "enabledTfs": dict(enabled_tfs),
@@ -1970,7 +1972,7 @@ async def _scan_one_symbol(
 
 async def scan_loop():
     print(
-        "[Joy Signals] Strategy: 1H/4H/1D Range+SMC "
+        "[Crypto Pumping Signals] Strategy: 1H/4H/1D Range+SMC "
         "(BOS/CHoCH/OB/FVG/Liq) · Triangle · S/R→retest · 1D Doji@support"
     )
     limits = httpx.Limits(max_connections=SCAN_CONCURRENCY + 4, max_keepalive_connections=SCAN_CONCURRENCY)
@@ -2020,7 +2022,7 @@ async def scan_loop():
                 scan_stats["totalCoins"] = len(symbols)
                 mode = "MORNING HTF first" if morning else "parallel SMC multi-TF"
                 print(
-                    f"[Joy Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
+                    f"[Crypto Pumping Signals] Scanning {len(symbols)} futures × {len(tf_order)} TFs "
                     f"({mode}, concurrency={SCAN_CONCURRENCY}, used={hourly_alerts_used(started)}/"
                     f"{MAX_ALERTS_PER_HOUR}, wait={wait_sec}s)..."
                 )
@@ -2079,7 +2081,7 @@ async def scan_loop():
                     live_tag = "LIVE" if alert.get("live") else "CLOSED"
                     new_alerts += 1
                     print(
-                        f"[Joy Signals] {sym} {tf_label} "
+                        f"[Crypto Pumping Signals] {sym} {tf_label} "
                         f"{alert.get('pattern')} {alert.get('direction')} "
                         f"{live_tag} score={alert.get('score')} "
                         f"strategy={alert.get('strategy')} "
@@ -2098,7 +2100,7 @@ async def scan_loop():
                 scan_stats["hourlyAlertsUsed"] = hourly_alerts_used()
                 scan_stats["hourlySlotsLeft"] = hourly_slots_remaining()
                 print(
-                    f"[Joy Signals] Scan done — {new_alerts} new alert(s) "
+                    f"[Crypto Pumping Signals] Scan done — {new_alerts} new alert(s) "
                     f"(candidates={len(candidates)}, "
                     f"{scan_stats['lastDurationSec']}s, "
                     f"hour={hourly_alerts_used()}/{MAX_ALERTS_PER_HOUR})"
@@ -2106,7 +2108,7 @@ async def scan_loop():
                 _broadcast_stats()
             except Exception as e:
                 scan_stats["phase"] = "error"
-                print(f"[Joy Signals] scan error: {e}")
+                print(f"[Crypto Pumping Signals] scan error: {e}")
                 _broadcast_stats()
 
             for remaining in range(wait_sec, 0, -1):
@@ -2142,4 +2144,4 @@ def start_device_care_scanner():
     _load_diversify()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Joy Signals] PWA → /my-signals (1H/4H/1D SMC + breakouts, parallel scan)")
+    print("[Crypto Pumping Signals] PWA → /my-signals (1H/4H/1D SMC + breakouts, parallel scan)")

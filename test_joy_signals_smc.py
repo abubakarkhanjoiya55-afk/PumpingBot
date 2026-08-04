@@ -1,4 +1,4 @@
-"""Tests for Joy Signals SMC + range breakout detectors."""
+"""Tests for Crypto Pumping Signals SMC + range breakout detectors."""
 import unittest
 
 from device_care.smc import (

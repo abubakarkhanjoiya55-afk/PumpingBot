@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#061018">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Joy Signals">
+  <meta name="apple-mobile-web-app-title" content="Crypto Pumping Signals">
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <title>Joy Signals</title>
+  <title>Crypto Pumping Signals</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
     :root {
@@ -72,6 +72,29 @@
     }
     .reasons-box b { color: var(--accent); display:block; margin-bottom: 4px; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
     .reasons-box li { margin-left: 1.1em; margin-bottom: 3px; }
+
+    .logo img {
+      width: 100%; height: 100%; object-fit: cover; border-radius: 14px;
+      display: block;
+    }
+    .update-banner {
+      display: none; position: sticky; top: 36px; z-index: 60;
+      margin: 0 0 12px; padding: 12px 14px;
+      background: linear-gradient(135deg, rgba(13,148,136,0.95), rgba(2,132,199,0.92));
+      border: 1px solid rgba(253,230,138,0.35);
+      border-radius: 14px; color: #ecfeff;
+      box-shadow: 0 10px 28px rgba(13,148,136,0.28);
+      animation: riseIn 0.35s ease both;
+    }
+    .update-banner.show { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .update-banner .ub-text { flex: 1; min-width: 180px; font-size: 0.82rem; line-height: 1.4; font-weight: 600; }
+    .update-banner button {
+      border: none; border-radius: 10px; padding: 10px 14px; cursor: pointer;
+      font-weight: 800; font-size: 0.8rem;
+    }
+    .update-banner .ub-go { background: #fbbf24; color: #111; }
+    .update-banner .ub-later { background: rgba(255,255,255,0.12); color: #ecfeff; }
+
     .strategy-tag {
       display: inline-block; margin-top: 6px; font-size: 0.68rem; font-weight: 700;
       padding: 3px 8px; border-radius: 6px;
@@ -454,11 +477,17 @@
     </div>
   </div>
 
+  <div class="update-banner" id="updateBanner" role="status" aria-live="polite">
+    <div class="ub-text">Naya update ready hai — app delete nahi hogi. Tap karke latest version chalu karo.</div>
+    <button type="button" class="ub-go" id="updateNowBtn">Update Now</button>
+    <button type="button" class="ub-later" id="updateLaterBtn">Baad mein</button>
+  </div>
+
   <!-- LOGIN / REGISTER -->
   <section class="auth-screen" id="authScreen">
     <div class="header" style="padding-top:0">
-      <div class="logo">◈</div>
-      <h1>Joy Signals</h1>
+      <div class="logo"><img src="icon-192.png" alt="Crypto Pumping Signals" width="56" height="56"></div>
+      <h1>Crypto Pumping Signals</h1>
       <p class="sub" id="authSubtitle">24h FREE trial · then $10 / 30 days</p>
     </div>
     <div class="auth-tabs">
@@ -518,15 +547,15 @@
     </div>
   </div>
   <div class="nav-pills" id="mainNav">
-    <button type="button" class="on" data-view="signals" id="navSignals">◈ Signals</button>
+    <button type="button" class="on" data-view="signals" id="navSignals">Signals</button>
     <button type="button" data-view="referral" id="navReferral">🎁 Referral</button>
     <button type="button" data-view="admin" id="navAdmin" class="hidden">⚡ Admin</button>
   </div>
 
   <div id="signalsView">
   <div class="header">
-    <div class="logo">◈</div>
-    <h1>Joy Signals</h1>
+    <div class="logo"><img src="icon-192.png" alt="Crypto Pumping Signals" width="56" height="56"></div>
+    <h1>Crypto Pumping Signals</h1>
     <p class="sub">1H · 4H · 1D · Smart Money Concepts · pro breakouts</p>
   </div>
   <div class="trial-banner hidden" id="trialBanner">
@@ -1448,7 +1477,7 @@
         badge.className = 'phase-badge waiting';
         dot.className = 'dot wait';
         const mode = s.morningWindow ? ' · subah D1 zor' : '';
-        liveText.textContent = `${s.totalCoins || '?'} coins · 1H/4H/1D SMC${mode}`;
+        liveText.textContent = `${s.totalCoins || '?'} coins · CPS 1H/4H/1D${mode}`;
       }
 
       let detail = '';
@@ -1922,10 +1951,62 @@
       activateBtn.disabled = false;
     }
 
+    const APP_BUILD = '4.1.0';
+    let waitingWorker = null;
+    const updateBanner = document.getElementById('updateBanner');
+    function showUpdateBanner() {
+      if (updateBanner) updateBanner.classList.add('show');
+    }
+    function hideUpdateBanner() {
+      if (updateBanner) updateBanner.classList.remove('show');
+    }
+    async function applyAppUpdate() {
+      if (waitingWorker) {
+        waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+        return;
+      }
+      // Fallback soft reload — installed PWA stays, just refreshes shell
+      location.reload();
+    }
+    document.getElementById('updateNowBtn')?.addEventListener('click', applyAppUpdate);
+    document.getElementById('updateLaterBtn')?.addEventListener('click', hideUpdateBanner);
+
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' })
-        .then(registration => { serviceWorkerRegistration = registration; })
+        .then((registration) => {
+          serviceWorkerRegistration = registration;
+          // Periodic update check — pehli app destroy nahi hoti
+          setInterval(() => registration.update().catch(() => {}), 5 * 60 * 1000);
+          registration.addEventListener('updatefound', () => {
+            const nw = registration.installing;
+            if (!nw) return;
+            nw.addEventListener('statechange', () => {
+              if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+                waitingWorker = nw;
+                showUpdateBanner();
+              }
+            });
+          });
+          if (registration.waiting && navigator.serviceWorker.controller) {
+            waitingWorker = registration.waiting;
+            showUpdateBanner();
+          }
+        })
         .catch(e => console.warn('Service worker register nahi hua', e));
+
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (refreshing) return;
+        refreshing = true;
+        // Soft reload — home-screen app same rehti hai, sirf content update
+        location.reload();
+      });
+      navigator.serviceWorker.addEventListener('message', (ev) => {
+        const msg = ev.data || {};
+        if (msg.type === 'SW_ACTIVATED') {
+          hideUpdateBanner();
+        }
+      });
     }
 
     activateBtn.addEventListener('click', activateAlarm);

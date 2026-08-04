@@ -1,7 +1,7 @@
 {
-  "name": "Joy Signals",
-  "short_name": "Joy Signals",
-  "description": "1H · 4H · 1D breakouts + Smart Money Concepts alerts",
+  "name": "Crypto Pumping Signals",
+  "short_name": "CPS Signals",
+  "description": "1H · 4H · 1D crypto breakouts + Smart Money Concepts alerts",
   "id": "/my-signals/",
   "start_url": "./",
   "scope": "./",
@@ -21,6 +21,12 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

@@ -27,15 +27,14 @@ def verify_password(plain: str, hashed: str):
     )
 
 
-def create_access_token(data: dict):
+def create_access_token(data: dict, expires_minutes: int | None = None):
     to_encode = data.copy()
-
-    expire = datetime.utcnow() + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-
+    if expires_minutes is not None and int(expires_minutes) <= 0:
+        expire = datetime.utcnow() + timedelta(days=3650)
+    else:
+        minutes = ACCESS_TOKEN_EXPIRE_MINUTES if expires_minutes is None else int(expires_minutes)
+        expire = datetime.utcnow() + timedelta(minutes=minutes)
     to_encode.update({"exp": expire})
-
     return jwt.encode(
         to_encode,
         SECRET_KEY,

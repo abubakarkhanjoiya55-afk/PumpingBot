@@ -1,5 +1,5 @@
 """
-Smart Money Concepts (SMC) + HTF range breakouts for Joy / My Signals.
+Smart Money Concepts (SMC) + HTF range breakouts for Crypto Pumping Signals.
 
 Pro-trader toolkit (ICT / SMC style):
   - Break of Structure (BOS) / Change of Character (CHoCH)
