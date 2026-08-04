@@ -383,12 +383,19 @@ class PumpingAgent:
                     ticket = result["ticket"]
                     target = get_breakout_profit_target(
                         entry, trend, levels, lot, symbol, bridge, score)
+                    # target is USD; on cent books compare against profit/100
+                    is_cent_acc = bool(acc.get("is_cent"))
+                    bal_usd = (balance / 100.0) if is_cent_acc else float(balance)
+                    # Small accounts: don't require $5 TP — aim ~2–4% of equity
+                    if bal_usd > 0:
+                        target = min(float(target), max(0.8, bal_usd * 0.04))
                     print(f"[MASTER OPEN] {symbol} {trend} score={score} "
-                          f"lot={lot} ticket={ticket} tp~${target}")
+                          f"lot={lot} ticket={ticket} tp~${target:.2f} bal_usd~{bal_usd:.2f}")
 
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
                         "entry": entry, "sl": sl, "score": score,
+                        "atr": atr, "levels": levels, "tp_usd": target,
                         "opened_at": time.time(),
                     }
 
@@ -416,7 +423,6 @@ class PumpingAgent:
         """Simple TP/SL style exits for master; broadcast close."""
         from trading_engine import (
             get_profit_target, is_scalp_trade, get_locked_profit,
-            EARLY_LOSS_CUT_PCT, TRADE_MAX_LOSS_PCT,
         )
         live_tickets = {p["ticket"] for p in open_pos}
         # Detect broker-closed
@@ -433,22 +439,42 @@ class PumpingAgent:
         acc = self.mt5.account()
         balance = acc.get("balance") or 1000
         is_cent = bool(acc.get("is_cent"))
+        bal_usd = (balance / 100.0) if is_cent else float(balance)
         for pos in open_pos:
             ticket = pos["ticket"]
             meta = self._master_open.get(ticket) or {
                 "symbol": pos["symbol"], "side": "BUY" if pos["type"] == 0 else "SELL",
                 "score": 60, "lot": pos["volume"], "entry": pos["price_open"],
             }
-            profit = pos["profit"]
+            profit = float(pos["profit"] or 0)
             # Profit targets in trading_engine are USD; cent books report USC
             profit_usd = (profit / 100.0) if is_cent else profit
             score = meta.get("score", 60)
-            # Early loss cut (same currency as balance — OK as-is)
-            if profit < -(balance * EARLY_LOSS_CUT_PCT) or profit < -(balance * TRADE_MAX_LOSS_PCT):
+            age = time.time() - float(meta.get("opened_at") or time.time())
+
+            # Loss cut: was 0.25% (~$0.02 on $10) — spread alone killed every trade.
+            # Use ~1.2% of equity, min $0.80 / max 4% ; ignore first 8s (spread settle).
+            loss_limit_usd = min(max(bal_usd * 0.012, 0.80), max(bal_usd * 0.04, 0.80))
+            loss_limit = loss_limit_usd * 100.0 if is_cent else loss_limit_usd
+            if age >= 8 and profit <= -loss_limit:
                 self._master_close(ticket, meta, "LossCut")
                 continue
-            target = get_profit_target(score, 0, pos["symbol"], bridge)
-            if profit_usd >= target:
+
+            target = meta.get("tp_usd")
+            if target is None:
+                target = get_profit_target(
+                    score,
+                    meta.get("atr") or 0,
+                    pos["symbol"],
+                    bridge,
+                    entry_price=meta.get("entry"),
+                    trade_type=meta.get("side"),
+                    levels=meta.get("levels"),
+                    lot=meta.get("lot") or pos["volume"],
+                )
+                if bal_usd > 0:
+                    target = min(float(target), max(0.8, bal_usd * 0.04))
+            if profit_usd >= float(target):
                 self._master_close(ticket, meta, "TP")
                 continue
             if is_scalp_trade(score):
