@@ -238,6 +238,30 @@ class LocalMT5:
             "volume": float(volume),
         }
 
+    def clear_sl_tp(self, ticket: int) -> bool:
+        """Remove broker SL/TP from an open position (prevents auto loss exits)."""
+        mt5 = self._mt5
+        if not mt5:
+            return False
+        pos_list = mt5.positions_get(ticket=int(ticket))
+        if not pos_list:
+            return False
+        pos = pos_list[0]
+        if float(pos.sl or 0) == 0 and float(pos.tp or 0) == 0:
+            return True
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": pos.symbol,
+            "position": int(ticket),
+            "sl": 0.0,
+            "tp": 0.0,
+        }
+        result = mt5.order_send(request)
+        ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+        if ok:
+            print(f"[LOCAL MT5] cleared SL/TP ticket={ticket}")
+        return bool(ok)
+
     def close_position(self, ticket: int, comment: str = "PB_CLOSE") -> dict:
         mt5 = self._mt5
         pos_list = mt5.positions_get(ticket=ticket)

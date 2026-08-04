@@ -248,7 +248,8 @@ class PumpingAgent:
             symbol=symbol,
             side=side,
             volume=lot,
-            sl=local_sl,
+            sl=0.0,
+            tp=0.0,
             magic=BOT_MAGIC,
             comment=f"PB_COPY_M{master_ticket}"[:31],
         )
@@ -382,6 +383,13 @@ class PumpingAgent:
                                         sl_distance=abs(entry - sl_for_size))
                     if not lot:
                         continue
+                    # Tiny cent accounts: never oversized lots (stop-out risk)
+                    info = bridge.symbol_info(symbol)
+                    vmin = float(getattr(info, "volume_min", 0.01) or 0.01)
+                    bal_usd = (balance / 100.0) if acc.get("is_cent") else float(balance)
+                    if bal_usd < 50:
+                        lot = vmin
+                    lot = max(vmin, float(lot))
 
                     result = self.mt5.market_order(
                         symbol=symbol,
@@ -432,9 +440,7 @@ class PumpingAgent:
                 time.sleep(2)
 
     def _master_manage_positions(self, open_pos, bridge):
-        """Track positions only. No auto closes while MASTER_AUTO_CLOSE=False."""
-        from trading_engine import MASTER_AUTO_CLOSE, calc_margin_used, MARGIN_PROFIT_TRIGGER
-
+        """Never auto-close master trades — owner manages in MT5. Only sync DB."""
         live_tickets = {p["ticket"] for p in open_pos}
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
@@ -458,22 +464,11 @@ class PumpingAgent:
             }
             meta["last_profit"] = float(pos["profit"] or 0)
             self._master_open[ticket] = meta
-
-            if not MASTER_AUTO_CLOSE:
-                continue  # owner manages all exits in MT5
-
-            margin = meta.get("margin_used")
-            if margin is None:
-                margin = calc_margin_used(
-                    meta.get("lot") or pos["volume"],
-                    pos["symbol"],
-                    meta.get("entry") or pos["price_open"],
-                    bridge,
-                )
-                if margin:
-                    meta["margin_used"] = margin
-            if margin and float(pos["profit"] or 0) >= float(margin) * float(MARGIN_PROFIT_TRIGGER):
-                self._master_close(ticket, meta, "Margin100")
+            # Strip any leftover broker SL/TP so nothing auto-closes in loss
+            try:
+                self.mt5.clear_sl_tp(ticket)
+            except Exception:
+                pass
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
         result = self.mt5.close_position(ticket, comment=f"PB_{reason}"[:31])
