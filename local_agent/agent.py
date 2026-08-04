@@ -307,12 +307,13 @@ class PumpingAgent:
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
             MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
-            MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
+            MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC, SESSION_MAX_DD_PCT,
         )
 
-        print(f"[MASTER] Local M1 strategy started (no MetaAPI) bot_active={self.bot_active}")
+        print(f"[MASTER] SAFE MODE: max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s no_auto_close")
         last_close = {}
-        # Tiny shim so trading_engine can call copy_rates / symbol helpers
+        session_start_equity = None
+        entries_halted = False
         bridge = MasterMT5Bridge(self.mt5)
 
         while not self._stop.is_set():
@@ -322,23 +323,37 @@ class PumpingAgent:
                     continue
 
                 open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
-                # Manage closes → notify server for fan-out
                 self._master_manage_positions(open_pos, bridge)
 
-                # Start Bot OFF → manage open trades only, no new entries
                 if not self.bot_active:
                     time.sleep(SCAN_INTERVAL_SEC)
+                    continue
+
+                acc = self.mt5.account()
+                balance = acc.get("balance") or 0
+                equity = float(acc.get("equity") or balance or 0)
+                if session_start_equity is None and equity > 0:
+                    session_start_equity = equity
+                if session_start_equity and equity < session_start_equity * (1.0 - SESSION_MAX_DD_PCT):
+                    if not entries_halted:
+                        print(
+                            f"[MASTER HALT] equity {equity:.2f} hit {SESSION_MAX_DD_PCT*100:.0f}% DD "
+                            f"from {session_start_equity:.2f} — STOPPING NEW ENTRIES"
+                        )
+                        entries_halted = True
+                    time.sleep(10)
                     continue
 
                 if len(open_pos) >= MAX_OPEN_TRADES:
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
-                acc = self.mt5.account()
-                balance = acc.get("balance") or 0
                 now = time.time()
+                opened_this_cycle = False
 
                 for symbol in self.symbols:
+                    if opened_this_cycle:
+                        break
                     open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
                     if len(open_pos) >= MAX_OPEN_TRADES:
                         break
@@ -360,8 +375,6 @@ class PumpingAgent:
                     levels = analysis.get("breakout_levels") or {}
                     tick = analysis["tick"]
                     entry = tick.ask if trend == "BUY" else tick.bid
-                    # SL only for lot sizing math — master orders go WITHOUT broker SL
-                    # (owner manages losses manually in MT5)
                     sl_for_size = calc_breakout_sl(symbol, trend, entry, levels, bridge)
                     if sl_for_size is None:
                         sl_for_size = entry - atr if trend == "BUY" else entry + atr
@@ -377,30 +390,28 @@ class PumpingAgent:
                         sl=0.0,
                         tp=0.0,
                         magic=BOT_MAGIC,
-                        comment=f"M1_S{int(score)}"[:31],
+                        comment=f"PB_S{int(score)}"[:31],
                     )
                     if not result.get("ok"):
                         print(f"[MASTER FAIL] {symbol} {result}")
                         continue
 
                     ticket = result["ticket"]
-                    from trading_engine import calc_margin_used, MARGIN_PROFIT_TRIGGER
+                    from trading_engine import calc_margin_used
                     margin = calc_margin_used(lot, symbol, entry, bridge) or 0
                     print(
-                        f"[MASTER OPEN] {symbol} {trend} score={score} "
-                        f"lot={lot} ticket={ticket} margin={margin:.2f} "
-                        f"tp@100%={margin * MARGIN_PROFIT_TRIGGER:.2f} NO_BROKER_SL "
-                        f"src={analysis.get('entry_source')} h1={analysis.get('h1_bias')}"
+                        f"[MASTER OPEN] {symbol} {trend} score={score} lot={lot} "
+                        f"ticket={ticket} margin={margin:.2f} NO_SL NO_AUTO_CLOSE"
                     )
-
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
                         "entry": entry, "sl": None, "score": score,
                         "atr": atr, "levels": levels, "margin_used": margin,
                         "opened_at": time.time(),
                     }
+                    last_close[symbol] = time.time()
+                    opened_this_cycle = True
 
-                    # Instant fan-out via server hub
                     self.send({
                         "type": "master_trade_open",
                         "master_ticket": ticket,
@@ -421,11 +432,10 @@ class PumpingAgent:
                 time.sleep(2)
 
     def _master_manage_positions(self, open_pos, bridge):
-        """Master exits: NO auto loss-cut (owner manages). Close at 100% of margin."""
-        from trading_engine import calc_margin_used, MARGIN_PROFIT_TRIGGER
+        """Track positions only. No auto closes while MASTER_AUTO_CLOSE=False."""
+        from trading_engine import MASTER_AUTO_CLOSE, calc_margin_used, MARGIN_PROFIT_TRIGGER
 
         live_tickets = {p["ticket"] for p in open_pos}
-        # Detect broker/manual closes — snapshot profit from last known meta if any
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
                 info = self._master_open.pop(ticket)
@@ -437,8 +447,6 @@ class PumpingAgent:
                     "profit": info.get("last_profit"),
                 })
 
-        acc = self.mt5.account()
-        is_cent = bool(acc.get("is_cent"))
         for pos in open_pos:
             ticket = pos["ticket"]
             meta = self._master_open.get(ticket) or {
@@ -448,11 +456,12 @@ class PumpingAgent:
                 "lot": pos["volume"],
                 "entry": pos["price_open"],
             }
-            profit = float(pos["profit"] or 0)
-            meta["last_profit"] = profit
+            meta["last_profit"] = float(pos["profit"] or 0)
             self._master_open[ticket] = meta
 
-            # Margin + profit must be same currency (USC on cent books)
+            if not MASTER_AUTO_CLOSE:
+                continue  # owner manages all exits in MT5
+
             margin = meta.get("margin_used")
             if margin is None:
                 margin = calc_margin_used(
@@ -463,16 +472,7 @@ class PumpingAgent:
                 )
                 if margin:
                     meta["margin_used"] = margin
-
-            if not margin or margin <= 0:
-                continue
-
-            # 100% of margin profit → auto close (LossCut disabled for master)
-            if profit >= float(margin) * float(MARGIN_PROFIT_TRIGGER):
-                print(
-                    f"[MASTER TP] ticket={ticket} profit={profit:.2f} "
-                    f"margin={margin:.2f} ({'USC' if is_cent else 'USD'})"
-                )
+            if margin and float(pos["profit"] or 0) >= float(margin) * float(MARGIN_PROFIT_TRIGGER):
                 self._master_close(ticket, meta, "Margin100")
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
