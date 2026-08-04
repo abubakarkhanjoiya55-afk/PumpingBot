@@ -122,6 +122,12 @@ def sync_from_live(install_dir: Path, force: bool = False) -> dict:
     manifest = remote_manifest()
     ver = str(manifest.get("version") or manifest.get("asset_v") or "")
     cur = local_version(install_dir)
+    # Marker can lie (old bug stamped remote version without updating files).
+    # Missing home/boot UI ⇒ always resync.
+    home_ok = (install_dir / "templates" / "home.html").is_file()
+    boot_ok = (install_dir / "desktop_boot.html").is_file()
+    if not home_ok or not boot_ok:
+        force = True
     if not force and ver and cur and ver == cur:
         return {"ok": True, "updated": False, "version": ver, "reason": "current"}
 

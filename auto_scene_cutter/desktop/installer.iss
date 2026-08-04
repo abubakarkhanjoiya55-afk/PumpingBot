@@ -1,6 +1,6 @@
 ; SceneCut Pro+ — Inno Setup script (built by GitHub Actions on Windows)
 #define MyAppName "SceneCut Pro+"
-#define MyAppVersion "1.5.2"
+#define MyAppVersion "1.5.3"
 #define MyAppPublisher "SceneCut"
 #define MyAppExeName "SceneCutProPlus.exe"
 
@@ -30,6 +30,11 @@ Name: "desktopicon"; Description: "Create a &Desktop shortcut"; GroupDescription
 
 [Files]
 Source: "..\dist\SceneCutProPlus\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Clear stale version marker so desktop never thinks an old broken install is "current"
+[InstallDelete]
+Type: files; Name: "{app}\.scenecut_version"
+Type: files; Name: "{localappdata}\SceneCutProPlus\.scenecut_version"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

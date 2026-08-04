@@ -17,6 +17,7 @@ ROOT = Path(SPECPATH).resolve().parent
 datas = [
     (str(ROOT / "templates"), "templates"),
     (str(ROOT / "static"), "static"),
+    (str(ROOT / "desktop_boot.html"), "."),
     (str(ROOT / "sample_movie.srt"), "."),
     (str(ROOT / "sample_movie_cluster.srt"), "."),
     (str(ROOT / "sample_narration.srt"), "."),

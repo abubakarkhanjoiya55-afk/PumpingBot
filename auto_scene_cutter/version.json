@@ -1,10 +1,10 @@
 {
-  "version": "1.5.2",
-  "title": "Fix black Not Found screen on start",
+  "version": "1.5.3",
+  "title": "Embedded CapCut home — black screen killed",
   "notes": [
-    "Black Flask 404 screen fix — /start guaranteed home",
-    "Native SceneCut window + CapCut New project home",
-    "Purani install auto-repair / naya Setup.exe"
+    "Home ab window ke andar embed — Flask 404 black screen mumkin nahi",
+    "Purani Setup khud silent update ho kar 1.5.3 ban jati hai",
+    "Version stamp bug fix — stale install ab stuck nahi rehti"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"

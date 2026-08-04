@@ -71,9 +71,15 @@ def webview2_runtime_ok() -> bool:
     return False
 
 
-def open_native_window(url: str, on_closed: Callable[[], None] | None = None):
+def open_native_window(
+    url: str | None = None,
+    on_closed: Callable[[], None] | None = None,
+    html: str | None = None,
+):
     """
     Create CapCut-like native window (WebView2 engine, custom title bar).
+
+    Prefer html= for first paint so a bad local URL can never show black 404.
     Returns (window, True) or (None, False).
     Caller must call start_native_gui() afterward.
     """
@@ -90,24 +96,41 @@ def open_native_window(url: str, on_closed: Callable[[], None] | None = None):
     except Exception:  # noqa: BLE001
         pass
 
+    common = dict(
+        width=1360,
+        height=860,
+        min_size=(1100, 700),
+        background_color="#0e0e10",
+        text_select=True,
+        confirm_close=False,
+        easy_drag=False,
+    )
     try:
-        window = webview.create_window(
-            "SceneCut Pro+",
-            url,
-            width=1360,
-            height=860,
-            min_size=(1100, 700),
-            background_color="#0e0e10",
-            text_select=True,
-            confirm_close=False,
-            easy_drag=False,
-        )
+        # html= embeds CapCut home directly — never depends on Flask /d route
+        if html:
+            window = webview.create_window("SceneCut Pro+", html=html, **common)
+        else:
+            window = webview.create_window("SceneCut Pro+", url or "about:blank", **common)
         if on_closed is not None:
             try:
                 window.events.closed += on_closed
             except Exception:  # noqa: BLE001
                 pass
         return window, True
+    except TypeError:
+        # Older pywebview without html= support
+        if not url:
+            return None, False
+        try:
+            window = webview.create_window("SceneCut Pro+", url, **common)
+            if on_closed is not None:
+                try:
+                    window.events.closed += on_closed
+                except Exception:  # noqa: BLE001
+                    pass
+            return window, True
+        except Exception:  # noqa: BLE001
+            return None, False
     except Exception:  # noqa: BLE001
         return None, False
 

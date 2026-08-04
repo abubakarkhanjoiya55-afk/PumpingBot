@@ -4,9 +4,10 @@ SceneCut Pro+ — CapCut-style desktop launcher
 LOCKED (do not thrash again):
   1) Native pywebview window titled "SceneCut Pro+"  → CapCut / VLC feel
   2) NEVER open Microsoft Edge / Chrome browser automatically
-  3) Always open APP HOME (/start or /d) — never marketing landing, never Flask 404
+  3) First paint = embedded CapCut home HTML (never black Flask 404)
   4) Local Flask for 2GB cuts + PowerShell file pick
-  5) Edge --app= ONLY with --edge-fallback (emergency debug)
+  5) Do NOT stamp remote version unless files actually updated
+  6) Edge --app= ONLY with --edge-fallback (emergency debug)
 
 Usage:
   python desktop_app.py
@@ -15,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import sys
@@ -185,6 +187,23 @@ def _install_guaranteed_desktop_routes() -> None:
 _install_guaranteed_desktop_routes()
 
 
+def _bundled_version() -> str:
+    try:
+        raw = json.loads((BASE_DIR / "version.json").read_text(encoding="utf-8"))
+        return str(raw.get("version") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _clear_version_marker() -> None:
+    try:
+        marker = _install_dir() / ".scenecut_version"
+        if marker.exists():
+            marker.unlink()
+    except OSError:
+        pass
+
+
 def _repair_stale_install_if_needed() -> None:
     """If home template /d route missing, force live sync once (python installs)."""
     if getattr(sys, "frozen", False):
@@ -201,9 +220,49 @@ def _repair_stale_install_if_needed() -> None:
             broken = True
     if not broken:
         return
-    _log("Stale/broken install detected — force sync from live")
+    _log("Stale/broken install detected — clearing version marker + force sync")
+    _clear_version_marker()
     if _bootstrap_sync(force=True):
         _reexec()
+
+
+def _boot_html(port: int) -> str:
+    """Embedded CapCut home — first paint never depends on Flask routes."""
+    path = BASE_DIR / "desktop_boot.html"
+    if path.is_file():
+        text = path.read_text(encoding="utf-8")
+    else:
+        text = _FALLBACK_HOME.replace('href="/editor"', f'href="http://127.0.0.1:{port}/editor"')
+        return text
+    return text.replace("__SC_PORT__", str(port))
+
+
+def _maybe_upgrade_frozen() -> bool:
+    """
+    If this Setup.exe is older than live, download+run new Setup silently.
+    Returns True if upgrade started (caller should exit).
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    try:
+        man = remote_manifest()
+        remote = str(man.get("version") or "").strip()
+        local = _bundled_version()
+        if not remote or not local or remote == local:
+            return False
+        _log(f"Frozen upgrade {local} → {remote}")
+        win_message(
+            "SceneCut Pro+",
+            f"New version {remote} mil gaya.\nUpdate install ho raha hai — 20-40 sec wait…",
+            0x40,
+        )
+        result = update_frozen_app(man)
+        if result.get("ok"):
+            return True
+        _log(f"Frozen upgrade fail: {result}")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"Frozen upgrade skip: {exc}")
+    return False
 
 
 def _free_port(preferred: int) -> int:
@@ -439,46 +498,49 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.no_update and not getattr(sys, "frozen", False):
-        if not (_install_dir() / "templates" / "home.html").exists():
-            if _bootstrap_sync(force=True):
-                _reexec()
-        _repair_stale_install_if_needed()
+    if not args.no_update:
+        if getattr(sys, "frozen", False):
+            if _maybe_upgrade_frozen():
+                # Silent Setup running — exit so installer can replace files
+                time.sleep(1.0)
+                return 0
+        else:
+            if not (_install_dir() / "templates" / "home.html").exists():
+                _clear_version_marker()
+                if _bootstrap_sync(force=True):
+                    _reexec()
+            _repair_stale_install_if_needed()
 
     _ensure_dirs()
     _prepend_bundled_ffmpeg()
-    try:
-        man = remote_manifest()
-        ver = str(man.get("version") or "")
-        if ver:
-            write_local_version(_install_dir(), ver)
-    except Exception:  # noqa: BLE001
-        pass
+    # Only record the version that is actually bundled/running — never stamp remote
+    # version onto a stale install (that caused permanent black 404).
+    bundled = _bundled_version()
+    if bundled:
+        write_local_version(_install_dir(), bundled)
 
     port = _free_port(args.port)
+    boot = _boot_html(port)
+    url = f"http://127.0.0.1:{port}/start"
 
     print("")
     print("  SceneCut Pro+")
-    print("  CapCut-style native window (not Edge)")
+    print("  CapCut-style native window (embedded home)")
+    print(f"  engine: {url}")
     print("")
+    _log(f"Boot HTML bytes={len(boot)} engine={url}")
 
     thread = threading.Thread(target=_run_server, args=(port,), daemon=True)
     thread.start()
-    if not _wait_until_up(port):
-        win_message("SceneCut Pro+", "Local server start fail. Dubara try karo.", 0x10)
-        return 1
-
-    # Probe real working home — fixes black Flask 404 screen
-    url = _pick_entry_url(port)
-    _log(f"Entry: {url}")
-    print(f"  {url}")
-    print("")
+    # Don't block UI on slow server — embedded home shows immediately.
+    # Still wait briefly so New project API is likely ready.
+    _wait_until_up(port, timeout=8.0)
 
     # Debug browser path only
     if args.browser:
         import webbrowser
 
-        webbrowser.open(url)
+        webbrowser.open(_pick_entry_url(port) if _wait_until_up(port, 2.0) else url)
         try:
             while not SHUTDOWN.is_set():
                 time.sleep(0.25)
@@ -488,7 +550,7 @@ def main(argv: list[str] | None = None) -> int:
 
     force_edge = args.edge_fallback or os.environ.get("SCENECUT_EDGE_FALLBACK") == "1"
 
-    # ——— PRIMARY: native CapCut-like window ———
+    # ——— PRIMARY: native CapCut-like window with EMBEDDED home ———
     if not force_edge:
         ready = ensure_webview_installed()
         if not ready:
@@ -496,10 +558,14 @@ def main(argv: list[str] | None = None) -> int:
         if not webview2_runtime_ok():
             _log("WebView2 runtime not detected")
 
-        WINDOW, ok = open_native_window(url, on_closed=_mark_window_dead)
+        WINDOW, ok = open_native_window(
+            url=url,
+            html=boot,
+            on_closed=_mark_window_dead,
+        )
         if ok and WINDOW is not None:
             _WINDOW_LIVE = True
-            _log("Window: native WebView2 (SceneCut Pro+)")
+            _log("Window: native WebView2 + embedded CapCut home")
             if start_native_gui():
                 return 0
             _mark_window_dead()

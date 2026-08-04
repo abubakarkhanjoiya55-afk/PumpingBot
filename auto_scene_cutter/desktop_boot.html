@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SceneCut Pro+</title>
+  <style>
+    :root {
+      --bg: #0e0e10;
+      --text: #f5f5f7;
+      --muted: #8e8e9a;
+      --accent: #8b5cf6;
+      --panel: #1c1c1e;
+      --line: #2e2e34;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      color: var(--text);
+      font-family: "Segoe UI", "Avenir Next", "Helvetica Neue", sans-serif;
+      background: var(--bg);
+    }
+    .bg {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(900px 520px at 18% -8%, rgba(139, 92, 246, 0.28), transparent 58%),
+        radial-gradient(700px 480px at 92% 12%, rgba(56, 189, 248, 0.12), transparent 55%),
+        linear-gradient(180deg, #121218 0%, #0e0e10 42%, #0a0a0c 100%);
+    }
+    .top, .main { position: relative; z-index: 1; }
+    .top {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 28px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+    .mark {
+      width: 32px; height: 32px; border-radius: 9px;
+      display: grid; place-items: center;
+      background: linear-gradient(135deg, #8b5cf6, #6366f1);
+    }
+    .main {
+      flex: 1; display: flex; flex-direction: column; align-items: flex-start;
+      justify-content: center; padding: 48px 56px 80px; min-height: calc(100vh - 64px);
+    }
+    .kicker { color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
+      font-size: 12px; margin: 0 0 10px; }
+    h1 { font-size: clamp(40px, 6vw, 64px); margin: 0 0 12px; letter-spacing: -.03em; }
+    .sub { color: var(--muted); max-width: 420px; margin: 0 0 28px; line-height: 1.5; }
+    .ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+    button {
+      border: 0; cursor: pointer; font: inherit; font-weight: 650;
+      border-radius: 12px; padding: 14px 20px;
+    }
+    .primary { background: var(--accent); color: #fff; }
+    .primary:hover { filter: brightness(1.08); }
+    .secondary { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+    .status { margin-top: 22px; color: var(--muted); font-size: 13px; min-height: 1.2em; }
+    .modal[hidden] { display: none !important; }
+    .modal {
+      position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+      background: rgba(0,0,0,.55);
+    }
+    .card {
+      width: min(420px, 92vw); background: var(--panel); border: 1px solid var(--line);
+      border-radius: 16px; padding: 22px;
+    }
+    .card h3 { margin: 0 0 8px; }
+    .card p { margin: 0 0 14px; color: var(--muted); }
+    .card input {
+      width: 100%; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line);
+      background: #121214; color: var(--text); font: inherit; margin-bottom: 14px;
+    }
+    .row { display: flex; justify-content: flex-end; gap: 8px; }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2.2">
+          <path d="M4 7h10l6 5-6 5H4V7z"/><path d="M9 7v10"/>
+        </svg>
+      </div>
+      <span>SceneCut Pro</span>
+    </div>
+  </header>
+  <main class="main">
+    <p class="kicker">AI Movie Explanation Editor</p>
+    <h1>SceneCut Pro</h1>
+    <p class="sub">Movie + SRT se scenes auto-cut — CapCut jaisi simple start.</p>
+    <div class="ctas">
+      <button type="button" class="primary" id="btnNew">+ New project</button>
+      <button type="button" class="secondary" id="btnOpen">Open project</button>
+    </div>
+    <div class="status" id="status">Starting local engine…</div>
+  </main>
+
+  <div class="modal" id="nameModal" hidden>
+    <div class="card">
+      <h3>New project</h3>
+      <p>Project ka naam likho</p>
+      <input id="nameInput" maxlength="80" placeholder="My Project 01" />
+      <div class="row">
+        <button type="button" class="secondary" id="btnCancel">Cancel</button>
+        <button type="button" class="primary" id="btnCreate">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const PORT = __SC_PORT__;
+      const BASE = "http://127.0.0.1:" + PORT;
+      const status = document.getElementById("status");
+      const modal = document.getElementById("nameModal");
+      const input = document.getElementById("nameInput");
+
+      function setStatus(t) { status.textContent = t || ""; }
+
+      async function ready(timeoutMs) {
+        const deadline = Date.now() + (timeoutMs || 20000);
+        while (Date.now() < deadline) {
+          try {
+            const r = await fetch(BASE + "/health", { cache: "no-store" });
+            if (r.ok) return true;
+          } catch (e) {}
+          await new Promise((res) => setTimeout(res, 200));
+        }
+        return false;
+      }
+
+      async function goEditor() {
+        setStatus("Opening editor…");
+        location.href = BASE + "/editor";
+      }
+
+      async function tryFullHome() {
+        try {
+          const r = await fetch(BASE + "/start", { cache: "no-store" });
+          const text = await r.text();
+          if (r.ok && text.indexOf("The requested URL was not found") === -1 && text.indexOf("SceneCut") !== -1) {
+            location.replace(BASE + "/start");
+            return true;
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      document.getElementById("btnNew").onclick = function () {
+        const n = new Date();
+        input.value = "My Project " + (n.getMonth() + 1) + "-" + n.getDate();
+        modal.hidden = false;
+        setTimeout(function () { input.focus(); input.select(); }, 30);
+      };
+      document.getElementById("btnOpen").onclick = async function () {
+        setStatus("Opening…");
+        location.href = BASE + "/editor";
+      };
+      document.getElementById("btnCancel").onclick = function () { modal.hidden = true; };
+      document.getElementById("btnCreate").onclick = async function () {
+        const name = (input.value || "").trim() || "Untitled Project";
+        modal.hidden = true;
+        setStatus("Creating project…");
+        try {
+          const res = await fetch(BASE + "/api/project/new", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name })
+          });
+          if (!res.ok) throw new Error("create fail");
+          await goEditor();
+        } catch (e) {
+          // Even if API fails, open editor so user is never stuck on black/404
+          location.href = BASE + "/editor";
+        }
+      };
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") document.getElementById("btnCreate").click();
+        if (e.key === "Escape") modal.hidden = true;
+      });
+
+      (async function boot() {
+        const ok = await ready(20000);
+        if (!ok) {
+          setStatus("Local engine slow — New project phir bhi try karo.");
+          return;
+        }
+        setStatus("Ready");
+        // Prefer full templated home when server actually has it
+        await tryFullHome();
+      })();
+    })();
+  </script>
+</body>
+</html>
