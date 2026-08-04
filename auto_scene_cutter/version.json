@@ -1,10 +1,10 @@
 {
-  "version": "1.5.4",
-  "title": "ffmpeg black console kill app fix",
+  "version": "1.5.5",
+  "title": "Auto Cut ffmpeg console — app close fix (final)",
   "notes": [
-    "Auto Cut pe ffmpeg black CMD band — ab silent background mein chalta hai",
-    "Us CMD ko band karne se app close hone wala bug fix",
-    "CapCut-style native window + embedded home pehle jaisa"
+    "Export/Auto Cut pe black ffmpeg CMD nahi khulega",
+    "Us window se app automatic close hone wala bug fix",
+    "Desktop pe ffmpeg hamesha silent background mein"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
   "released_at": "2026-08-04"
