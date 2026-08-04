@@ -102,6 +102,7 @@ class OrderBlockDisabledTests(unittest.TestCase):
     def test_order_block_flag_off_by_default(self):
         from device_care import scanner as sc
         self.assertFalse(sc.ENABLE_ORDER_BLOCK)
+        self.assertFalse(sc.ENABLE_EQUAL_LIQUIDITY)
 
     def test_scan_smc_skips_order_block_by_default(self):
         n = 30
@@ -120,10 +121,12 @@ class OrderBlockDisabledTests(unittest.TestCase):
         # But orchestrator default enable_ob=False
         hits = scan_smc(ohlc, timeframe="4H")
         self.assertFalse(any(h["pattern"] == "Order Block" for h in hits))
-        # And scan_ohlc must not emit OB
+        self.assertFalse(any(h["pattern"] == "Equal Liquidity" for h in hits))
+        # And scan_ohlc must not emit OB / Equal Liquidity
         from device_care.scanner import scan_ohlc
         out = scan_ohlc(ohlc, timeframe="4H")
         self.assertFalse(any(h["pattern"] == "Order Block" for h in out))
+        self.assertFalse(any(h["pattern"] == "Equal Liquidity" for h in out))
 
 
 class OrderBlockTests(unittest.TestCase):

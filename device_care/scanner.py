@@ -37,7 +37,7 @@ from device_care.smc import (
 )
 
 APP_NAME = "Crypto Pumping"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.2")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.3")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -122,6 +122,8 @@ ENABLE_SMC = os.environ.get("DC_ENABLE_SMC", "1") == "1"
 ENABLE_RANGE_BREAKOUT = os.environ.get("DC_ENABLE_RANGE", "1") == "1"
 # Order Block OFF — user: OB signals flop (wrong direction / SL hit)
 ENABLE_ORDER_BLOCK = os.environ.get("DC_ENABLE_OB", "0") == "1"
+# Equal Liquidity OFF — user: also flopping
+ENABLE_EQUAL_LIQUIDITY = os.environ.get("DC_ENABLE_EQ", "0") == "1"
 # Parallel kline fetches — speed
 SCAN_CONCURRENCY = int(os.environ.get("DC_SCAN_CONCURRENCY", "12"))
 # User kisi bhi TF ko on/off kar sakta hai
@@ -207,7 +209,6 @@ scan_stats = {
         "CHoCH",
         "Fair Value Gap",
         "Liquidity Sweep",
-        "Equal Liquidity",
         "Triangle Breakout",
         "Retest Complete",
         "Dragonfly Doji",
@@ -224,6 +225,7 @@ scan_stats = {
     },
     "smcEnabled": ENABLE_SMC,
     "orderBlockEnabled": ENABLE_ORDER_BLOCK,
+    "equalLiquidityEnabled": ENABLE_EQUAL_LIQUIDITY,
     "rangeBreakoutEnabled": ENABLE_RANGE_BREAKOUT,
     "chartStyle": "simple candles only (no tip/trendline draw)",
     "riskRules": {
@@ -1655,9 +1657,10 @@ def scan_ohlc(
             timeframe=tf,
             enable_range=ENABLE_RANGE_BREAKOUT,
             enable_ob=ENABLE_ORDER_BLOCK,
+            enable_eq=ENABLE_EQUAL_LIQUIDITY,
         ):
-            if smc_hit.get("pattern") == "Order Block":
-                continue  # hard block — never emit OB alerts
+            if smc_hit.get("pattern") in ("Order Block", "Equal Liquidity"):
+                continue  # hard block — never emit flopping pattern alerts
             key = (smc_hit["pattern"], smc_hit["direction"])
             if key in seen_patterns:
                 continue
@@ -1992,6 +1995,7 @@ async def scan_loop():
             scan_stats["enableTriangleBreak"] = ENABLE_TRIANGLE_BREAK
             scan_stats["smcEnabled"] = ENABLE_SMC
             scan_stats["orderBlockEnabled"] = ENABLE_ORDER_BLOCK
+            scan_stats["equalLiquidityEnabled"] = ENABLE_EQUAL_LIQUIDITY
             scan_stats["rangeBreakoutEnabled"] = ENABLE_RANGE_BREAKOUT
             scan_stats["enabledTfs"] = dict(enabled_tfs)
             scan_stats["confluenceTfs"] = list(CONFLUENCE_TFS)

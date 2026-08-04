@@ -1,6 +1,6 @@
 const BASE = self.registration.scope.replace(/\/$/, '').replace(self.location.origin, '') || "/my-signals";
-const CACHE = "cps-v4.1.2";
-const APP_VERSION = "4.1.2";
+const CACHE = "cps-v4.1.3";
+const APP_VERSION = "4.1.3";
 const PRECACHE = [
   `${BASE}/`,
   `${BASE}/manifest.json`,
