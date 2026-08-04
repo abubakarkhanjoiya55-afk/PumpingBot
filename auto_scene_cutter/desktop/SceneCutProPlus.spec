@@ -11,7 +11,8 @@ except Exception:  # noqa: BLE001
     collect_submodules = None
 
 block_cipher = None
-ROOT = Path(SPECPATH).resolve().parent.parent
+# SPECPATH = auto_scene_cutter/desktop  → app root is parent
+ROOT = Path(SPECPATH).resolve().parent
 
 datas = [
     (str(ROOT / "templates"), "templates"),
