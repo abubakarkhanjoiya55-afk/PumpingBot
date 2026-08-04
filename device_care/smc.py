@@ -766,10 +766,10 @@ def scan_smc(
     timeframe: str = "",
     enable_range: bool = True,
     enable_bos: bool = True,
-    enable_ob: bool = True,
+    enable_ob: bool = False,
     enable_fvg: bool = True,
     enable_liq: bool = True,
-    enable_eq: bool = True,
+    enable_eq: bool = False,
 ) -> list[dict]:
     """
     Run all SMC + range breakout detectors.

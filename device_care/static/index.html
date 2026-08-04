@@ -581,7 +581,7 @@
 
   <section class="tf-section" aria-label="Timeframe toggles">
     <div class="section-title" style="margin-bottom:10px;">Signal timeframes</div>
-    <p class="tf-note">Focus: <b>1H · 4H · 1D</b> Range breakouts + <b>SMC</b> (BOS / CHoCH / Order Block / FVG / Liquidity). Har trade ki mukammal wazahat.</p>
+    <p class="tf-note">Focus: <b>1H · 4H · 1D</b> Range breakouts + <b>SMC</b> (BOS / CHoCH / FVG / Liquidity Sweep). Order Block + Equal Liquidity OFF. Har trade ki mukammal wazahat.</p>
     <div class="tf-toggle-row" id="tfToggleRow">
       <button type="button" class="tf-toggle" data-tf="5m">5m</button>
       <button type="button" class="tf-toggle" data-tf="15m">15m</button>
@@ -616,7 +616,7 @@
       <div class="tf-pills">
         <span class="tf-pill">1H 4H 1D</span>
         <span class="tf-pill">SMC</span>
-        <span class="tf-pill">BOS · OB · FVG</span>
+        <span class="tf-pill">BOS · FVG · Liq</span>
         <span class="tf-pill">Range Break</span>
       </div>
     </div>
@@ -1951,7 +1951,7 @@
       activateBtn.disabled = false;
     }
 
-    const APP_BUILD = '4.1.1';
+    const APP_BUILD = '4.1.2';
     let waitingWorker = null;
     const updateBanner = document.getElementById('updateBanner');
     function showUpdateBanner() {
