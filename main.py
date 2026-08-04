@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.5"   # Master margin-100% TP; H1+M5 entries; agent open trades UI
+API_VERSION = "3.28.6"   # Start/Stop + trades UI hardened; safe-mode trading
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -445,14 +445,14 @@ class TradeOut(BaseModel):
     symbol: str
     trade_type: str
     lot: float
-    open_price: float
+    open_price: float = 0.0
     close_price: float | None = None
-    profit: float
-    score: float
+    profit: float | None = None
+    score: float = 0.0
     mt5_ticket: int | None = None
     master_ticket: int | None = None
     status: str
-    opened_at: datetime
+    opened_at: datetime | None = None
     closed_at: datetime | None = None
 
     class Config:
@@ -2494,9 +2494,9 @@ def start_bot(current_user: User = Depends(get_current_user),
     active_bots[current_user.id] = True
     current_user.bot_active = True
     current_user.vps_desired = True
-    if not current_user.vps_ready:
-        current_user.vps_status = current_user.vps_status or "starting"
+    current_user.vps_status = "starting"
     db.commit()
+    db.refresh(current_user)
 
     # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
@@ -2504,23 +2504,17 @@ def start_bot(current_user: User = Depends(get_current_user),
             a["user_id"] == current_user.id and a.get("ready")
             for a in agent_hub.list_agents()
         )
-        if is_master_user(current_user):
-            return {
-                "message": (
-                    "Master bot ON. VPS pe master agent auto chalega — "
-                    "group users sirf mobile se MT5 login karein, trades copy ho jayengi."
-                ),
-                "trading_backend": "vps_agent",
-                "agent_online": online,
-                "vps_status": current_user.vps_status,
-            }
+        msg = (
+            "Master bot ON. VPS pe master agent auto chalega."
+            if is_master_user(current_user)
+            else "Copy trading ON. VPS pe account connect ho raha hai."
+        )
         return {
-            "message": (
-                "Copy trading ON. Aapka account VPS pe connect ho raha hai — "
-                "mobile se bas itna kaafi. Jab status ready ho, master trades mirror hongi."
-            ),
+            "message": msg,
             "trading_backend": "vps_agent",
             "agent_online": online,
+            "bot_active": True,
+            "vps_desired": True,
             "vps_status": current_user.vps_status,
         }
 
@@ -2549,10 +2543,16 @@ def stop_bot(current_user: User = Depends(get_current_user),
     active_bots[current_user.id] = False
     current_user.bot_active = False
     current_user.vps_desired = False
-    current_user.vps_status = "stopped"
-    current_user.vps_ready = False
+    # Keep vps_ready until agent actually drops — UI uses bot_active for button
+    current_user.vps_status = "stopping"
     db.commit()
-    return {"message": "Bot stopped — VPS agent bhi band ho jayega"}
+    db.refresh(current_user)
+    return {
+        "message": "Bot stopped — VPS agent band ho jayega",
+        "bot_active": False,
+        "vps_desired": False,
+        "vps_status": current_user.vps_status,
+    }
 
 @app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
@@ -2562,65 +2562,61 @@ def get_signals(current_user: User = Depends(get_current_user),
 @app.get("/trades", response_model=list[TradeOut])
 def get_trades(current_user: User = Depends(get_current_user),
                db: Session = Depends(get_db)):
-    conn = user_connection(current_user)
-    if USE_METAAPI:
-        reconcile_trades_with_mt5(current_user.id, conn)
-    trades = db.query(Trade).filter(
-        Trade.user_id == current_user.id
-    ).order_by(
-        Trade.closed_at.desc().nullslast(),
-        Trade.opened_at.desc()
-    ).limit(500).all()
+    try:
+        conn = user_connection(current_user)
+        if USE_METAAPI:
+            reconcile_trades_with_mt5(current_user.id, conn)
+        trades = db.query(Trade).filter(
+            Trade.user_id == current_user.id
+        ).order_by(
+            Trade.opened_at.desc()
+        ).limit(500).all()
 
-    # Live P/L overlay from MetaAPI or agent heartbeat
-    live_map = {}
-    if conn and getattr(conn, "_ready", False):
-        live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
-        backfilled = 0
-        for t in trades:
-            if t.status == "open" and t.mt5_ticket:
-                p = live_map.get(_as_int_ticket(t.mt5_ticket))
-                if p:
-                    t.profit = round(p.profit, 2)
-            elif t.status == "closed" and backfilled < 25:
-                if backfill_closed_trade_profit(conn, t, db):
-                    backfilled += 1
-        if backfilled:
-            db.commit()
-    elif agent_mode_enabled() and not USE_METAAPI:
-        for p in agent_hub.get_positions(current_user.id) or []:
-            if isinstance(p, dict) and p.get("ticket"):
-                live_map[int(p["ticket"])] = p
+        live_map = {}
         is_cent = False
-        for a in agent_hub.list_agents():
-            if a["user_id"] == current_user.id:
-                is_cent = bool(a.get("is_cent"))
-                break
-        for t in trades:
-            if t.status == "open" and t.mt5_ticket:
-                p = live_map.get(_as_int_ticket(t.mt5_ticket))
-                if p:
-                    raw = float(p.get("profit") or 0)
-                    t.profit = round(raw / 100.0, 2) if is_cent else round(raw, 2)
-            elif t.status == "closed" and is_cent and t.profit is not None:
-                # Stored as USC from agent — expose USD for UI
-                # Heuristic: |profit| > 50 on tiny accounts usually USC already shown wrong;
-                # only scale if currency session is cent and abs looks like cents bookkeeping
-                pass
-
-    # Cent: convert stored USC profits to USD for display consistency
-    if agent_mode_enabled() and not USE_METAAPI:
-        is_cent = any(
-            a["user_id"] == current_user.id and a.get("is_cent")
-            for a in agent_hub.list_agents()
-        )
-        if is_cent:
+        if conn and getattr(conn, "_ready", False):
+            live_map = {_as_int_ticket(p.ticket): p for p in (conn.positions_get() or [])}
+            backfilled = 0
             for t in trades:
-                if t.profit is not None and t.status == "closed":
-                    # Agent writes USC; show USD
+                if t.status == "open" and t.mt5_ticket:
+                    p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                    if p:
+                        t.profit = round(float(p.profit), 2)
+                elif t.status == "closed" and backfilled < 25:
+                    if backfill_closed_trade_profit(conn, t, db):
+                        backfilled += 1
+            if backfilled:
+                db.commit()
+        elif agent_mode_enabled() and not USE_METAAPI:
+            for a in agent_hub.list_agents():
+                if a["user_id"] == current_user.id:
+                    is_cent = bool(a.get("is_cent"))
+                    break
+            for p in agent_hub.get_positions(current_user.id) or []:
+                if isinstance(p, dict) and p.get("ticket"):
+                    live_map[int(p["ticket"])] = p
+            for t in trades:
+                if t.status == "open" and t.mt5_ticket:
+                    p = live_map.get(_as_int_ticket(t.mt5_ticket))
+                    if p:
+                        raw = float(p.get("profit") or 0)
+                        t.profit = round(raw / 100.0, 2) if is_cent else round(raw, 2)
+                elif t.status == "closed" and is_cent and t.profit is not None:
+                    # Agent stores USC — expose USD for UI (in-memory only)
                     t.profit = round(float(t.profit) / 100.0, 2)
 
-    return trades
+        # Sort closed first by closed_at in Python (SQLite-safe)
+        def _sort_key(t):
+            if t.status == "closed" and t.closed_at:
+                return (0, t.closed_at)
+            return (1, t.opened_at or datetime.min)
+
+        trades = sorted(trades, key=_sort_key, reverse=True)
+        return trades
+    except Exception as e:
+        print(f"[TRADES] error: {e}")
+        # Never break the dashboard — return empty rather than 500
+        return []
 
 @app.get("/open_positions")
 def get_open_positions(current_user: User = Depends(get_current_user)):

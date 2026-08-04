@@ -310,6 +310,8 @@ export default function App() {
   const [positions, setPositions] = useState([]);
   const [mt5, setMt5] = useState({ mt5_login: '', mt5_password: '', mt5_server: '' });
   const [loading, setLoading] = useState(false);
+  const [botBusy, setBotBusy] = useState(false);
+  const [botMsg, setBotMsg] = useState('');
 
   const refresh = useCallback(async () => {
     if (!getToken()) return;
@@ -356,7 +358,37 @@ export default function App() {
   const isFollower = me?.role === 'follower';
   const subActive = isAdmin || me?.subscription_status === 'active' || me?.subscription_status === 'trial';
   const mt5Live = !!(me?.mt5_ready || me?.vps_ready);
-  const canStartBot = me?.mt5_connected && subActive && (mt5Live || isFollower || me?.trading_backend === 'vps_agent');
+  const canStartBot = !!(me?.mt5_connected && subActive);
+  const startBlockedReason = !me?.mt5_connected
+    ? 'Pehle MT5 connect karo'
+    : (!subActive ? 'Subscription active chahiye' : '');
+
+  const toggleBot = async (wantOn) => {
+    setBotBusy(true);
+    setBotMsg('');
+    try {
+      const res = wantOn ? await startBot() : await stopBot();
+      // Optimistic UI — don't wait for refresh if API already returned state
+      setMe(prev => prev ? {
+        ...prev,
+        bot_active: wantOn,
+        vps_desired: wantOn,
+        vps_status: wantOn ? 'starting' : 'stopping',
+      } : prev);
+      setBotMsg(res?.message || (wantOn ? 'Bot started' : 'Bot stopped'));
+      await refresh();
+    } catch (ex) {
+      const detail = ex.response?.data?.detail;
+      const msg = typeof detail === 'string' ? detail
+        : (Array.isArray(detail) ? detail.map(d => d.msg || d).join(', ') : null)
+        || ex.message
+        || 'Bot toggle failed';
+      setBotMsg(msg);
+      alert(msg);
+      await refresh();
+    }
+    setBotBusy(false);
+  };
 
   const posProfit = (trade) => {
     const byTicket = positions.find(x => Number(x.ticket) === Number(trade.mt5_ticket));
@@ -466,7 +498,11 @@ export default function App() {
                 <div className="bot-status">
                   <div className={`dot ${me?.bot_active ? '' : 'off'}`} />
                   <strong>{me?.bot_active ? 'Bot Running' : 'Bot Stopped'}</strong>
+                  {me?.vps_status && (
+                    <span className="vps-pill">{me.vps_status}</span>
+                  )}
                 </div>
+                {botMsg && <div className="signal-info">{botMsg}</div>}
                 {latestSignal && (
                   <div className="signal-info">
                     {latestSignal.symbol} | Signal: {latestSignal.signal_type} |
@@ -475,26 +511,30 @@ export default function App() {
                 )}
               </div>
               {me?.bot_active
-                ? <button className="btn-stop" onClick={async () => { await stopBot(); refresh(); }}>⏹ Stop Bot</button>
+                ? (
+                  <button
+                    className="btn-stop"
+                    disabled={botBusy}
+                    onClick={() => toggleBot(false)}
+                  >
+                    {botBusy ? 'Stopping…' : 'Stop Bot'}
+                  </button>
+                )
                 : (
                   <button
                     className="btn-start"
-                    disabled={!canStartBot}
-                    title={!subActive ? 'Active subscription required' : (!canStartBot ? 'Connect MT5 first' : '')}
-                    onClick={async () => {
-                      try {
-                        await startBot();
-                        refresh();
-                      } catch (ex) {
-                        alert(ex.response?.data?.detail || ex.message);
-                      }
-                    }}
+                    disabled={botBusy || !canStartBot}
+                    title={startBlockedReason}
+                    onClick={() => toggleBot(true)}
                   >
-                    ▶ Start Bot
+                    {botBusy ? 'Starting…' : 'Start Bot'}
                   </button>
                 )
               }
             </div>
+            {!canStartBot && !me?.bot_active && startBlockedReason && (
+              <div className="warn-banner">{startBlockedReason}</div>
+            )}
           </>
         )}
 
