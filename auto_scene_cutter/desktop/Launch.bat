@@ -25,6 +25,13 @@ if errorlevel 1 (
   echo.
 )
 
+REM Ensure native-window dep (pywebview) after updates
+python -c "import webview" >nul 2>&1
+if errorlevel 1 (
+  echo Installing app window support...
+  python -m pip install -q pywebview
+)
+
 set SCENECUT_DESKTOP=1
 python desktop_app.py
 if errorlevel 1 (

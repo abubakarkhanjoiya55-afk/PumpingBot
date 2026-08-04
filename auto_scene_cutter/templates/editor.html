@@ -12,7 +12,7 @@
   <div class="app">
     <header class="topbar">
       <div class="top-left">
-        <div class="brand">
+        <a class="brand" href="/" id="brandHome" title="Home">
           <div class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#fff" stroke-width="2.2">
               <path d="M4 7h10l6 5-6 5H4V7z"/><path d="M9 7v10"/>
@@ -22,7 +22,7 @@
             <strong>SceneCut Pro</strong>
             <span>AI Movie Explanation Editor</span>
           </div>
-        </div>
+        </a>
         <nav class="menubar" aria-label="Main menu">
           <button type="button" class="menu-item" id="btnMenuFile">File</button>
           <button type="button" class="menu-item" id="btnMenuEdit">Edit</button>
@@ -43,6 +43,8 @@
         <div class="menu-wrap">
           <button class="btn btn-ghost" id="btnMoreMenu" type="button" title="More">⋯</button>
           <div class="menu-drop" id="moreMenu" hidden>
+            <button type="button" id="btnHome">Home</button>
+            <button type="button" id="btnNewProject">New Project</button>
             <button type="button" id="btnSample">Load Sample</button>
             <button type="button" id="btnRerunCut">Re-run Auto Cut</button>
             <button type="button" id="btnOpenProject">Open Project</button>

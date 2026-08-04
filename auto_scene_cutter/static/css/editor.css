@@ -44,7 +44,11 @@ body {
   background: #141416;
 }
 .top-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
-.brand { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.brand {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  text-decoration: none; color: inherit; cursor: pointer;
+}
+.brand:hover .brand-text strong { color: var(--accent-hi); }
 .brand-mark {
   width: 30px; height: 30px; border-radius: 8px;
   background: linear-gradient(145deg, #9b74ff, #6d28d9);

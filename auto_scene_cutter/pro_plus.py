@@ -340,6 +340,21 @@ class JobProgress:
             self._state["error"] = error
             self._state["message"] = error
 
+    def reset(self) -> None:
+        with self._lock:
+            self._state.update(
+                {
+                    "status": "idle",
+                    "stage": None,
+                    "message": "",
+                    "current": 0,
+                    "total": 0,
+                    "percent": 0,
+                    "error": None,
+                    "result": None,
+                }
+            )
+
 
 def cut_plan_count(match_plan: list[dict]) -> int:
     """How many ffmpeg segments a match_plan will produce."""

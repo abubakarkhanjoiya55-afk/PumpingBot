@@ -1246,7 +1246,8 @@ async function refreshRecentProjects() {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "recent-item";
-      btn.innerHTML = `<strong>${p.filename}</strong><span>${p.meta || ""}</span>`;
+      const title = p.name || p.filename;
+      btn.innerHTML = `<strong>${title}</strong><span>${p.meta || ""}</span>`;
       btn.addEventListener("click", () => loadProjectByFilename(p.filename));
       box.appendChild(btn);
     });
@@ -1338,7 +1339,7 @@ function wireControls() {
   $("btnMenuFile")?.addEventListener("click", () => {
     const menu = $("moreMenu");
     if (menu) menu.hidden = false;
-    showOk("File menu — Sample / Open / Save yahan se");
+    showOk("File — Home / New / Open / Save");
   });
   $("btnMenuEdit")?.addEventListener("click", () => {
     undoLast();
@@ -1372,6 +1373,36 @@ function wireControls() {
   $("btnOpenProject")?.addEventListener("click", () => {
     closeMoreMenu();
     openProjectModal();
+  });
+  $("btnHome")?.addEventListener("click", () => {
+    closeMoreMenu();
+    const q = new URLSearchParams(location.search).get("desktop") === "1" ? "?desktop=1" : "";
+    location.href = `/${q}`;
+  });
+  $("btnNewProject")?.addEventListener("click", async () => {
+    closeMoreMenu();
+    const name = window.prompt("New project name?", "My Project");
+    if (!name) return;
+    try {
+      const res = await fetch("/api/project/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Create fail");
+      const q = new URLSearchParams(location.search).get("desktop") === "1" ? "?desktop=1" : "";
+      location.href = `/editor${q}`;
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  });
+  $("brandHome")?.addEventListener("click", (e) => {
+    const q = new URLSearchParams(location.search).get("desktop") === "1" ? "?desktop=1" : "";
+    if (q) {
+      e.preventDefault();
+      location.href = `/${q}`;
+    }
   });
   $("btnResetProps")?.addEventListener("click", () => {
     if (!state.selectedClipKey) {

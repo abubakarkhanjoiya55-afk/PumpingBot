@@ -9,7 +9,8 @@ BOHOT AASAAN (confused ho to SIRF YE PADHO)
 2) Is ZIP ko extract karo
 3) 1_DOUBLE_CLICK.bat pe DOUBLE-CLICK karo
 4) Wait karo - baaki sab AUTOMATIC
-5) Browser khul jayega / Desktop pe "SceneCut Pro+" shortcut
+5) App WINDOW khulegi (browser tab nahi) — CapCut jaisi Home
+6) New project dabao → editor → files import → Export
 
 Bas. Aur kuch mat karo.
 

@@ -15,7 +15,8 @@ WINDOWS (recommended)
    desktop\INSTALL.bat
 
 4) Desktop pe "SceneCut Pro+" shortcut aa jayegi.
-   Usay double-click karke app kholo.
+   Usay double-click karke NATIVE APP WINDOW khulegi
+   (browser tab nahi) — CapCut jaisi Home + New project.
 
 Uninstall:
   Start Menu → SceneCut Pro+ → Uninstall

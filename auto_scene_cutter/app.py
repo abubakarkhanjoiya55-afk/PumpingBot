@@ -11,10 +11,12 @@ Open: http://127.0.0.1:5000
 from __future__ import annotations
 
 import copy
+import json
 import os
 import sys
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
@@ -121,6 +123,44 @@ def _ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(exist_ok=True)
     OUTPUT_DIR.mkdir(exist_ok=True)
     PROJECTS_DIR.mkdir(exist_ok=True)
+
+
+def _reset_session(name: str = "Untitled Project") -> None:
+    """Blank CapCut-style new project session."""
+    SESSION["movie"] = None
+    SESSION["movie_srt"] = None
+    SESSION["narration_audio"] = None
+    SESSION["narration_srt"] = None
+    SESSION["final_video"] = None
+    SESSION["cut_only_video"] = None
+    SESSION["timeline_srt"] = None
+    SESSION["report_html"] = None
+    SESSION["last_match_plan"] = None
+    SESSION["scenes"] = None
+    SESSION["settings"] = normalize_settings(None)
+    SESSION["project_name"] = (name or "Untitled Project").strip() or "Untitled Project"
+    SESSION["undo_stack"] = []
+
+
+def _project_list_item(path: Path) -> dict:
+    name = path.stem.replace(".scenecut", "").replace("_", " ")
+    clips = 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            name = str(data.get("name") or name)
+            plan = data.get("match_plan") or []
+            clips = len(plan) if isinstance(plan, list) else 0
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    st = path.stat()
+    return {
+        "filename": path.name,
+        "name": name,
+        "meta": _file_meta(path),
+        "mtime": st.st_mtime,
+        "clips": clips,
+    }
 
 
 def _file_meta(path: Path) -> str:
@@ -427,22 +467,36 @@ def _run_full_pipeline(settings: dict, mode: str = "full") -> dict:
 
 
 def _asset_version() -> str:
-    """Cache-bust editor JS/CSS so mobile never keeps old sync-bug scripts."""
+    """Cache-bust UI JS/CSS so clients never keep stale scripts."""
     try:
-        js = RESOURCE_DIR / "static" / "js" / "editor.js"
-        css = RESOURCE_DIR / "static" / "css" / "editor.css"
-        stamp = max(js.stat().st_mtime_ns, css.stat().st_mtime_ns)
+        paths = [
+            RESOURCE_DIR / "static" / "js" / "editor.js",
+            RESOURCE_DIR / "static" / "css" / "editor.css",
+            RESOURCE_DIR / "static" / "js" / "home.js",
+            RESOURCE_DIR / "static" / "css" / "home.css",
+        ]
+        stamp = max(p.stat().st_mtime_ns for p in paths if p.exists())
         return str(stamp)
     except OSError:
         return "1"
 
 
-@app.get("/")
-def index():
-    resp = app.make_response(render_template("editor.html", asset_v=_asset_version()))
+def _html(template: str):
+    resp = app.make_response(render_template(template, asset_v=_asset_version()))
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+@app.get("/")
+def index():
+    """CapCut-style home: New project / Open / Recent."""
+    return _html("home.html")
+
+
+@app.get("/editor")
+def editor_page():
+    return _html("editor.html")
 
 
 @app.after_request
@@ -929,6 +983,25 @@ def api_reexport():
         return jsonify({"error": str(exc)}), 400
 
 
+@app.post("/api/project/new")
+def api_project_new():
+    """Start a blank project (home → Create new project)."""
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("name") or "").strip()
+    if not name:
+        stamp = datetime.now().strftime("%m-%d")
+        name = f"My Project {stamp}"
+    _reset_session(name)
+    JOB.reset()
+    return jsonify(
+        {
+            "ok": True,
+            "project_name": SESSION["project_name"],
+            "editor_url": "/editor",
+        }
+    )
+
+
 @app.post("/api/project/save")
 def api_project_save():
     payload = request.get_json(silent=True) or {}
@@ -1016,10 +1089,7 @@ def api_project_list():
     return jsonify(
         {
             "ok": True,
-            "projects": [
-                {"filename": p.name, "meta": _file_meta(p), "mtime": p.stat().st_mtime}
-                for p in files
-            ],
+            "projects": [_project_list_item(p) for p in files],
         }
     )
 

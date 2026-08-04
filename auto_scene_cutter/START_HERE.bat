@@ -3,11 +3,18 @@ REM Sirf is file pe DOUBLE-CLICK karo
 cd /d "%~dp0"
 title SceneCut Pro+
 
-set "LAUNCH=%LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat"
+set "INSTALL_DIR=%LOCALAPPDATA%\SceneCutProPlus"
+set "LAUNCH=%INSTALL_DIR%\desktop\Launch.bat"
+
 if exist "%LAUNCH%" (
   echo.
-  echo  Pehle se install mil gaya - app open ho rahi hai...
+  echo  Update + open ho raha hai...
   echo.
+  robocopy "%CD%" "%INSTALL_DIR%" /E /XD .git __pycache__ output _uploads projects .venv venv dist build desktop\dist releases /NFL /NDL /NJH /NJS /nc /ns /np >nul
+  xcopy /Y /Q /E "%CD%\desktop\*" "%INSTALL_DIR%\desktop\" >nul
+  if exist "%INSTALL_DIR%\.venv\Scripts\python.exe" (
+    "%INSTALL_DIR%\.venv\Scripts\python.exe" -m pip install -q -r "%INSTALL_DIR%\requirements.txt"
+  )
   start "" "%LAUNCH%"
   exit /b 0
 )
