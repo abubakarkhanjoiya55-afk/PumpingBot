@@ -1,11 +1,12 @@
 /**
  * CapCut-style in-app update notifications.
- * - Live UI: shows What's New, then reload (no Setup download)
- * - Desktop native: can call pywebview apply_update / local /api/update/apply
+ * Desktop: compare LOCAL build vs LIVE host, then silent Setup / student-pack sync.
+ * Browser: What's New + reload.
  */
 (function () {
   const SEEN_KEY = "scenecut_seen_version";
   const DISMISS_KEY = "scenecut_dismiss_version";
+  const LIVE_FALLBACK = "https://scenecut-production.up.railway.app";
 
   function $(id) {
     return document.getElementById(id);
@@ -42,12 +43,13 @@
       #scUpdateModal h3{margin:0 0 6px;font-size:1.2rem}
       #scUpdateModal .ver{color:#a78bfa;font-size:.85rem;margin:0 0 12px}
       #scUpdateModal ul{margin:0;padding-left:18px;color:#a1a1aa;line-height:1.55}
-      #scUpdateModal .actions{margin-top:18px;display:flex;gap:10px;justify-content:flex-end}
+      #scUpdateModal .actions{margin-top:18px;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
       #scUpdateModal .actions button{
         border:0;border-radius:10px;padding:10px 14px;font:700 13px/1 "Segoe UI",sans-serif;cursor:pointer;
       }
       #scUpdateModal .primary{background:linear-gradient(180deg,#9b74ff,#7c4dff);color:#fff}
       #scUpdateModal .ghost{background:rgba(255,255,255,.06);color:#f5f5f7;border:1px solid #2e2e34}
+      #scUpdateModal .busy{opacity:.7;pointer-events:none}
     `;
     document.head.appendChild(style);
 
@@ -111,21 +113,94 @@
     }
   }
 
-  function isDesktopShell() {
+  async function detectDesktop() {
+    try {
+      const desk = await fetch("/api/desktop", { cache: "no-store" }).then((r) =>
+        r.ok ? r.json() : null
+      );
+      if (desk && desk.desktop) return true;
+    } catch (_) {
+      /* ignore */
+    }
     const q = new URLSearchParams(location.search).get("desktop");
     return q === "1" || Boolean(window.pywebview);
   }
 
-  async function fetchVersion() {
-    const res = await fetch("/api/version", { cache: "no-store" });
-    if (!res.ok) throw new Error("version check fail");
+  async function fetchJson(url) {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error("fetch fail");
     return res.json();
+  }
+
+  async function resolveUpdateInfo(isDesktop) {
+    let local = null;
+    try {
+      local = await fetchJson("/api/version");
+    } catch (_) {
+      local = null;
+    }
+
+    let remote = null;
+    // Prefer server-side check (desktop hits live)
+    try {
+      const cur = (local && local.version) || "";
+      remote = await fetchJson(
+        `/api/update/check?current=${encodeURIComponent(cur)}`
+      );
+    } catch (_) {
+      remote = null;
+    }
+
+    // Browser / fallback: hit live host directly
+    if (!remote || !remote.latest) {
+      try {
+        const liveBase =
+          (local && local.live_url) ||
+          (window.SceneCutLiveUrl) ||
+          LIVE_FALLBACK;
+        const man = await fetchJson(`${liveBase}/api/version`);
+        remote = {
+          ok: true,
+          latest: man.version,
+          title: man.title,
+          notes: man.notes,
+          setup_url: man.setup_url || man.setup_exe,
+          update_available:
+            !!(man.version && local && local.version && man.version !== local.version) ||
+            !(local && local.version),
+        };
+      } catch (_) {
+        /* offline */
+      }
+    }
+
+    const latest = (remote && remote.latest) || (local && local.version) || "";
+    const current = (local && local.version) || "";
+    const updateAvailable =
+      !!(remote && remote.update_available) ||
+      !!(latest && current && latest !== current);
+
+    return {
+      version: latest,
+      current,
+      title: (remote && remote.title) || (local && local.title) || "New version",
+      notes:
+        (remote && remote.notes) ||
+        (local && local.notes) ||
+        ["Bug fixes and improvements"],
+      setup_url: (remote && remote.setup_url) || (local && local.setup_url),
+      update_available: updateAvailable,
+      isDesktop,
+      local,
+    };
   }
 
   function showModal(info) {
     ensureUi();
     $("scUpdateTitle").textContent = info.title || "New version available";
-    $("scUpdateVer").textContent = `Version ${info.version}`;
+    $("scUpdateVer").textContent = info.current
+      ? `v${info.current} → v${info.version}`
+      : `Version ${info.version}`;
     const ul = $("scUpdateNotes");
     ul.innerHTML = "";
     (info.notes || ["Bug fixes and improvements"]).forEach((n) => {
@@ -151,17 +226,26 @@
     $("scUpdateToast")?.classList.remove("show");
   }
 
+  function setUpdatingUi(on) {
+    const btn = $("scUpdateNow");
+    const card = document.querySelector("#scUpdateModal .card");
+    if (btn) btn.textContent = on ? "Updating…" : "Update Now";
+    if (card) card.classList.toggle("busy", !!on);
+  }
+
   async function applyUpdate(info) {
     hideToast();
-    hideModal();
+    setUpdatingUi(true);
 
-    // Desktop update endpoint (Edge app shell)
+    // 1) Desktop dedicated endpoint
     try {
       const resDesk = await fetch("/api/desktop/update", { method: "POST" });
       if (resDesk.ok) {
         const data = await resDesk.json();
         if (data.ok || data.updated) {
           markSeen(info.version);
+          $("scUpdateTitle").textContent = "Update installing…";
+          $("scUpdateVer").textContent = "App restart hogi — 20-40 sec wait";
           return;
         }
       }
@@ -169,27 +253,19 @@
       /* fall through */
     }
 
-    // Legacy pywebview bridge
-    try {
-      if (window.pywebview?.api?.apply_update) {
-        await window.pywebview.api.apply_update();
-        return;
-      }
-    } catch (_) {
-      /* fall through */
-    }
-
-    // Generic apply
+    // 2) Generic apply
     try {
       const res = await fetch("/api/update/apply", { method: "POST" });
       if (res.ok) {
         const data = await res.json();
         if (data.ok) {
           markSeen(info.version);
-          if (data.action === "reload" || !isDesktopShell()) {
+          if (data.action === "reload" || !info.isDesktop) {
             location.reload();
             return;
           }
+          $("scUpdateTitle").textContent = "Update installing…";
+          $("scUpdateVer").textContent = "App restart hogi — wait…";
           return;
         }
       }
@@ -197,9 +273,14 @@
       /* fall through */
     }
 
-    // Already on live site — just reload + remember
+    // 3) Open Setup.exe download as last resort
+    if (info.setup_url) {
+      window.open(info.setup_url, "_blank");
+    }
     markSeen(info.version);
-    location.reload();
+    setUpdatingUi(false);
+    hideModal();
+    if (!info.isDesktop) location.reload();
   }
 
   function wire(info) {
@@ -218,24 +299,37 @@
 
   async function run() {
     try {
-      const info = await fetchVersion();
+      const isDesktop = await detectDesktop();
+      const info = await resolveUpdateInfo(isDesktop);
       if (!info || !info.version) return;
 
-      // Expose for debug / settings
       window.SceneCutVersion = info;
 
-      const seen = seenVersion();
-      const dismissed = dismissedVersion();
+      // Nothing new
+      if (!info.update_available) {
+        // Still show What's New once for this version on first open
+        const seen = seenVersion();
+        if (seen === info.version) return;
+        const dismissed = dismissedVersion();
+        if (dismissed === info.version) return;
+        wire(info);
+        if (!seen) showModal(info);
+        return;
+      }
 
-      // First visit on this version → What's New
-      if (seen && seen === info.version) return;
-      if (dismissed && dismissed === info.version) return;
+      // Update available — always nudge (ignore old dismiss for older version)
+      const dismissed = dismissedVersion();
+      if (dismissed && dismissed === info.version && !isDesktop) return;
 
       wire(info);
-
-      // CapCut-style: modal once for desktop shell, toast elsewhere
-      if (isDesktopShell() || !seen) {
+      if (isDesktop) {
         showModal(info);
+        // CapCut-style: desktop pe auto-start update after short beat
+        setTimeout(() => {
+          if ($("scUpdateModal")?.classList.contains("open")) {
+            applyUpdate(info);
+          }
+        }, 1200);
       } else {
         showToast(info);
       }

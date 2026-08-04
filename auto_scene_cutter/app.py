@@ -1358,19 +1358,40 @@ def api_version():
 
 @app.get("/api/update/check")
 def api_update_check():
-    """Compare client version (?current=) with live manifest."""
+    """Compare client version with LIVE host (desktop) or local manifest (web)."""
     manifest = _load_version_manifest()
     current = (request.args.get("current") or "").strip()
+    # Desktop local server must check LIVE — local version.json is the old build.
+    if os.environ.get("SCENECUT_DESKTOP") == "1":
+        try:
+            from desktop_update import remote_manifest
+
+            remote = remote_manifest() or {}
+            if remote.get("version"):
+                manifest = {**manifest, **remote}
+        except Exception:  # noqa: BLE001
+            pass
     latest = str(manifest.get("version") or "")
+    if not current and os.environ.get("SCENECUT_DESKTOP") == "1":
+        try:
+            from desktop_update import local_version
+
+            install = Path(os.environ.get("LOCALAPPDATA") or "") / "SceneCutProPlus"
+            current = local_version(install) or str(
+                _load_version_manifest().get("version") or ""
+            )
+        except Exception:  # noqa: BLE001
+            current = str(_load_version_manifest().get("version") or "")
     return jsonify(
         {
             "ok": True,
-            "update_available": bool(latest and current and current != latest) or not current,
+            "update_available": bool(latest and current and current != latest)
+            or (bool(latest) and not current),
             "current": current or None,
             "latest": latest,
             "title": manifest.get("title"),
             "notes": manifest.get("notes") or [],
-            "setup_url": manifest.get("setup_url"),
+            "setup_url": manifest.get("setup_url") or SETUP_EXE_URL,
         }
     )
 
