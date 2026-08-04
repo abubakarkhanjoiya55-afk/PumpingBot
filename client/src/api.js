@@ -141,4 +141,28 @@ export function paymentScreenshotUrl(userId) {
   return `${API_URL}/admin/payment-screenshot/${userId}`;
 }
 
+export async function fetchApiInfo() {
+  const { data } = await api.get('/api');
+  return data;
+}
+
+/** Hard refresh — clears caches / SW so Railway deploy dikhe */
+export async function applyAppUpdate() {
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set('v', String(Date.now()));
+  window.location.replace(url.toString());
+}
+
 export { API_URL };

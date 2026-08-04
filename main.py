@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.6"   # Start/Stop + trades UI hardened; safe-mode trading
+API_VERSION = "3.28.7"   # In-app Update button + version banner
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

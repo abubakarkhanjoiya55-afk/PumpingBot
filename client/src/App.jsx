@@ -4,6 +4,7 @@ import {
   fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
   uploadPaymentScreenshot, fetchAdminStats, fetchAdminUsers, fetchPendingPayments,
   confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
+  fetchApiInfo, applyAppUpdate,
 } from './api';
 
 function fmt(n, me) {
@@ -312,6 +313,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [botBusy, setBotBusy] = useState(false);
   const [botMsg, setBotMsg] = useState('');
+  const [appVersion, setAppVersion] = useState('');
+  const [updateReady, setUpdateReady] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!getToken()) return;
@@ -332,6 +336,33 @@ export default function App() {
     const t = setInterval(refresh, 15000);
     return () => clearInterval(t);
   }, [authed, refresh]);
+
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const info = await fetchApiInfo();
+        if (!alive) return;
+        const ver = String(info?.version || '');
+        setAppVersion(ver);
+        const seen = localStorage.getItem('pb_seen_version') || '';
+        if (ver && seen && ver !== seen) setUpdateReady(true);
+        if (ver && !seen) localStorage.setItem('pb_seen_version', ver);
+      } catch (_) { /* ignore */ }
+    };
+    check();
+    const t = setInterval(check, 60000);
+    return () => { alive = false; clearInterval(t); };
+  }, [authed]);
+
+  const onUpdateApp = async () => {
+    setUpdating(true);
+    try {
+      const info = await fetchApiInfo();
+      if (info?.version) localStorage.setItem('pb_seen_version', String(info.version));
+    } catch (_) { /* ignore */ }
+    await applyAppUpdate();
+  };
 
   useEffect(() => {
     if (!me?.mt5_connected) return;
@@ -419,6 +450,7 @@ export default function App() {
     <div className="dashboard">
       <div className="sidebar">
         <div className="logo">⚡ PumpingBot</div>
+        {appVersion && <div className="app-ver">v{appVersion}</div>}
         {nav.map(item => item.divider
           ? <div key="div" className="nav-divider">────────</div>
           : (
@@ -428,12 +460,31 @@ export default function App() {
             </div>
           )
         )}
-        <div style={{ padding: '1rem 1.5rem', marginTop: 'auto' }}>
-          <button className="btn-logout" onClick={logout}>Logout</button>
+        <div className="sidebar-footer">
+          <button
+            type="button"
+            className={`btn-update ${updateReady ? 'pulse' : ''}`}
+            disabled={updating}
+            onClick={onUpdateApp}
+          >
+            {updating ? 'Updating…' : (updateReady ? 'Update Available' : 'Update App')}
+          </button>
+          <button type="button" className="btn-logout" onClick={logout}>Logout</button>
         </div>
       </div>
 
       <div className="main">
+        {updateReady && (
+          <div className="update-banner">
+            <div>
+              <strong>Naya update ready hai</strong>
+              <p>Naya bot version install karne ke liye Update dabao.</p>
+            </div>
+            <button type="button" className="btn-update" disabled={updating} onClick={onUpdateApp}>
+              {updating ? 'Updating…' : 'Update Now'}
+            </button>
+          </div>
+        )}
         {page === 'dashboard' && (
           <>
             <h1>Dashboard</h1>
