@@ -1,47 +1,35 @@
 ========================================
-  SceneCut Pro — Student Pack
-  AI Movie Scene Cutter
+  SceneCut Pro — Windows Desktop App
 ========================================
 
-BOHOT AASAAN (confused ho to SIRF YE PADHO)
-------------------------------------------
-1) Python 3.10+ install kar lo (Add to PATH CHECK) - tumne kar liya
-2) Is ZIP ko extract karo
-3) 1_DOUBLE_CLICK.bat pe DOUBLE-CLICK karo
-4) Wait karo - baaki sab AUTOMATIC
-5) App WINDOW khulegi (browser tab nahi) — CapCut jaisi Home
-6) New project dabao → editor → files import → Export
+PROFESSIONAL INSTALL (CapCut / VLC jaisa)
+----------------------------------------
+Option A — Setup.exe (best)
+  1) https://scenecut-production.up.railway.app/download
+  2) "Download for Windows (Setup.exe)"
+  3) Double-click Setup → Install
+  4) Desktop pe "SceneCut Pro+" shortcut
 
-Bas. Aur kuch mat karo.
-
-Agar pehle install ho chuka ho:
-  Win+R dabao, yeh paste karo, Enter:
-  %LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat
-
-
-LIVE DEMO (browser — optional)
-------------------------------
-https://scenecut-production.up.railway.app/
+Option B — Is ZIP se
+  1) ZIP extract karo
+  2) "Install SceneCut Pro.vbs" pe DOUBLE-CLICK
+  3) GUI installer aayega (black CMD nahi)
+  4) Desktop shortcut se app kholo
 
 
-WINDOWS INSTALL DETAIL
-----------------------
-START_HERE.bat / INSTALL_WINDOWS.bat khud karega:
-  • app copy
-  • pip packages
-  • ffmpeg (winget ya portable download)
-  • Desktop shortcut
-  • app launch
+APP KAISE CHALTI HAI
+--------------------
+- Apni window mein khulti hai (browser tab / CMD nahi)
+- Home → New project → files import → Export
+- Dost ko Setup.exe share kar sakte ho
 
 
 UNINSTALL
 ---------
-  desktop\UNINSTALL.bat
+Start Menu → SceneCut Pro+ → Uninstall
+ya: %LOCALAPPDATA%\SceneCutProPlus\desktop\UNINSTALL.bat
 
 
-TIP
----
-Desktop pe 2GB+ movie CapCut jaisi tez hoti hai
-(kyunki file local hoti hai, web upload nahi).
-
-========================================
+LIVE DEMO
+---------
+https://scenecut-production.up.railway.app/

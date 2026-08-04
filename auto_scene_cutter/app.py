@@ -1196,9 +1196,16 @@ def _fmt_bytes(n: int) -> str:
     return f"{max(1, n // 1024)} KB"
 
 
+# Shareable CapCut-style Windows installer (published by CI → GitHub Release)
+SETUP_EXE_URL = os.environ.get(
+    "SCENECUT_SETUP_URL",
+    "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
+)
+
+
 @app.get("/download")
 def download_page():
-    """Public student download landing page."""
+    """Public Windows download landing page."""
     pack = _student_pack_path()
     ready = pack.exists()
     mtime = ""
@@ -1206,8 +1213,6 @@ def download_page():
     if ready:
         st = pack.stat()
         size = _fmt_bytes(st.st_size)
-        from datetime import datetime
-
         mtime = datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
     return render_template(
         "download.html",
@@ -1215,6 +1220,8 @@ def download_page():
         pack_name="SceneCut-Pro-Student.zip",
         pack_size=size or "—",
         pack_mtime=mtime or "—",
+        setup_url=SETUP_EXE_URL,
+        setup_ready=True,
     )
 
 
@@ -1250,6 +1257,7 @@ def health():
             "desktop": os.environ.get("SCENECUT_DESKTOP") == "1",
             "student_pack": pack.exists(),
             "download_page": "/download",
+            "setup_exe": SETUP_EXE_URL,
         }
     )
 

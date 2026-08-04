@@ -163,6 +163,19 @@ def _open_native_window(url: str) -> bool:
         return False
 
 
+def _prepend_bundled_ffmpeg() -> None:
+    """Use portable ffmpeg next to the app when present (Setup.exe / student pack)."""
+    candidates = [
+        BASE_DIR / "tools" / "ffmpeg" / "bin",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "SceneCutProPlus" / "tools" / "ffmpeg" / "bin",
+    ]
+    for folder in candidates:
+        exe = folder / "ffmpeg.exe"
+        if exe.exists():
+            os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
+            return
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="SceneCut Pro+ Desktop")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "5000")))
@@ -175,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _ensure_dirs()
+    _prepend_bundled_ffmpeg()
     port = _free_port(args.port)
     # CapCut-style home landing inside the app window
     url = f"http://127.0.0.1:{port}/?desktop=1"

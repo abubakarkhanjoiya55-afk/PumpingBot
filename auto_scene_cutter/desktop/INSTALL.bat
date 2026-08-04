@@ -86,8 +86,12 @@ echo.
 echo  App ab open ho rahi hai...
 echo.
 
-start "" "%INSTALL_DIR%\desktop\Launch.bat"
-timeout /t 4 /nobreak >nul
+if exist "%INSTALL_DIR%\desktop\LaunchSilent.vbs" (
+  start "" wscript.exe "%INSTALL_DIR%\desktop\LaunchSilent.vbs"
+) else (
+  start "" "%INSTALL_DIR%\desktop\Launch.bat"
+)
+timeout /t 2 /nobreak >nul
 endlocal
 exit /b 0
 

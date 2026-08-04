@@ -44,7 +44,12 @@ with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
     readme = root / "STUDENT_README.txt"
     if readme.exists():
         zf.write(readme, arcname=f"{name}/README.txt")
+    # Ensure installer entry is obvious at pack root
+    install_vbs = root / "Install SceneCut Pro.vbs"
+    if install_vbs.exists():
+        zf.write(install_vbs, arcname=f"{name}/Install SceneCut Pro.vbs")
 
 print(f"Added {count} files")
 print(f"Built: {zip_path} ({zip_path.stat().st_size} bytes)")
+print("Primary entry: Install SceneCut Pro.vbs")
 PY

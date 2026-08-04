@@ -1,13 +1,16 @@
 @echo off
 setlocal EnableExtensions
-REM App open - agar install ho chuka ho
-set "LAUNCH=%LOCALAPPDATA%\SceneCutProPlus\desktop\Launch.bat"
-if exist "%LAUNCH%" goto DO_LAUNCH
+set "VBS=%LOCALAPPDATA%\SceneCutProPlus\desktop\LaunchSilent.vbs"
+set "EXE=%LOCALAPPDATA%\SceneCutProPlus\SceneCutProPlus.exe"
+if exist "%EXE%" (
+  start "" "%EXE%"
+  exit /b 0
+)
+if exist "%VBS%" (
+  start "" wscript.exe "%VBS%"
+  exit /b 0
+)
 echo Install abhi nahi hua.
-echo Pehle 1_DOUBLE_CLICK.bat chalao.
+echo Pehle "Install SceneCut Pro.vbs" ya Setup.exe chalao.
 pause
 exit /b 1
-
-:DO_LAUNCH
-start "" "%LAUNCH%"
-exit /b 0

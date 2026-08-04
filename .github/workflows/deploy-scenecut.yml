@@ -42,6 +42,7 @@ jobs:
         run: |
           echo "After deploy, open Railway → service 'scenecut' → Networking domain"
           echo "Expected paths:"
-          echo "  /           editor"
-          echo "  /download   student pack"
+          echo "  /           CapCut-style home"
+          echo "  /editor     editor"
+          echo "  /download   Windows Setup + ZIP"
           echo "  /health     health check"
