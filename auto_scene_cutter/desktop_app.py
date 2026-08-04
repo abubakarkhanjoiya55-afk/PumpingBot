@@ -187,6 +187,68 @@ def _install_guaranteed_desktop_routes() -> None:
 _install_guaranteed_desktop_routes()
 
 
+def _patch_subprocess_hide_ffmpeg() -> None:
+    """
+    Nuclear safety net (desktop only): any subprocess.run/Popen that launches
+    ffmpeg/ffprobe must use CREATE_NO_WINDOW. Closing a visible ffmpeg console
+    was killing the whole SceneCut app.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        from procutil import windows_hide_kwargs
+    except Exception:  # noqa: BLE001
+        return
+
+    import subprocess as _sp
+
+    hide = windows_hide_kwargs()
+    if not hide:
+        return
+    no_win = int(hide.get("creationflags") or 0)
+
+    def _is_ffmpeg(cmd: object) -> bool:
+        try:
+            if isinstance(cmd, (list, tuple)) and cmd:
+                name = str(cmd[0]).lower().replace("\\", "/")
+                base = name.rsplit("/", 1)[-1]
+                return base in ("ffmpeg", "ffmpeg.exe", "ffprobe", "ffprobe.exe")
+            if isinstance(cmd, str):
+                low = cmd.lower()
+                return "ffmpeg" in low or "ffprobe" in low
+        except Exception:  # noqa: BLE001
+            return False
+        return False
+
+    _orig_run = _sp.run
+    _orig_popen = _sp.Popen
+
+    def _run(cmd, *args, **kwargs):  # noqa: ANN001
+        if _is_ffmpeg(cmd):
+            flags = int(kwargs.get("creationflags", 0) or 0) | no_win
+            kwargs["creationflags"] = flags
+            if "startupinfo" in hide:
+                kwargs["startupinfo"] = hide["startupinfo"]
+            kwargs.setdefault("stdin", hide.get("stdin") or _sp.DEVNULL)
+        return _orig_run(cmd, *args, **kwargs)
+
+    def _popen(cmd, *args, **kwargs):  # noqa: ANN001
+        if _is_ffmpeg(cmd):
+            flags = int(kwargs.get("creationflags", 0) or 0) | no_win
+            kwargs["creationflags"] = flags
+            if "startupinfo" in hide:
+                kwargs["startupinfo"] = hide["startupinfo"]
+            kwargs.setdefault("stdin", hide.get("stdin") or _sp.DEVNULL)
+        return _orig_popen(cmd, *args, **kwargs)
+
+    _sp.run = _run  # type: ignore[assignment]
+    _sp.Popen = _popen  # type: ignore[assignment]
+    _log("ffmpeg console hide patch active")
+
+
+_patch_subprocess_hide_ffmpeg()
+
+
 def _bundled_version() -> str:
     try:
         raw = json.loads((BASE_DIR / "version.json").read_text(encoding="utf-8"))
