@@ -73,7 +73,10 @@ class LocalMT5:
     def account(self) -> dict:
         info = self._mt5.account_info() if self._mt5 else None
         if not info:
-            return {"balance": 0, "equity": 0, "currency": "", "is_cent": False}
+            return {
+                "balance": 0, "equity": 0, "currency": "", "is_cent": False,
+                "margin": 0, "free_margin": 0, "margin_level": 0,
+            }
         currency = str(getattr(info, "currency", "") or "")
         # Exness / broker cent books often use USC (US cent) or *cent* names
         is_cent = currency.upper() in ("USC", "EURC", "GBPC") or "cent" in currency.lower()
@@ -82,6 +85,8 @@ class LocalMT5:
             "equity": float(info.equity),
             "profit": float(info.profit),
             "margin": float(info.margin),
+            "free_margin": float(getattr(info, "margin_free", 0) or 0),
+            "margin_level": float(getattr(info, "margin_level", 0) or 0),
             "name": info.name,
             "leverage": int(info.leverage or 100),
             "login": int(info.login),
@@ -89,6 +94,77 @@ class LocalMT5:
             "currency": currency,
             "is_cent": is_cent,
         }
+
+    def order_margin(self, symbol: str, side: str, volume: float) -> Optional[float]:
+        """Broker-reported margin required for a market order (account currency)."""
+        mt5 = self._mt5
+        if not mt5:
+            return None
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            return None
+        order_type = mt5.ORDER_TYPE_BUY if side.upper() == "BUY" else mt5.ORDER_TYPE_SELL
+        price = tick.ask if side.upper() == "BUY" else tick.bid
+        try:
+            m = mt5.order_calc_margin(order_type, symbol, float(volume), float(price))
+        except Exception:
+            return None
+        return float(m) if m is not None else None
+
+    def deal_close_reason(self, position_ticket: int) -> dict:
+        """
+        Look up how a position was closed (SL / TP / stop-out / expert / manual).
+        Returns {"reason": str, "profit": float|None, "deal": int|None}.
+        """
+        mt5 = self._mt5
+        empty = {"reason": "Unknown", "profit": None, "deal": None}
+        if not mt5:
+            return empty
+        now = int(time.time())
+        # Search last 2 days of deals
+        deals = mt5.history_deals_get(now - 2 * 86400, now + 60)
+        if not deals:
+            return empty
+        reason_map = {
+            0: "Client",
+            1: "Mobile",
+            2: "Web",
+            3: "Expert",
+            4: "StopLoss",
+            5: "TakeProfit",
+            6: "StopOut",
+            7: "Rollover",
+            8: "VMargin",
+            9: "Split",
+        }
+        best = None
+        for d in deals:
+            if int(getattr(d, "position_id", 0) or 0) != int(position_ticket):
+                continue
+            # entry out = 1
+            if int(getattr(d, "entry", -1)) != 1:
+                continue
+            best = d
+        if best is None:
+            return empty
+        code = int(getattr(best, "reason", -1))
+        return {
+            "reason": reason_map.get(code, f"Reason{code}"),
+            "profit": float(getattr(best, "profit", 0) or 0),
+            "deal": int(getattr(best, "ticket", 0) or 0),
+        }
+
+    def clear_all_bot_sl_tp(self, magic: int = 888888) -> int:
+        """Strip broker SL/TP from every open bot position. Returns count cleared."""
+        n = 0
+        for pos in self.positions():
+            if int(pos.get("magic") or 0) != int(magic):
+                continue
+            if float(pos.get("sl") or 0) == 0 and float(pos.get("tp") or 0) == 0:
+                continue
+            if self.clear_sl_tp(pos["ticket"]):
+                n += 1
+        return n
 
     def resolve_symbols(self, bases: list[str], prefer_suffix: str = "c") -> list[str]:
         """

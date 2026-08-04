@@ -146,7 +146,7 @@ SYMBOLS = [
     "EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc",
 ]
 
-API_VERSION = "3.28.7"   # In-app Update button + version banner
+API_VERSION = "3.28.9"   # Stop-out guard: forex-only tiny accounts, margin check, deal reason
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

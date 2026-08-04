@@ -48,6 +48,13 @@ from mt5_local import LocalMT5  # noqa: E402
 BOT_MAGIC = 888888
 HEARTBEAT_SEC = 5
 MASTER_SCAN_SEC = 3
+# Tiny USC/$ accounts: gold/crypto min-lot still stop-outs — forex only
+TINY_USD = 50.0
+FOREX_ONLY_STEMS = ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "NZDUSD")
+# Never use more than this fraction of free margin on one entry
+MAX_MARGIN_FRAC = 0.25
+# Pause new entries if free margin (USD) below this
+MIN_FREE_MARGIN_USD = 3.0
 
 
 def _ws_url(server_url: str, token: str) -> str:
@@ -109,6 +116,10 @@ class PumpingAgent:
             acc = self.mt5.account()
             if acc.get("is_cent"):
                 print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')}")
+            # Kill leftover broker SL/TP so old positions cannot SL-close in loss
+            cleared = self.mt5.clear_all_bot_sl_tp(BOT_MAGIC)
+            if cleared:
+                print(f"[AGENT] Cleared SL/TP on {cleared} open bot position(s)")
         return ok
 
     # ── WebSocket ──────────────────────────────────────────────────────
@@ -311,11 +322,15 @@ class PumpingAgent:
             MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC, SESSION_MAX_DD_PCT,
         )
 
-        print(f"[MASTER] SAFE MODE: max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s no_auto_close")
+        print(
+            f"[MASTER] SAFE MODE: max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
+            f"NO bot close / NO broker SL — owner exits only"
+        )
         last_close = {}
         session_start_equity = None
         entries_halted = False
         bridge = MasterMT5Bridge(self.mt5)
+        _tiny_warned = False
 
         while not self._stop.is_set():
             try:
@@ -333,6 +348,10 @@ class PumpingAgent:
                 acc = self.mt5.account()
                 balance = acc.get("balance") or 0
                 equity = float(acc.get("equity") or balance or 0)
+                free_margin = float(acc.get("free_margin") or 0)
+                is_cent = bool(acc.get("is_cent"))
+                bal_usd = (float(balance) / 100.0) if is_cent else float(balance)
+                free_usd = (free_margin / 100.0) if is_cent else free_margin
                 if session_start_equity is None and equity > 0:
                     session_start_equity = equity
                 if session_start_equity and equity < session_start_equity * (1.0 - SESSION_MAX_DD_PCT):
@@ -345,14 +364,35 @@ class PumpingAgent:
                     time.sleep(10)
                     continue
 
+                # Free margin too thin → broker will stop-out any new trade
+                if free_usd < MIN_FREE_MARGIN_USD:
+                    if not _tiny_warned:
+                        print(
+                            f"[MASTER HALT] free_margin≈${free_usd:.2f} too low — "
+                            f"no new entries (broker stop-out risk)"
+                        )
+                        _tiny_warned = True
+                    time.sleep(15)
+                    continue
+                _tiny_warned = False
+
                 if len(open_pos) >= MAX_OPEN_TRADES:
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
                 now = time.time()
                 opened_this_cycle = False
+                scan_symbols = self.symbols
+                if bal_usd < TINY_USD:
+                    # Gold/crypto min lot still wipe ~$10 USC via stop-out
+                    scan_symbols = [
+                        s for s in self.symbols
+                        if any(stem in s.upper() for stem in FOREX_ONLY_STEMS)
+                    ]
+                    if not scan_symbols:
+                        scan_symbols = ["EURUSDc", "GBPUSDc", "USDJPYc", "AUDUSDc"]
 
-                for symbol in self.symbols:
+                for symbol in scan_symbols:
                     if opened_this_cycle:
                         break
                     open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
@@ -383,13 +423,24 @@ class PumpingAgent:
                                         sl_distance=abs(entry - sl_for_size))
                     if not lot:
                         continue
-                    # Tiny cent accounts: never oversized lots (stop-out risk)
+                    # Tiny accounts: always min lot
                     info = bridge.symbol_info(symbol)
                     vmin = float(getattr(info, "volume_min", 0.01) or 0.01)
-                    bal_usd = (balance / 100.0) if acc.get("is_cent") else float(balance)
-                    if bal_usd < 50:
+                    if bal_usd < TINY_USD:
                         lot = vmin
                     lot = max(vmin, float(lot))
+
+                    # Hard margin gate — prevents Exness stop-out on tiny USC
+                    needed = self.mt5.order_margin(symbol, trend, lot)
+                    if needed is None:
+                        from trading_engine import calc_margin_used
+                        needed = calc_margin_used(lot, symbol, entry, bridge) or 0
+                    if free_margin > 0 and needed > free_margin * MAX_MARGIN_FRAC:
+                        print(
+                            f"[MASTER SKIP] {symbol} lot={lot} needs margin={needed:.2f} "
+                            f"but free={free_margin:.2f} (>{MAX_MARGIN_FRAC*100:.0f}% cap) — stop-out guard"
+                        )
+                        continue
 
                     result = self.mt5.market_order(
                         symbol=symbol,
@@ -406,7 +457,12 @@ class PumpingAgent:
 
                     ticket = result["ticket"]
                     from trading_engine import calc_margin_used
-                    margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+                    margin = needed or calc_margin_used(lot, symbol, entry, bridge) or 0
+                    # Immediately ensure no SL/TP stuck on the fill
+                    try:
+                        self.mt5.clear_sl_tp(ticket)
+                    except Exception:
+                        pass
                     print(
                         f"[MASTER OPEN] {symbol} {trend} score={score} lot={lot} "
                         f"ticket={ticket} margin={margin:.2f} NO_SL NO_AUTO_CLOSE"
@@ -445,12 +501,26 @@ class PumpingAgent:
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
                 info = self._master_open.pop(ticket)
+                deal = self.mt5.deal_close_reason(ticket)
+                reason = deal.get("reason") or "BrokerClose"
+                profit = deal.get("profit")
+                if profit is None:
+                    profit = info.get("last_profit")
+                print(
+                    f"[MASTER SYNC CLOSE] {info.get('symbol')} ticket={ticket} "
+                    f"reason={reason} profit={profit}"
+                )
+                if reason in ("StopOut", "StopLoss", "VMargin"):
+                    print(
+                        f"[WARN] Broker forced close ({reason}) — NOT bot. "
+                        f"Usually tiny margin / leftover SL. Deposit more or use forex-only."
+                    )
                 self.send({
                     "type": "master_trade_close",
                     "master_ticket": ticket,
                     "symbol": info["symbol"],
-                    "reason": "BrokerClose",
-                    "profit": info.get("last_profit"),
+                    "reason": reason,
+                    "profit": profit,
                 })
 
         for pos in open_pos:
@@ -465,10 +535,13 @@ class PumpingAgent:
             meta["last_profit"] = float(pos["profit"] or 0)
             self._master_open[ticket] = meta
             # Strip any leftover broker SL/TP so nothing auto-closes in loss
-            try:
-                self.mt5.clear_sl_tp(ticket)
-            except Exception:
-                pass
+            if float(pos.get("sl") or 0) or float(pos.get("tp") or 0):
+                try:
+                    ok = self.mt5.clear_sl_tp(ticket)
+                    if not ok:
+                        print(f"[WARN] clear SL/TP failed ticket={ticket}")
+                except Exception as e:
+                    print(f"[WARN] clear SL/TP error ticket={ticket}: {e}")
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
         result = self.mt5.close_position(ticket, comment=f"PB_{reason}"[:31])
