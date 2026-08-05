@@ -164,11 +164,27 @@ class AgentHub:
 
     def notify_force_smoke(self, user_id: int) -> dict:
         """Ask master agent to open one min-lot test trade immediately."""
-        return self.send_to_user_sync(
+        result = self.send_to_user_sync(
             user_id,
             {"type": "force_smoke"},
-            timeout=3.0,
+            timeout=4.0,
         )
+        # Old agents ignore unknown types (no ACK) → empty TimeoutError.
+        # Message was still delivered if agent is online; new code replies.
+        if not result.get("ok"):
+            err = str(result.get("error") or "")
+            online = user_id in self._agents
+            if online and (err == "" or "timeout" in err.lower() or "Timeout" in err):
+                return {
+                    "ok": True,
+                    "queued": True,
+                    "warn": "no_ack_old_agent_or_slow",
+                    "detail": (
+                        "Command bhej diya. Agar trade na aaye to VPS pe "
+                        "git pull origin main + supervisor restart (code 3.30.10+)."
+                    ),
+                }
+        return result
 
     def resolve_response(self, user_id: int, message: dict):
         sess = self._agents.get(user_id)
