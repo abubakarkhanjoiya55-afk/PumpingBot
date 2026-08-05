@@ -29,6 +29,13 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
+# Windows cp1252 consoles raise UnicodeEncodeError on arrows / special dashes
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+except Exception:
+    pass
+
 import requests
 
 try:
@@ -54,13 +61,13 @@ TINY_USD = 50.0
 MAX_MARGIN_FRAC = 0.25
 # Pause new entries if free margin (USD) below this
 MIN_FREE_MARGIN_USD = 3.0
-# Schedule: Mon–Fri = Gold only; Sat–Sun = BTC + ETH only
+# Schedule: Mon-Fri = Gold only; Sat-Sun = BTC + ETH only
 GOLD_STEMS = ("XAUUSD", "GOLD")
 CRYPTO_STEMS = ("BTCUSD", "ETHUSD", "BTCUSDT", "ETHUSDT")
 
 
 def _is_weekend(now: Optional[datetime] = None) -> bool:
-    """Saturday/Sunday (local VPS clock). weekday: Mon=0 … Sun=6."""
+    """Saturday/Sunday (local VPS clock). weekday: Mon=0 ... Sun=6."""
     d = now or datetime.now()
     return d.weekday() >= 5
 
@@ -72,8 +79,8 @@ def _symbol_matches(symbol: str, stems: tuple[str, ...]) -> bool:
 
 def active_trade_symbols(all_symbols: list[str], now: Optional[datetime] = None) -> list[str]:
     """
-    Mon–Fri → Gold only.
-    Sat–Sun → BTC + ETH only (gold market closed / user rule).
+    Mon-Fri -> Gold only.
+    Sat-Sun -> BTC + ETH only (gold market closed / user rule).
     """
     weekend = _is_weekend(now)
     stems = CRYPTO_STEMS if weekend else GOLD_STEMS
@@ -123,7 +130,7 @@ class PumpingAgent:
         self.prefer_suffix = "c" if self.account_type in ("cent", "cents", "usc") else "m"
 
         if not self.token:
-            raise SystemExit("ACCESS_TOKEN missing — login via /token and set it")
+            raise SystemExit("ACCESS_TOKEN missing - login via /token and set it")
         if not self.login or not self.password or not self.server:
             raise SystemExit("MT5_LOGIN / MT5_PASSWORD / MT5_SERVER required")
 
@@ -205,7 +212,7 @@ class PumpingAgent:
                     print(f"[AGENT] WS loop error: {e}")
                 if self._stop.is_set():
                     break
-                print("[AGENT] WS disconnected — reconnect in 3s")
+                print("[AGENT] WS disconnected - reconnect in 3s")
                 time.sleep(3)
 
         threading.Thread(target=_run_ws, daemon=True, name="agent-ws").start()
@@ -232,7 +239,7 @@ class PumpingAgent:
 
         if mtype == "set_bot_active":
             self.bot_active = bool(msg.get("bot_active"))
-            print(f"[AGENT] set_bot_active → {self.bot_active}")
+            print(f"[AGENT] set_bot_active -> {self.bot_active}")
             if req_id:
                 self.reply(req_id, ok=True, bot_active=self.bot_active)
             return
@@ -261,14 +268,14 @@ class PumpingAgent:
 
         if mtype == "master_start":
             self.bot_active = True
-            print("[AGENT] Master strategy START — entries ON")
+            print("[AGENT] Master strategy START - entries ON")
             self.reply(req_id, ok=True, bot_active=True)
             return
 
         if mtype == "master_stop":
-            # Pause entries only — do NOT kill the whole agent process
+            # Pause entries only - do NOT kill the whole agent process
             self.bot_active = False
-            print("[AGENT] Master strategy STOP — entries OFF (agent stays online)")
+            print("[AGENT] Master strategy STOP - entries OFF (agent stays online)")
             self.reply(req_id, ok=True, bot_active=False)
             return
 
@@ -376,7 +383,7 @@ class PumpingAgent:
         )
 
         print(
-            f"[MASTER] DEMO/STRICT: gold=strong-trend→FAST_SCALP  "
+            f"[MASTER] DEMO/STRICT: gold=strong-trend->FAST_SCALP  "
             f"max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
             f"profit_only_close={MASTER_AUTO_CLOSE} account={self.account_type}"
         )
@@ -397,7 +404,7 @@ class PumpingAgent:
 
                 if not self.bot_active:
                     if int(time.time()) % 60 < SCAN_INTERVAL_SEC:
-                        print("[MASTER] bot_active=OFF — waiting for Start Bot")
+                        print("[MASTER] bot_active=OFF - waiting for Start Bot")
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
@@ -414,17 +421,17 @@ class PumpingAgent:
                     if not entries_halted:
                         print(
                             f"[MASTER HALT] equity {equity:.2f} hit {SESSION_MAX_DD_PCT*100:.0f}% DD "
-                            f"from {session_start_equity:.2f} — STOPPING NEW ENTRIES"
+                            f"from {session_start_equity:.2f} - STOPPING NEW ENTRIES"
                         )
                         entries_halted = True
                     time.sleep(10)
                     continue
 
-                # Free margin too thin → broker will stop-out any new trade
+                # Free margin too thin -> broker will stop-out any new trade
                 if free_usd < MIN_FREE_MARGIN_USD:
                     if not _tiny_warned:
                         print(
-                            f"[MASTER HALT] free_margin≈${free_usd:.2f} too low — "
+                            f"[MASTER HALT] free_margin~${free_usd:.2f} too low - "
                             f"no new entries (broker stop-out risk)"
                         )
                         _tiny_warned = True
@@ -443,7 +450,7 @@ class PumpingAgent:
                 mode = "WEEKEND BTC/ETH" if _is_weekend() else "WEEKDAY GOLD"
                 if getattr(self, "_last_schedule_mode", None) != mode:
                     self._last_schedule_mode = mode
-                    print(f"[MASTER] Schedule → {mode} symbols={scan_symbols}")
+                    print(f"[MASTER] Schedule -> {mode} symbols={scan_symbols}")
 
                 for symbol in scan_symbols:
                     if opened_this_cycle:
@@ -577,7 +584,7 @@ class PumpingAgent:
                     f"reason={reason} profit={profit}"
                 )
                 if reason in ("StopOut", "StopLoss", "VMargin"):
-                    print(f"[WARN] Broker forced close ({reason}) — NOT bot.")
+                    print(f"[WARN] Broker forced close ({reason}) - NOT bot.")
                 self.send({
                     "type": "master_trade_close",
                     "master_ticket": ticket,
@@ -606,7 +613,7 @@ class PumpingAgent:
                 peak = profit
             self._master_open[ticket] = meta
 
-            # Strip broker SL/TP — loss exits stay owner/broker only
+            # Strip broker SL/TP - loss exits stay owner/broker only
             if float(pos.get("sl") or 0) or float(pos.get("tp") or 0):
                 try:
                     self.mt5.clear_sl_tp(ticket)
@@ -631,7 +638,7 @@ class PumpingAgent:
                 self._master_close(ticket, meta, "FastScalpTP")
                 continue
             if peak > 0 and profit >= max(0.5, peak * 0.25):
-                # Giveback trail — lock scalp after peak
+                # Giveback trail - lock scalp after peak
                 if profit <= peak * HOLD_TRAIL_PCT and peak >= (margin * 0.2 if margin else 1.0):
                     self._master_close(ticket, meta, "FastScalpTrail")
                     continue
@@ -657,7 +664,7 @@ class PumpingAgent:
         if self.role == "master":
             self.master_loop()
         else:
-            print("[AGENT] Follower mode — waiting for copy commands")
+            print("[AGENT] Follower mode - waiting for copy commands")
             while not self._stop.is_set():
                 time.sleep(1)
 

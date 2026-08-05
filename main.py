@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.1"   # Fix VPS supervisor self-kill on agent restart
+API_VERSION = "3.30.2"   # Fix Windows UnicodeEncodeError crashing agent
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

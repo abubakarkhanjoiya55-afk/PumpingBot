@@ -128,6 +128,9 @@ class Supervisor:
                 "BOT_ACTIVE": "1" if user.get("bot_active") else "0",
                 "ACCOUNT_TYPE": os.environ.get("ACCOUNT_TYPE", "standard"),
                 "PYTHONUNBUFFERED": "1",
+                # Windows cp1252 consoles crash on unicode arrows in print()
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
             })
             if os.environ.get("SYMBOLS"):
                 env["SYMBOLS"] = os.environ["SYMBOLS"]
@@ -157,7 +160,7 @@ class Supervisor:
             agent.last_error = None
             agent.log_path = str(log_path)
             print(f"[VPS] Agent pid={agent.proc.pid} log={log_path}")
-            # Quick death check — surface MT5 login errors immediately
+            # Quick death check - surface MT5 login errors immediately
             time.sleep(3)
             if agent.proc.poll() is not None:
                 agent.status = "error"
@@ -221,8 +224,8 @@ class Supervisor:
                 self.agents[uid] = self.start_agent(user)
                 continue
 
-            # Credentials / role changed → restart.
-            # bot_active is toggled live over WebSocket (set_bot_active) — no restart.
+            # Credentials / role changed -> restart.
+            # bot_active is toggled live over WebSocket (set_bot_active) - no restart.
             bot_active = bool(user.get("bot_active"))
             need_restart = (
                 int(user["mt5_login"]) != existing.login
@@ -249,9 +252,9 @@ class Supervisor:
                     pass
                 print(
                     f"[VPS] Restart dead agent {existing.username} "
-                    f"exit={exit_code} — check log agent_{existing.user_id}_{existing.login}.log"
+                    f"exit={exit_code} - check log agent_{existing.user_id}_{existing.login}.log"
                 )
-                # IMPORTANT: never taskkill python.exe / all terminal64 —
+                # IMPORTANT: never taskkill python.exe / all terminal64 -
                 # that kills THIS supervisor process too.
                 self.stop_agent(existing)
                 time.sleep(5)
@@ -260,11 +263,11 @@ class Supervisor:
                 self.agents[uid] = fresh
                 continue
 
-            # Refresh fields — do NOT mark ready just because process is alive
+            # Refresh fields - do NOT mark ready just because process is alive
             existing.password = user["mt5_password"]
             if bot_active != existing.bot_active:
                 print(
-                    f"[VPS] {existing.username} bot_active {existing.bot_active}→{bot_active} "
+                    f"[VPS] {existing.username} bot_active {existing.bot_active}->{bot_active} "
                     f"(live WS; no restart)"
                 )
             existing.bot_active = bot_active
@@ -277,7 +280,7 @@ class Supervisor:
         print(f"  SERVER_URL = {SERVER_URL}")
         print(f"  REPO_DIR   = {REPO_DIR}")
         print(f"  POLL_SEC   = {POLL_SEC}")
-        print("  Users mobile pe login karenge — yahan agents auto chalenge")
+        print("  Users mobile pe login karenge - yahan agents auto chalenge")
         print("=" * 60)
         while not self._stop:
             try:

@@ -1,5 +1,5 @@
 """
-Local MetaTrader5 wrapper — Windows only, no MetaAPI.
+Local MetaTrader5 wrapper - Windows only, no MetaAPI.
 
 Requires: pip install MetaTrader5
 And a running / installed MT5 terminal logged into the account.
@@ -168,7 +168,7 @@ class LocalMT5:
 
     def resolve_symbols(self, bases: list[str], prefer_suffix: str = "c") -> list[str]:
         """
-        Map base symbols (XAUUSD) → broker symbols that exist on this account.
+        Map base symbols (XAUUSD) -> broker symbols that exist on this account.
         Cent accounts: prefer 'c' (XAUUSDc). Standard often 'm' (XAUUSDm).
         """
         mt5 = self._mt5
@@ -195,7 +195,7 @@ class LocalMT5:
                     break
             if found:
                 resolved.append(found)
-                print(f"[LOCAL MT5] symbol {base} → {found}")
+                print(f"[LOCAL MT5] symbol {base} -> {found}")
             else:
                 print(f"[LOCAL MT5] symbol missing for base={base}")
         return resolved
