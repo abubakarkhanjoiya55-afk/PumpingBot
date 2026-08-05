@@ -297,45 +297,98 @@
     $("scUpdateNow").onclick = () => applyUpdate(info);
   }
 
-  async function run() {
+  let _pollTimer = null;
+  let _applying = false;
+
+  async function runOnce() {
     try {
       const isDesktop = await detectDesktop();
       const info = await resolveUpdateInfo(isDesktop);
-      if (!info || !info.version) return;
+      if (!info || !info.version) return info;
 
       window.SceneCutVersion = info;
 
       // Nothing new
       if (!info.update_available) {
-        // Still show What's New once for this version on first open
         const seen = seenVersion();
-        if (seen === info.version) return;
+        if (seen === info.version) return info;
         const dismissed = dismissedVersion();
-        if (dismissed === info.version) return;
+        if (dismissed === info.version) return info;
         wire(info);
         if (!seen) showModal(info);
-        return;
+        return info;
       }
 
-      // Update available — always nudge (ignore old dismiss for older version)
       const dismissed = dismissedVersion();
-      if (dismissed && dismissed === info.version && !isDesktop) return;
+      if (dismissed && dismissed === info.version && !isDesktop) return info;
 
       wire(info);
       if (isDesktop) {
-        showModal(info);
-        // CapCut-style: desktop pe auto-start update after short beat
-        setTimeout(() => {
-          if ($("scUpdateModal")?.classList.contains("open")) {
-            applyUpdate(info);
-          }
-        }, 1200);
+        // CapCut-style push: modal dikhao + khud apply (bar-bar open nahi)
+        if (!_applying) {
+          showModal(info);
+          _applying = true;
+          setTimeout(() => applyUpdate(info), 800);
+        }
       } else {
         showToast(info);
       }
+      return info;
     } catch (_) {
-      /* offline / ignore */
+      return null;
     }
+  }
+
+  async function pollDesktopPush() {
+    try {
+      const isDesktop = await detectDesktop();
+      if (!isDesktop) return;
+      // Prefer desktop poll endpoint (compares LIVE vs bundled)
+      let info = null;
+      try {
+        const poll = await fetchJson("/api/desktop/update/poll");
+        if (poll && poll.ok && poll.update_available && !poll.busy && !_applying) {
+          info = {
+            version: poll.latest,
+            current: poll.current,
+            title: poll.title || "Update aa gaya",
+            notes: poll.notes || [],
+            setup_url: poll.setup_url,
+            update_available: true,
+            isDesktop: true,
+          };
+        }
+      } catch (_) {
+        /* fall through to generic check */
+      }
+      if (!info) {
+        const resolved = await resolveUpdateInfo(true);
+        if (resolved && resolved.update_available) info = resolved;
+      }
+      if (info && info.update_available && !_applying) {
+        _applying = true;
+        wire(info);
+        showModal(info);
+        $("scUpdateTitle").textContent = "Update aa gaya — install ho raha hai";
+        await applyUpdate(info);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function startDesktopPushPolling() {
+    if (_pollTimer) return;
+    // While app open: har ~40s LIVE check — update push + auto restart
+    _pollTimer = setInterval(pollDesktopPush, 40000);
+    // First background check soon after load
+    setTimeout(pollDesktopPush, 15000);
+  }
+
+  async function run() {
+    const info = await runOnce();
+    const isDesktop = (info && info.isDesktop) || (await detectDesktop());
+    if (isDesktop) startDesktopPushPolling();
   }
 
   if (document.readyState === "loading") {

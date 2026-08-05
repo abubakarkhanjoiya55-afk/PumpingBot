@@ -239,7 +239,7 @@ def ensure_webview_installed() -> bool:
 
 
 def restart_desktop(install_dir: Path) -> None:
-    """Relaunch desktop after file sync."""
+    """Relaunch desktop after update — user ko manually open nahi karna."""
     install_dir = Path(install_dir)
     vbs = install_dir / "desktop" / "LaunchSilent.vbs"
     exe = install_dir / "SceneCutProPlus.exe"
@@ -247,21 +247,32 @@ def restart_desktop(install_dir: Path) -> None:
 
     def _launch() -> None:
         try:
+            creation = 0
+            if sys.platform.startswith("win"):
+                creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             if exe.exists():
-                subprocess.Popen([str(exe)], cwd=str(install_dir), close_fds=True)
+                subprocess.Popen(
+                    [str(exe)],
+                    cwd=str(install_dir),
+                    close_fds=True,
+                    creationflags=creation,
+                )
             elif vbs.exists():
                 subprocess.Popen(
                     ["wscript.exe", str(vbs)],
                     cwd=str(install_dir),
                     close_fds=True,
+                    creationflags=creation,
                 )
             elif bat.exists():
                 subprocess.Popen(
                     ["cmd.exe", "/c", str(bat)],
                     cwd=str(install_dir),
                     close_fds=True,
+                    creationflags=creation,
                 )
         except Exception:  # noqa: BLE001
             pass
 
-    threading.Timer(0.6, _launch).start()
+    # Give current process a moment to release file locks, then relaunch
+    threading.Timer(1.4, _launch).start()

@@ -124,6 +124,7 @@ SHUTDOWN = threading.Event()
 APP_PROC = None
 WINDOW = None
 _WINDOW_LIVE = False
+_PUSH_UPDATE = {"busy": False, "last": ""}
 
 # Minimal CapCut-style home if templates are missing (broken / half-updated install)
 _FALLBACK_HOME = """<!doctype html>
@@ -502,19 +503,62 @@ def api_desktop_pick_file():
 
 @app.post("/api/desktop/update")
 def api_desktop_update():
+    """Silent CapCut-style update: apply + auto-restart (user reopen nahi)."""
     if os.environ.get("SCENECUT_DESKTOP") != "1":
         return jsonify({"ok": False, "error": "desktop only"}), 400
+    if _PUSH_UPDATE.get("busy"):
+        return jsonify({"ok": True, "busy": True, "message": "Update pehle se chal raha hai…"})
+    _PUSH_UPDATE["busy"] = True
     install = _install_dir()
-    if getattr(sys, "frozen", False):
-        result = update_frozen_app()
+    try:
+        if getattr(sys, "frozen", False):
+            result = update_frozen_app()
+            if result.get("ok"):
+                # Inno /RESTARTAPPLICATIONS + explicit relaunch
+                restart_desktop(install)
+                threading.Timer(1.0, _exit_soon).start()
+            else:
+                _PUSH_UPDATE["busy"] = False
+            return jsonify(result)
+        result = sync_from_live(install, force=True)
         if result.get("ok"):
-            threading.Timer(0.8, _exit_soon).start()
+            ver = str(result.get("version") or "")
+            if ver:
+                write_local_version(install, ver)
+            restart_desktop(install)
+            threading.Timer(1.0, _exit_soon).start()
+        else:
+            _PUSH_UPDATE["busy"] = False
         return jsonify(result)
-    result = sync_from_live(install, force=True)
-    if result.get("ok"):
-        restart_desktop(install)
-        threading.Timer(0.9, _exit_soon).start()
-    return jsonify(result)
+    except Exception as exc:  # noqa: BLE001
+        _PUSH_UPDATE["busy"] = False
+        return jsonify({"ok": False, "reason": str(exc)}), 500
+
+
+@app.get("/api/desktop/update/poll")
+def api_desktop_update_poll():
+    """Frontend/background: kya LIVE pe naya version hai?"""
+    if os.environ.get("SCENECUT_DESKTOP") != "1":
+        return jsonify({"ok": False, "desktop": False})
+    try:
+        man = remote_manifest()
+        remote = str(man.get("version") or "").strip()
+        local = _bundled_version() or local_version(_install_dir())
+        return jsonify(
+            {
+                "ok": True,
+                "desktop": True,
+                "update_available": bool(remote and local and remote != local),
+                "current": local,
+                "latest": remote,
+                "title": man.get("title"),
+                "notes": man.get("notes") or [],
+                "busy": bool(_PUSH_UPDATE.get("busy")),
+                "setup_url": man.get("setup_url"),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "reason": str(exc)}), 500
 
 
 def _prepend_bundled_ffmpeg() -> None:
@@ -526,6 +570,56 @@ def _prepend_bundled_ffmpeg() -> None:
         if (folder / "ffmpeg.exe").exists():
             os.environ["PATH"] = str(folder) + os.pathsep + os.environ.get("PATH", "")
             return
+
+
+def _start_push_update_watcher() -> None:
+    """
+    CapCut-style: app khuli ho to LIVE se update khud aa jaye.
+    User ko bar-bar app open nahi karna — apply + auto-restart.
+    """
+
+    def _loop() -> None:
+        # First check after UI settles
+        time.sleep(25)
+        while not SHUTDOWN.is_set():
+            if _PUSH_UPDATE.get("busy"):
+                time.sleep(10)
+                continue
+            try:
+                man = remote_manifest()
+                remote = str(man.get("version") or "").strip()
+                local = _bundled_version() or local_version(_install_dir())
+                if remote and local and remote != local and remote != _PUSH_UPDATE.get("last"):
+                    _log(f"Push-update {local} → {remote} (auto)")
+                    _PUSH_UPDATE["busy"] = True
+                    _PUSH_UPDATE["last"] = remote
+                    install = _install_dir()
+                    if getattr(sys, "frozen", False):
+                        result = update_frozen_app(man)
+                        if result.get("ok"):
+                            restart_desktop(install)
+                            threading.Timer(1.2, _exit_soon).start()
+                            return
+                        _PUSH_UPDATE["busy"] = False
+                    else:
+                        result = sync_from_live(install, force=True)
+                        if result.get("ok"):
+                            write_local_version(install, remote)
+                            restart_desktop(install)
+                            threading.Timer(1.0, _exit_soon).start()
+                            return
+                        _PUSH_UPDATE["busy"] = False
+            except Exception as exc:  # noqa: BLE001
+                _log(f"push-update watch skip: {exc}")
+                _PUSH_UPDATE["busy"] = False
+            # Poll every ~45s while app open
+            for _ in range(45):
+                if SHUTDOWN.is_set():
+                    return
+                time.sleep(1)
+
+    threading.Thread(target=_loop, daemon=True, name="sc-push-update").start()
+    _log("Push-update watcher on (silent live updates)")
 
 
 def _native_fail_message() -> str:
@@ -568,6 +662,18 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(1.0)
                 return 0
         else:
+            # Force pull when LIVE is newer than this install (CapCut timeline etc.)
+            try:
+                man = remote_manifest()
+                remote_ver = str(man.get("version") or "").strip()
+                local_ver = _bundled_version() or local_version(_install_dir())
+                if remote_ver and local_ver and remote_ver != local_ver:
+                    _log(f"Live update {local_ver} → {remote_ver}")
+                    _clear_version_marker()
+                    if _bootstrap_sync(force=True):
+                        _reexec()
+            except Exception as exc:  # noqa: BLE001
+                _log(f"live update check skip: {exc}")
             if not (_install_dir() / "templates" / "home.html").exists():
                 _clear_version_marker()
                 if _bootstrap_sync(force=True):
@@ -598,6 +704,10 @@ def main(argv: list[str] | None = None) -> int:
     # Don't block UI on slow server — embedded home shows immediately.
     # Still wait briefly so New project API is likely ready.
     _wait_until_up(port, timeout=8.0)
+
+    # Silent LIVE push updates while app stays open (no manual reopen)
+    if not args.no_update:
+        _start_push_update_watcher()
 
     # Debug browser path only
     if args.browser:
