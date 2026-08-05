@@ -13,20 +13,20 @@ DAILY_TRAIL_GAP       = 0.01
 RISK_PER_TRADE_PCT    = 0.004   # demo USD accuracy test sizing
 MAX_OPEN_TRADES       = 1       # one bot trade at a time
 MAX_TRADES_PER_SYMBOL = 1
-MIN_PATTERN_SCORE     = 50      # demo: more entries for accuracy testing
-STRONG_SCORE          = 70
+MIN_PATTERN_SCORE     = 40      # demo: more entries for accuracy testing
+STRONG_SCORE          = 65
 MIN_BREAKOUT_SCORE    = MIN_PATTERN_SCORE  # legacy alias used by main.py
 MIN_SCORE             = MIN_PATTERN_SCORE
-MIN_TREND_STRUCTURE   = 14
+MIN_TREND_STRUCTURE   = 12
 MIN_EFFECTIVE_SCORE   = MIN_PATTERN_SCORE
 MIN_CONFLUENCE        = 0
 SCAN_INTERVAL_SEC     = 3
-MARGIN_PROFIT_TRIGGER = 0.35
+MARGIN_PROFIT_TRIGGER = 0.45    # hold a bit longer so trades stay visible
 MARGIN_SL_LOCK_PCT    = 0.70
 MAX_SPREAD_POINTS     = 2000
-MIN_COOLDOWN_SEC      = 60
-STRONG_COOLDOWN_SEC   = 30
-LOSS_COOLDOWN_SEC     = 600
+MIN_COOLDOWN_SEC      = 45
+STRONG_COOLDOWN_SEC   = 25
+LOSS_COOLDOWN_SEC     = 300
 TRADE_MAX_LOSS_PCT    = 0.004
 EARLY_LOSS_CUT_PCT    = 0.0025
 MASTER_AUTO_LOSS_CUT  = False
@@ -36,16 +36,19 @@ SESSION_MAX_DD_PCT    = 0.12
 STALE_LOSS_MINUTES    = 6
 BREAKEVEN_PROFIT_USD  = 3.0
 SCALP_ATR_MULT        = 0.7
-HOLD_MIN_PROFIT       = 5.0
+HOLD_MIN_PROFIT       = 1.20    # do not scalp-close under ~$1.20
 HOLD_TRAIL_PCT        = 0.55
+MIN_HOLD_SEC          = 90      # avoid 8-second flash trades
 SL_BUFFER_ATR_MULT    = 0.35
 SL_HALF_POINT         = 0.5
 TP_HALF_POINT         = 0.5
-MIN_H1_STRENGTH       = 14
-STRONG_TREND_STRENGTH = 26
+MIN_H1_STRENGTH       = 12
+STRONG_TREND_STRENGTH = 24
 GOLD_ALLOW_M1_FALLBACK = True
 # One min-lot open shortly after Start Bot to prove pipeline (standard/demo)
 DEMO_SMOKE_TRADE = True
+# If no bot position for this long, open soft H1 min-lot (demo accuracy)
+IDLE_FORCE_ENTRY_SEC  = 480
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,
@@ -669,8 +672,22 @@ def get_strict_trend(symbol, mt5_manager):
     """
     Trend filter: H1 direction required. M15 same side preferred.
     Demo: if M15 chop/disagree lightly, still allow H1-only with lower strength.
+    Soft lean: even mild H1 structure can pass for accuracy testing.
     """
     h1_dir, h1_str, h1_d = get_h1_bias(symbol, mt5_manager)
+    if not h1_dir:
+        # Last-resort: use last closed H1 candle direction for demo continuity
+        try:
+            tf = getattr(mt5_manager, "TIMEFRAME_H1", "1h")
+            ohlc = fetch_ohlc(symbol, tf, 8, mt5_manager)
+            if ohlc and len(ohlc["closes"]) >= 3:
+                c = ohlc["closes"]
+                if c[-2] > c[-3]:
+                    h1_dir, h1_str, h1_d = "BUY", 12, "h1_last_up"
+                elif c[-2] < c[-3]:
+                    h1_dir, h1_str, h1_d = "SELL", 12, "h1_last_down"
+        except Exception:
+            pass
     if not h1_dir or h1_str < MIN_H1_STRENGTH:
         return None, 0, {"reason": "weak_h1", "h1": h1_d, "h1_str": h1_str}
 

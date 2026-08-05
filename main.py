@@ -145,7 +145,13 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.11"   # /me trade diag + force-smoke timeout = queued
+API_VERSION = "3.31.0"   # Remote VPS restart + server idle entries via copy_open
+CODE_REPO_BRANCH = "main"
+
+# Supervisor remote commands (in-memory; supervisor polls roster)
+_vps_command_lock = threading.Lock()
+_vps_commands: list[dict] = []  # {id, action, status, created_at, result}
+_idle_entry_state = {"last_push_at": 0.0, "last_side": "BUY"}
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")
@@ -2602,7 +2608,7 @@ def force_smoke_trade(current_user: User = Depends(get_current_user),
                       db: Session = Depends(get_db)):
     """
     Force one min-lot demo trade on the VPS agent (Algo Trading proof).
-    Website green does not mean MT5 accepts orders — this proves the path.
+    Prefers copy_open (works on old agents) then force_smoke (new agents).
     """
     if not is_master_user(current_user):
         raise HTTPException(403, "Master only")
@@ -2621,30 +2627,128 @@ def force_smoke_trade(current_user: User = Depends(get_current_user),
         raise HTTPException(400, "Force smoke only works in VPS agent mode")
 
     agent_hub.notify_bot_active(current_user.id, True)
-    notify = agent_hub.notify_force_smoke(current_user.id)
+    # Prefer copy_open — every agent version already supports it
+    from datetime import datetime as _dt
+    weekend = _dt.utcnow().weekday() >= 5
+    symbol = "BTCUSDm" if weekend else "XAUUSDm"
+    # Detect cent from agent session if possible
+    for a in agent_hub.list_agents():
+        if a.get("user_id") == current_user.id and a.get("is_cent"):
+            symbol = ("BTCUSDc" if weekend else "XAUUSDc")
+            break
+
+    bal = float(current_user.vps_balance or 1000)
+    open_res = agent_hub.notify_copy_open(
+        current_user.id,
+        symbol=symbol,
+        side="BUY",
+        lot=0.01,
+        master_balance=bal,
+        score=90,
+    )
     online = any(
         a["user_id"] == current_user.id and a.get("ready")
         for a in agent_hub.list_agents()
     )
+    if open_res.get("ok") and not open_res.get("error"):
+        ticket = open_res.get("ticket")
+        current_user.vps_last_error = f"ok:force_open:{symbol}:ticket={ticket}"
+        db.commit()
+        return {
+            "ok": True,
+            "message": f"Test trade OPEN: {symbol} ticket={ticket}. Open Positions refresh karo.",
+            "agent_online": online,
+            "notify": open_res,
+            "method": "copy_open",
+        }
+
+    # Fallback: force_smoke for newer agents
+    notify = agent_hub.notify_force_smoke(current_user.id)
     if not notify.get("ok"):
         return {
             "ok": False,
             "message": (
-                "Agent offline ya purana code — VPS pe git pull + supervisor restart karo. "
-                f"Detail: {notify.get('error') or notify}"
+                f"Order fail: {open_res.get('error') or open_res}. "
+                "MT5 Algo Trading GREEN check karo. "
+                f"Smoke: {notify.get('error') or notify}"
             ),
             "agent_online": online,
-            "notify": notify,
+            "notify": {"copy_open": open_res, "force_smoke": notify},
         }
     return {
         "ok": True,
         "message": (
-            "Test trade queued. 10-30 sec wait — Open Positions mein XAUUSDm dikhna chahiye. "
-            "Agar fail: MT5 Algo Trading GREEN + XAUUSDm Market Watch. VPS log: [SMOKE OK]/[SMOKE FAIL]"
+            "Test trade queued (smoke). 10-30 sec wait. "
+            "Agar fail: Algo Trading GREEN + XAUUSDm Market Watch."
         ),
         "agent_online": online,
         "notify": notify,
+        "method": "force_smoke",
+        "copy_open_error": open_res,
     }
+
+
+@app.post("/bot/force-open")
+def force_open_trade(current_user: User = Depends(get_current_user),
+                     db: Session = Depends(get_db)):
+    """Alias — same as force-smoke (copy_open path)."""
+    return force_smoke_trade(current_user, db)
+
+
+@app.post("/admin/vps/remote-restart")
+def vps_remote_restart(current_user: User = Depends(get_current_user)):
+    """
+    Queue git pull + agent restart for the Windows VPS supervisor.
+    Requires supervisor code 3.31+ polling commands from roster.
+    """
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Master only")
+    cmd = {
+        "id": str(uuid.uuid4()),
+        "action": "git_pull_restart",
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+        "result": None,
+        "branch": CODE_REPO_BRANCH,
+    }
+    with _vps_command_lock:
+        # Replace any pending pull/restart
+        global _vps_commands
+        _vps_commands = [c for c in _vps_commands if c.get("status") != "pending"]
+        _vps_commands.append(cmd)
+    return {
+        "ok": True,
+        "message": (
+            "VPS command queued: git pull + agent restart. "
+            "Supervisor 3.31+ 10-30 sec mein pick karega. "
+            "Purana supervisor ignore karega — tab Contabo pe ek baar START_HERE.bat dubara chalao."
+        ),
+        "command": cmd,
+    }
+
+
+@app.get("/admin/vps/commands")
+def vps_list_commands(
+    _: bool = Depends(require_vps_secret),
+):
+    with _vps_command_lock:
+        return {"ok": True, "commands": list(_vps_commands)[-20:]}
+
+
+@app.post("/admin/vps/commands/{cmd_id}/ack")
+def vps_ack_command(
+    cmd_id: str,
+    _: bool = Depends(require_vps_secret),
+):
+    body_status = "done"
+    # FastAPI may not have body — accept query
+    with _vps_command_lock:
+        for c in _vps_commands:
+            if c.get("id") == cmd_id:
+                c["status"] = body_status
+                c["result"] = "acked"
+                return {"ok": True, "command": c}
+    raise HTTPException(404, "command not found")
 
 
 @app.get("/signals", response_model=list[SignalOut])
@@ -2772,11 +2876,81 @@ def get_status(current_user: User = Depends(get_current_user)):
 
 
 # ─── FIX: Startup Event — passes credentials, sets metaapi_ready_event ────────
+
+def idle_entry_watchdog():
+    """
+    If master bot is ON, agent online, and flat for too long — push a min-lot
+    via copy_open (works even when VPS agent strategy is stuck / old code).
+    """
+    IDLE_SEC = float(os.environ.get("SERVER_IDLE_ENTRY_SEC", "480"))  # 8 min
+    print(f"[IDLE WATCH] server-side copy_open every {IDLE_SEC:.0f}s when flat")
+    while True:
+        try:
+            time.sleep(45)
+            if not (agent_mode_enabled() and not USE_METAAPI):
+                continue
+            db = SessionLocal()
+            try:
+                master = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
+                if not master or not master.bot_active or not master.mt5_login:
+                    continue
+                agents = agent_hub.list_agents()
+                sess = next((a for a in agents if a.get("user_id") == master.id and a.get("ready")), None)
+                if not sess:
+                    continue
+                positions = sess.get("positions") or agent_hub.get_positions(master.id) or []
+                if positions:
+                    _idle_entry_state["last_push_at"] = time.time()
+                    continue
+                # Also check open trades in DB
+                open_n = db.query(Trade).filter(
+                    Trade.user_id == master.id, Trade.status == "open"
+                ).count()
+                if open_n > 0:
+                    continue
+                last = float(_idle_entry_state.get("last_push_at") or 0)
+                if time.time() - last < IDLE_SEC:
+                    continue
+                weekend = datetime.utcnow().weekday() >= 5
+                symbol = "BTCUSDm" if weekend else "XAUUSDm"
+                if sess.get("is_cent"):
+                    symbol = "BTCUSDc" if weekend else "XAUUSDc"
+                side = _idle_entry_state.get("last_side") or "BUY"
+                # Flip side occasionally so we don't only buy
+                side = "SELL" if side == "BUY" else "BUY"
+                bal = float(sess.get("balance") or master.vps_balance or 1000)
+                print(f"[IDLE WATCH] pushing {symbol} {side} via copy_open")
+                res = agent_hub.notify_copy_open(
+                    master.id,
+                    symbol=symbol,
+                    side=side,
+                    lot=0.01,
+                    master_balance=bal,
+                    score=85,
+                )
+                _idle_entry_state["last_push_at"] = time.time()
+                _idle_entry_state["last_side"] = side
+                if res.get("ok") and res.get("ticket"):
+                    master.vps_last_error = f"ok:idle:{symbol}:{side}:ticket={res.get('ticket')}"
+                    print(f"[IDLE WATCH] OPEN ok ticket={res.get('ticket')}")
+                else:
+                    master.vps_last_error = f"fail:idle:{res.get('error') or res}"
+                    print(f"[IDLE WATCH] FAIL {res}")
+                db.commit()
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"[IDLE WATCH] error: {e}")
+            time.sleep(30)
+
+
 @app.on_event("startup")
 async def startup_event():
     migrate_schema(engine)
     agent_hub.bind_loop(asyncio.get_running_loop())
     threading.Thread(target=daily_scheduler, daemon=True).start()
+    if agent_mode_enabled() and not USE_METAAPI:
+        threading.Thread(target=idle_entry_watchdog, daemon=True, name="idle-entry").start()
     if USE_METAAPI:
         start_copy_watcher()
     start_device_care_scanner()
@@ -3268,11 +3442,16 @@ def vps_roster(_: bool = Depends(require_vps_secret), db: Session = Depends(get_
             "vps_status": u.vps_status,
         })
     db.commit()
+    with _vps_command_lock:
+        pending = [c for c in list(_vps_commands) if c.get("status") == "pending"]
     return {
         "ok": True,
         "count": len(out),
         "users": out,
         "trading_backend": TRADING_BACKEND,
+        "code_version": API_VERSION,
+        "repo_branch": CODE_REPO_BRANCH,
+        "commands": pending,
     }
 
 

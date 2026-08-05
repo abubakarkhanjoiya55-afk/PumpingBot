@@ -5,6 +5,7 @@ PumpingBot Windows VPS Supervisor
 - Provisions a portable MT5 terminal per account
 - Starts local_agent for each user (master + followers)
 - Users never run anything on their PC
+- Remote: git_pull_restart command from roster (phone se door ho to bhi)
 
 Env:
   SERVER_URL=https://your-app.up.railway.app
@@ -14,6 +15,8 @@ Env:
   PYTHON_EXE=python
   REPO_DIR=C:\\PumpingBot\\PumpingBot   (git clone path)
   POLL_SEC=10
+  AUTO_GIT_PULL=1
+  AUTO_GIT_PULL_SEC=1800
 """
 
 from __future__ import annotations
@@ -36,6 +39,10 @@ VPS_SECRET = os.environ.get("VPS_SECRET") or ""
 PYTHON_EXE = os.environ.get("PYTHON_EXE") or sys.executable
 REPO_DIR = Path(os.environ.get("REPO_DIR") or Path(__file__).resolve().parents[1])
 HOST_NAME = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "vps"
+AUTO_GIT_PULL = (os.environ.get("AUTO_GIT_PULL", "1") or "1").strip().lower() in (
+    "1", "true", "yes",
+)
+AUTO_GIT_PULL_SEC = float(os.environ.get("AUTO_GIT_PULL_SEC", "1800"))
 
 
 class ManagedAgent:
@@ -70,14 +77,23 @@ class Supervisor:
         self._stop = False
         self.session = requests.Session()
         self.session.headers["X-VPS-Secret"] = VPS_SECRET
+        self._last_auto_pull = 0.0
+        self._last_roster_meta: dict = {}
 
     def _url(self, path: str) -> str:
         return f"{SERVER_URL}{path}"
 
-    def fetch_roster(self) -> list[dict]:
+    def fetch_roster(self) -> tuple[list[dict], dict]:
         r = self.session.get(self._url("/admin/vps/roster"), timeout=30)
         r.raise_for_status()
-        return r.json().get("users") or []
+        data = r.json() or {}
+        users = data.get("users") or []
+        meta = {
+            "commands": data.get("commands") or [],
+            "code_version": data.get("code_version"),
+            "repo_branch": data.get("repo_branch") or "main",
+        }
+        return users, meta
 
     def fetch_token(self, user_id: int) -> str:
         r = self.session.post(
@@ -86,6 +102,71 @@ class Supervisor:
         )
         r.raise_for_status()
         return r.json()["access_token"]
+
+    def ack_command(self, cmd_id: str, result: str = "done"):
+        try:
+            self.session.post(
+                self._url(f"/admin/vps/commands/{cmd_id}/ack"),
+                timeout=20,
+            )
+            print(f"[VPS] command ack id={cmd_id} result={result}")
+        except Exception as e:
+            print(f"[VPS] command ack failed: {e}")
+
+    def git_pull(self, branch: str = "main") -> bool:
+        """Pull latest code so agents pick up strategy/smoke fixes."""
+        try:
+            print(f"[VPS] git fetch/pull origin {branch} in {REPO_DIR}")
+            subprocess.run(
+                ["git", "fetch", "origin", branch],
+                cwd=str(REPO_DIR), check=False, timeout=120,
+            )
+            r = subprocess.run(
+                ["git", "pull", "origin", branch],
+                cwd=str(REPO_DIR), capture_output=True, text=True, timeout=180,
+            )
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            print(f"[VPS] git pull exit={r.returncode}: {out[-500:]}")
+            return r.returncode == 0
+        except Exception as e:
+            print(f"[VPS] git pull error: {e}")
+            return False
+
+    def restart_all_agents(self, users_by_id: dict):
+        print("[VPS] Restarting all agents after code update...")
+        for uid in list(self.agents.keys()):
+            self.stop_agent(self.agents[uid])
+            del self.agents[uid]
+        time.sleep(3)
+        for uid, user in users_by_id.items():
+            self.agents[uid] = self.start_agent(user)
+
+    def handle_commands(self, commands: list, users_by_id: dict, branch: str):
+        for cmd in commands:
+            if not isinstance(cmd, dict):
+                continue
+            if cmd.get("status") and cmd.get("status") != "pending":
+                continue
+            action = (cmd.get("action") or "").strip()
+            cmd_id = cmd.get("id") or ""
+            br = cmd.get("branch") or branch or "main"
+            print(f"[VPS] remote command action={action} id={cmd_id}")
+            if action in ("git_pull_restart", "pull_restart", "restart"):
+                ok = True
+                if action != "restart":
+                    ok = self.git_pull(br)
+                self.restart_all_agents(users_by_id)
+                self._last_auto_pull = time.time()
+                if cmd_id:
+                    self.ack_command(cmd_id, "ok" if ok else "pull_failed_but_restarted")
+            elif action == "git_pull":
+                ok = self.git_pull(br)
+                if cmd_id:
+                    self.ack_command(cmd_id, "ok" if ok else "fail")
+            else:
+                print(f"[VPS] unknown command {action}")
+                if cmd_id:
+                    self.ack_command(cmd_id, "unknown")
 
     def report(self):
         payload = {
@@ -191,9 +272,8 @@ class Supervisor:
                 except Exception:
                     agent.proc.kill()
             except Exception as e:
-                print(f"[VPS] stop error: {e}")
+                print(f"[VPS] agent stop error: {e}")
         agent.proc = None
-        # Also stop portable MT5 terminal so logins don't pile up
         if agent.term_proc and agent.term_proc.poll() is None:
             try:
                 agent.term_proc.terminate()
@@ -208,8 +288,40 @@ class Supervisor:
         agent.ready = False
 
     def sync(self):
-        roster = self.fetch_roster()
+        roster, meta = self.fetch_roster()
+        self._last_roster_meta = meta
         wanted = {int(u["user_id"]): u for u in roster}
+        branch = meta.get("repo_branch") or "main"
+
+        # Remote commands from website / cloud agent (git pull + restart)
+        cmds = meta.get("commands") or []
+        if cmds:
+            self.handle_commands(cmds, wanted, branch)
+
+        # Periodic auto-update so Contabo stays on latest main without manual pull
+        now = time.time()
+        if AUTO_GIT_PULL and (now - self._last_auto_pull) >= AUTO_GIT_PULL_SEC:
+            self._last_auto_pull = now
+            before = ""
+            try:
+                before = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"], cwd=str(REPO_DIR), text=True
+                ).strip()
+            except Exception:
+                pass
+            if self.git_pull(branch):
+                after = before
+                try:
+                    after = subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], cwd=str(REPO_DIR), text=True
+                    ).strip()
+                except Exception:
+                    pass
+                if after and before and after != before:
+                    print(f"[VPS] code updated {before[:8]} -> {after[:8]} - restarting agents")
+                    self.restart_all_agents(wanted)
+                    return
+                print("[VPS] auto-pull: already up to date")
 
         if not wanted:
             print(
@@ -292,8 +404,16 @@ class Supervisor:
         print(f"  SERVER_URL = {SERVER_URL}")
         print(f"  REPO_DIR   = {REPO_DIR}")
         print(f"  POLL_SEC   = {POLL_SEC}")
+        print(f"  AUTO_PULL  = {AUTO_GIT_PULL} every {AUTO_GIT_PULL_SEC}s")
         print("  Users mobile pe login karenge - yahan agents auto chalenge")
+        print("  Remote git_pull_restart supported (roster commands)")
         print("=" * 60)
+        # Pull once on boot so first start is fresh
+        try:
+            self.git_pull("main")
+            self._last_auto_pull = time.time()
+        except Exception as e:
+            print(f"[VPS] boot pull skip: {e}")
         while not self._stop:
             try:
                 self.sync()
