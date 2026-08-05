@@ -1,6 +1,6 @@
 ; SceneCut Pro+ — Inno Setup script (built by GitHub Actions on Windows)
 #define MyAppName "SceneCut Pro+"
-#define MyAppVersion "1.6.1"
+#define MyAppVersion "1.6.2"
 #define MyAppPublisher "SceneCut"
 #define MyAppExeName "SceneCutProPlus.exe"
 

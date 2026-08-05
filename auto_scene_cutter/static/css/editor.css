@@ -579,16 +579,23 @@ body {
 }
 .ruler {
   background: #161618; border-bottom: 1px solid rgba(46,46,52,0.7);
-  position: relative; overflow: hidden;
+  position: relative;
+  overflow-x: auto; overflow-y: hidden;
   font-size: 0.64rem; color: var(--muted);
+  scrollbar-width: none; /* sync-scroll with tracks; hide duplicate bar */
 }
+.ruler::-webkit-scrollbar { display: none; height: 0; }
 .ruler-mark {
   position: absolute; top: 0; bottom: 0;
   border-left: 1px solid rgba(255,255,255,0.08);
   padding-left: 4px; padding-top: 3px; white-space: nowrap;
+  pointer-events: none;
 }
 .tracks {
-  position: relative; overflow-x: auto; overflow-y: hidden;
+  position: relative;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #5b21b6 #1a1a1e;
   background:
     repeating-linear-gradient(
       90deg,
@@ -598,10 +605,23 @@ body {
       transparent 60px
     );
 }
+.tracks::-webkit-scrollbar { height: 10px; }
+.tracks::-webkit-scrollbar-thumb {
+  background: #5b21b6; border-radius: 999px; border: 2px solid #121214;
+}
+.tracks::-webkit-scrollbar-track { background: #1a1a1e; }
 .track {
   height: 50%;
   border-bottom: 1px solid rgba(46,46,52,0.6);
   position: relative; min-width: 100%;
+}
+/* In-flow width driver — absolute clips alone don't create end scroll range */
+.tl-spacer {
+  position: relative;
+  height: 1px;
+  min-height: 1px;
+  pointer-events: none;
+  visibility: hidden;
 }
 
 .audio-wave {

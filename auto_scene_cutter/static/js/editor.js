@@ -849,7 +849,11 @@ function renderRuler(maxEnd, width) {
   const ruler = $("timeRuler");
   if (!ruler) return;
   ruler.innerHTML = "";
-  ruler.style.minWidth = `${width}px`;
+  // In-flow spacer so ruler can scroll to the real end (absolute marks alone don't expand scrollWidth)
+  const spacer = document.createElement("div");
+  spacer.className = "tl-spacer";
+  spacer.style.width = `${width}px`;
+  ruler.appendChild(spacer);
   const step = state.pxPerSec >= 40 ? 1 : state.pxPerSec >= 20 ? 5 : 10;
   for (let t = 0; t <= maxEnd + step; t += step) {
     const mark = document.createElement("div");
@@ -860,6 +864,7 @@ function renderRuler(maxEnd, width) {
     mark.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     ruler.appendChild(mark);
   }
+  syncRulerScroll();
 }
 
 function renderTimeline() {
@@ -884,10 +889,22 @@ function renderTimeline() {
 
   const maxEnd = Math.max(...clips.map((c) => c.timeline_end || 0), 1);
   state.outputDuration = maxEnd;
-  const width = Math.max(800, maxEnd * state.pxPerSec + 80);
+  // Extra padding so end pe scroll/scrub comfortable rahe (CapCut-style)
+  const width = Math.max(800, maxEnd * state.pxPerSec + 240);
   track.style.minWidth = `${width}px`;
   audioTrack.style.minWidth = `${width}px`;
   renderRuler(maxEnd, width);
+
+  // Explicit spacer inside #tracks — guarantees horizontal scroll to the end
+  const tracksEl = $("tracks");
+  let spacer = $("tlTracksSpacer");
+  if (!spacer && tracksEl) {
+    spacer = document.createElement("div");
+    spacer.id = "tlTracksSpacer";
+    spacer.className = "tl-spacer";
+    tracksEl.appendChild(spacer);
+  }
+  if (spacer) spacer.style.width = `${width}px`;
 
   if (wave) {
     wave.classList.add("active");
@@ -1049,8 +1066,80 @@ function updatePlayhead() {
 
 function timelineMaxTime() {
   const video = $("videoPlayer");
-  if (video?.duration && Number.isFinite(video.duration)) return video.duration;
-  return Math.max(state.outputDuration || 0, 0.01);
+  const vDur =
+    video?.duration && Number.isFinite(video.duration) ? video.duration : 0;
+  // Use the longer of video + cut timeline so cursor/scroll end tak ja sake
+  return Math.max(vDur, state.outputDuration || 0, 0.01);
+}
+
+function timelineContentWidth() {
+  return Math.max(
+    800,
+    timelineMaxTime() * state.pxPerSec + 240,
+    Number(($("tlTracksSpacer") || {}).offsetWidth) || 0
+  );
+}
+
+function syncRulerScroll() {
+  const tracks = $("tracks");
+  const ruler = $("timeRuler");
+  if (tracks && ruler) ruler.scrollLeft = tracks.scrollLeft;
+}
+
+function scrollTracksBy(dx) {
+  const tracks = $("tracks");
+  if (!tracks || !dx) return;
+  const maxScroll = Math.max(0, tracks.scrollWidth - tracks.clientWidth);
+  tracks.scrollLeft = Math.max(0, Math.min(maxScroll, tracks.scrollLeft + dx));
+  syncRulerScroll();
+}
+
+function scrollTimelineToTime(time, opts = {}) {
+  const tracks = $("tracks");
+  if (!tracks) return;
+  const px = Math.max(0, Number(time) || 0) * state.pxPerSec;
+  const view = tracks.clientWidth || 1;
+  const maxScroll = Math.max(0, tracks.scrollWidth - view);
+  let next;
+  if (opts.align === "end") {
+    next = Math.min(maxScroll, Math.max(0, px - view + 80));
+  } else if (opts.align === "center") {
+    next = Math.min(maxScroll, Math.max(0, px - view / 2));
+  } else {
+    // keep playhead in view with padding
+    const left = tracks.scrollLeft;
+    const right = left + view;
+    if (px < left + 56) next = Math.max(0, px - 100);
+    else if (px > right - 56) next = Math.min(maxScroll, px - view + 100);
+    else next = left;
+  }
+  tracks.scrollLeft = next;
+  syncRulerScroll();
+}
+
+function scrollTimelineToEnd() {
+  const tracks = $("tracks");
+  if (!tracks) return;
+  tracks.scrollLeft = Math.max(0, tracks.scrollWidth - tracks.clientWidth);
+  syncRulerScroll();
+}
+
+/** While dragging near left/right edge, keep scrolling so end tak pohonch sako */
+function edgeAutoScroll(clientX) {
+  const tracks = $("tracks");
+  if (!tracks) return 0;
+  const rect = tracks.getBoundingClientRect();
+  const edge = 64;
+  let dx = 0;
+  if (clientX >= rect.right - edge) {
+    const push = (clientX - (rect.right - edge)) / edge;
+    dx = 14 + push * 36;
+  } else if (clientX <= rect.left + edge) {
+    const push = (rect.left + edge - clientX) / edge;
+    dx = -(14 + push * 36);
+  }
+  if (dx) scrollTracksBy(dx);
+  return dx;
 }
 
 function clientXToTimelineTime(clientX) {
@@ -1074,13 +1163,7 @@ function seekTimeline(time, opts = {}) {
   }
   updatePlayhead();
   if (opts.scroll !== false) {
-    const tracks = $("tracks");
-    if (!tracks) return;
-    const px = t * state.pxPerSec;
-    const left = tracks.scrollLeft;
-    const right = left + tracks.clientWidth;
-    if (px < left + 48) tracks.scrollLeft = Math.max(0, px - 96);
-    else if (px > right - 48) tracks.scrollLeft = Math.max(0, px - tracks.clientWidth + 96);
+    scrollTimelineToTime(t, { align: opts.align });
   }
 }
 
@@ -1302,8 +1385,13 @@ function onTrimPointerDown(e, clip, side) {
 function onTimelinePointerMove(e) {
   const mode = state.tl.mode;
   if (!mode) return;
+  // CapCut: edge pe drag karte raho to timeline khud aage/peeche scroll ho
+  if (mode === "scrub" || mode === "move" || mode === "trimL" || mode === "trimR") {
+    edgeAutoScroll(e.clientX);
+  }
   if (mode === "scrub") {
-    seekTimeline(clientXToTimelineTime(e.clientX), { scroll: true });
+    seekTimeline(clientXToTimelineTime(e.clientX), { scroll: false });
+    scrollTimelineToTime(clientXToTimelineTime(e.clientX));
     return;
   }
   const dx = e.clientX - state.tl.startX;
@@ -1402,31 +1490,56 @@ function wireTimelineInteractions() {
   const playhead = $("playhead");
   const ruler = $("timeRuler");
   const tracks = $("tracks");
+  const wrap = document.querySelector(".tracks-wrap") || tracks;
   if (!tracks) return;
 
   playhead?.addEventListener("pointerdown", onPlayheadPointerDown);
   ruler?.addEventListener("pointerdown", onScrubSurfacePointerDown);
   tracks.addEventListener("pointerdown", onScrubSurfacePointerDown);
+  tracks.addEventListener("scroll", syncRulerScroll, { passive: true });
+
+  // Mouse wheel / trackpad → horizontal scroll to the end
+  const onWheel = (e) => {
+    const tracksEl = $("tracks");
+    if (!tracksEl) return;
+    const dx =
+      Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : e.deltaY;
+    // Always map vertical wheel to horizontal on timeline (CapCut feel)
+    if (dx !== 0 || e.deltaY !== 0) {
+      e.preventDefault();
+      scrollTracksBy(dx !== 0 ? dx : e.deltaY);
+    }
+  };
+  wrap?.addEventListener("wheel", onWheel, { passive: false });
+  tracks.addEventListener("wheel", onWheel, { passive: false });
+  ruler?.addEventListener("wheel", onWheel, { passive: false });
 
   window.addEventListener("pointermove", onTimelinePointerMove);
   window.addEventListener("pointerup", onTimelinePointerUp);
   window.addEventListener("pointercancel", onTimelinePointerUp);
 
-  // Keyboard scrub like CapCut: ← →  (Shift = 1s)
+  // Keyboard scrub like CapCut: ← →  (Shift = 1s), Home/End = start/end
   document.addEventListener("keydown", (e) => {
     const tag = (e.target && e.target.tagName) || "";
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     const video = $("videoPlayer");
-    if (!video?.src) return;
+    if (!video?.src && !state.outputDuration) return;
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      seekTimeline(video.currentTime - (e.shiftKey ? 1 : 0.1));
+      seekTimeline((video.currentTime || 0) - (e.shiftKey ? 1 : 0.1));
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
-      seekTimeline(video.currentTime + (e.shiftKey ? 1 : 0.1));
+      seekTimeline((video.currentTime || 0) + (e.shiftKey ? 1 : 0.1));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      seekTimeline(0, { align: "center" });
+    } else if (e.key === "End") {
+      e.preventDefault();
+      seekTimeline(timelineMaxTime(), { align: "end" });
+      scrollTimelineToEnd();
     } else if (e.key === " " && !e.repeat) {
-      // Space play/pause when not typing
       if (tag === "BUTTON") return;
+      if (!video?.src) return;
       e.preventDefault();
       if (video.paused) {
         video.play();
@@ -2173,17 +2286,18 @@ function wireControls() {
     }
   });
   $("btnSeekBack").addEventListener("click", () => {
-    video.currentTime = Math.max(0, video.currentTime - 5);
+    seekTimeline(Math.max(0, (video.currentTime || 0) - 5));
   });
   $("btnSeekFwd").addEventListener("click", () => {
-    video.currentTime = video.currentTime + 5;
+    seekTimeline((video.currentTime || 0) + 5);
   });
   $("btnSeekStart")?.addEventListener("click", () => {
-    video.currentTime = 0;
+    seekTimeline(0, { align: "center" });
   });
   $("btnSeekEnd")?.addEventListener("click", () => {
-    if (video.duration && Number.isFinite(video.duration))
-      video.currentTime = Math.max(0, video.duration - 0.05);
+    const end = timelineMaxTime();
+    seekTimeline(Math.max(0, end - 0.05), { align: "end" });
+    scrollTimelineToEnd();
   });
   $("volSlider")?.addEventListener("input", (e) => {
     video.volume = Math.max(0, Math.min(1, Number(e.target.value) / 100));

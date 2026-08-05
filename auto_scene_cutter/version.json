@@ -1,11 +1,11 @@
 {
-  "version": "1.6.1",
-  "title": "App update — CapCut timeline ab desktop pe",
+  "version": "1.6.2",
+  "title": "Timeline scroll end tak — CapCut style",
   "notes": [
-    "Desktop ab LIVE se compare karke khud update hota hai",
-    "CapCut timeline: clip drag-drop + scrub cursor + edge trim",
-    "Update Now dabao ya app dubara kholo — silent install"
+    "Timeline scroll/wheel ab end tak jati hai",
+    "Playhead edge pe drag karo to khud aage scroll",
+    "End key / ⏭ button se last tak jump"
   ],
   "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
-  "released_at": "2026-08-04"
+  "released_at": "2026-08-05"
 }
