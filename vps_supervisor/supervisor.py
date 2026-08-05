@@ -141,6 +141,9 @@ class Supervisor:
             log_path = log_dir / f"agent_{agent.user_id}_{agent.login}.log"
             log_f = open(log_path, "a", encoding="utf-8")
 
+            # Let portable MT5 finish login UI / IPC before python attaches
+            boot_wait = float(os.environ.get("MT5_BOOT_WAIT_SEC", "20"))
+            time.sleep(max(0.0, boot_wait - 20.0))  # start_terminal already waited ~20s
             agent.proc = subprocess.Popen(
                 [PYTHON_EXE, str(agent_py)],
                 cwd=str(REPO_DIR),
@@ -152,7 +155,20 @@ class Supervisor:
             agent.status = "running"
             agent.ready = False  # becomes ready after WS hello + MT5 connect
             agent.last_error = None
+            agent.log_path = str(log_path)
             print(f"[VPS] Agent pid={agent.proc.pid} log={log_path}")
+            # Quick death check — surface MT5 login errors immediately
+            time.sleep(3)
+            if agent.proc.poll() is not None:
+                agent.status = "error"
+                agent.last_error = f"agent exited code={agent.proc.returncode}"
+                print(f"[VPS] Agent died immediately: {agent.last_error}")
+                try:
+                    tail = Path(log_path).read_text(encoding="utf-8", errors="ignore").splitlines()[-15:]
+                    for line in tail:
+                        print(f"[AGENT LOG] {line}")
+                except Exception:
+                    pass
         except Exception as e:
             agent.status = "error"
             agent.last_error = str(e)
@@ -225,26 +241,22 @@ class Supervisor:
                 if now < getattr(existing, "restart_after", 0):
                     existing.status = "waiting_restart"
                     continue
-                print(f"[VPS] Restart dead agent {existing.username}")
-                self.stop_agent(existing)
-                # Kill stray terminals for this login before relaunch
+                exit_code = None
                 try:
-                    if os.name == "nt":
-                        subprocess.run(
-                            ["taskkill", "/F", "/IM", "terminal64.exe"],
-                            capture_output=True,
-                            check=False,
-                        )
-                        subprocess.run(
-                            ["taskkill", "/F", "/IM", "python.exe"],
-                            capture_output=True,
-                            check=False,
-                        )
+                    if existing.proc is not None:
+                        exit_code = existing.proc.poll()
                 except Exception:
                     pass
-                time.sleep(3)
+                print(
+                    f"[VPS] Restart dead agent {existing.username} "
+                    f"exit={exit_code} — check log agent_{existing.user_id}_{existing.login}.log"
+                )
+                # IMPORTANT: never taskkill python.exe / all terminal64 —
+                # that kills THIS supervisor process too.
+                self.stop_agent(existing)
+                time.sleep(5)
                 fresh = self.start_agent(user)
-                fresh.restart_after = time.time() + 25
+                fresh.restart_after = time.time() + 30
                 self.agents[uid] = fresh
                 continue
 
