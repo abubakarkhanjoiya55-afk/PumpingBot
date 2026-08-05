@@ -369,10 +369,24 @@ class PumpingAgent:
         )
         ms = (time.perf_counter() - t0) * 1000
         if result.get("ok"):
-            self._copy_map[master_ticket] = result["ticket"]
-            print(f"[COPY OPEN] {symbol} {side} lot={lot} ticket={result['ticket']} {ms:.0f}ms")
+            ticket = result["ticket"]
+            self._copy_map[master_ticket] = ticket
+            # Master: track so profit-only manager can scalp it
+            if self.role == "master":
+                tick2 = self.mt5.symbol_tick(symbol)
+                entry_px = float(result.get("price") or 0)
+                if not entry_px and tick2:
+                    entry_px = tick2.ask if side == "BUY" else tick2.bid
+                self._master_open[ticket] = {
+                    "symbol": symbol, "side": side, "lot": lot,
+                    "entry": entry_px, "sl": None, "score": score,
+                    "atr": 0, "levels": {}, "margin_used": 0,
+                    "opened_at": time.time(), "trade_mode": "SERVER",
+                    "strong_trend": True, "peak_profit": 0.0,
+                }
+            print(f"[COPY OPEN] {symbol} {side} lot={lot} ticket={ticket} {ms:.0f}ms")
             self.reply(
-                req_id, ok=True, ticket=result["ticket"], lot=lot,
+                req_id, ok=True, ticket=ticket, lot=lot,
                 price=result.get("price"), ms=ms,
             )
         else:
@@ -524,12 +538,14 @@ class PumpingAgent:
             MIN_COOLDOWN_SEC, STRONG_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
             SESSION_MAX_DD_PCT, STRONG_SCORE, MASTER_AUTO_CLOSE, MASTER_PROFIT_ONLY,
             MARGIN_PROFIT_TRIGGER, HOLD_TRAIL_PCT, is_gold_symbol,
+            IDLE_FORCE_ENTRY_SEC, get_h1_bias, calc_margin_used,
         )
 
         print(
             f"[MASTER] DEMO mode account={self.account_type} "
             f"max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
-            f"profit_only_close={MASTER_AUTO_CLOSE} smoke={_env('DEMO_SMOKE_TRADE','1')}"
+            f"profit_only_close={MASTER_AUTO_CLOSE} smoke={_env('DEMO_SMOKE_TRADE','1')} "
+            f"idle_force={IDLE_FORCE_ENTRY_SEC}s"
         )
         last_close = {}
         session_start_equity = None
@@ -540,6 +556,8 @@ class PumpingAgent:
         if self._smoke_next_at <= 0:
             self._smoke_next_at = time.time() + 12
         _status_log_at = 0.0
+        _last_entry_at = time.time()
+        _idle_force_at = 0.0
 
         while not self._stop.is_set():
             try:
@@ -589,6 +607,7 @@ class PumpingAgent:
                     self._smoke_attempts += 1
                     if ok_smoke:
                         self._smoke_ok = True
+                        _last_entry_at = time.time()
                         time.sleep(SCAN_INTERVAL_SEC)
                         continue
                     # Retry: 30s, then 60s, cap 120s — do NOT give up after one fail
@@ -598,6 +617,70 @@ class PumpingAgent:
                         f"[SMOKE] retry in {delay}s "
                         f"(attempt={self._smoke_attempts} last={self._last_smoke})"
                     )
+
+                # Idle force: if flat too long, open soft H1 min-lot (demo continuity)
+                if (
+                    len(open_pos) == 0
+                    and (now_ts - _last_entry_at) >= IDLE_FORCE_ENTRY_SEC
+                    and now_ts >= _idle_force_at
+                    and self.account_type not in ("cent", "cents", "usc")
+                ):
+                    syms = active_trade_symbols(self.symbols)
+                    symbol = None
+                    for s in syms:
+                        if is_gold_symbol(s):
+                            symbol = s
+                            break
+                    if not symbol and syms:
+                        symbol = syms[0]
+                    if symbol:
+                        tick = self.mt5.symbol_tick(symbol)
+                        h1_dir, _, h1_d = get_h1_bias(symbol, bridge)
+                        side = h1_dir or "BUY"
+                        info = bridge.symbol_info(symbol)
+                        lot = float(getattr(info, "volume_min", 0.01) or 0.01) if info else 0.01
+                        if tick:
+                            print(f"[IDLE FORCE] {symbol} {side} lot={lot} h1={h1_d}")
+                            result = self.mt5.market_order(
+                                symbol=symbol, side=side, volume=lot,
+                                sl=0.0, tp=0.0, magic=BOT_MAGIC,
+                                comment="PB_IDLE_FORCE",
+                            )
+                            _idle_force_at = now_ts + 120
+                            if result.get("ok"):
+                                ticket = result["ticket"]
+                                entry = tick.ask if side == "BUY" else tick.bid
+                                try:
+                                    self.mt5.clear_sl_tp(ticket)
+                                except Exception:
+                                    pass
+                                margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+                                self._master_open[ticket] = {
+                                    "symbol": symbol, "side": side, "lot": lot,
+                                    "entry": entry, "sl": None, "score": 70,
+                                    "atr": 0, "levels": {}, "margin_used": margin,
+                                    "opened_at": time.time(), "trade_mode": "IDLE",
+                                    "strong_trend": True, "peak_profit": 0.0,
+                                }
+                                _last_entry_at = time.time()
+                                self._last_skip = ""
+                                print(f"[IDLE FORCE OK] ticket={ticket}")
+                                self.send({
+                                    "type": "master_trade_open",
+                                    "master_ticket": ticket,
+                                    "symbol": symbol, "side": side, "lot": lot,
+                                    "balance": (self.mt5.account() or {}).get("balance") or 0,
+                                    "entry": entry, "sl": 0, "score": 70, "atr": 0,
+                                    "source": "IDLE", "trade_mode": "IDLE",
+                                })
+                                time.sleep(SCAN_INTERVAL_SEC)
+                                continue
+                            self._last_skip = f"idle_fail:{result}"
+                            print(f"[IDLE FORCE FAIL] {result}")
+                        else:
+                            _idle_force_at = now_ts + 60
+                    else:
+                        _idle_force_at = now_ts + 60
 
                 acc = self.mt5.account()
                 balance = acc.get("balance") or 0
@@ -747,6 +830,7 @@ class PumpingAgent:
                     cd = STRONG_COOLDOWN_SEC if (strong_trend and is_gold_symbol(symbol)) else MIN_COOLDOWN_SEC
                     last_close[symbol] = time.time()
                     last_close[symbol + "_cd"] = cd
+                    _last_entry_at = time.time()
                     opened_this_cycle = True
 
                     self.send({
@@ -777,6 +861,7 @@ class PumpingAgent:
         from trading_engine import (
             MASTER_AUTO_CLOSE, MASTER_PROFIT_ONLY, MARGIN_PROFIT_TRIGGER,
             HOLD_TRAIL_PCT, STRONG_SCORE, is_gold_symbol,
+            HOLD_MIN_PROFIT, MIN_HOLD_SEC,
         )
 
         live_tickets = {p["ticket"] for p in open_pos}
@@ -813,6 +898,7 @@ class PumpingAgent:
                 "trade_mode": "SCALP",
                 "strong_trend": False,
                 "peak_profit": 0.0,
+                "opened_at": time.time(),
             }
             profit = float(pos["profit"] or 0)
             meta["last_profit"] = profit
@@ -834,6 +920,12 @@ class PumpingAgent:
             if MASTER_PROFIT_ONLY and profit <= 0:
                 continue
 
+            age = time.time() - float(meta.get("opened_at") or time.time())
+            if age < MIN_HOLD_SEC:
+                continue
+            if profit < HOLD_MIN_PROFIT:
+                continue
+
             score = float(meta.get("score") or 0)
             strong = bool(meta.get("strong_trend")) or score >= STRONG_SCORE
             mode = (meta.get("trade_mode") or "").upper()
@@ -841,14 +933,14 @@ class PumpingAgent:
             # Fast scalp: quicker TP when strong gold trend
             tp_frac = MARGIN_PROFIT_TRIGGER
             if strong or mode == "FAST_SCALP" or is_gold_symbol(meta.get("symbol") or ""):
-                tp_frac = min(tp_frac, 0.35)
+                tp_frac = min(tp_frac, 0.45)
 
             if margin > 0 and profit >= margin * tp_frac:
                 self._master_close(ticket, meta, "FastScalpTP")
                 continue
-            if peak > 0 and profit >= max(0.5, peak * 0.25):
+            if peak > 0 and profit >= max(HOLD_MIN_PROFIT, peak * 0.25):
                 # Giveback trail - lock scalp after peak
-                if profit <= peak * HOLD_TRAIL_PCT and peak >= (margin * 0.2 if margin else 1.0):
+                if profit <= peak * HOLD_TRAIL_PCT and peak >= (margin * 0.2 if margin else HOLD_MIN_PROFIT):
                     self._master_close(ticket, meta, "FastScalpTrail")
                     continue
 

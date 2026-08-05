@@ -81,6 +81,8 @@ const API = (() => {
     startBot: () => request('POST', '/bot/start'),
     stopBot: () => request('POST', '/bot/stop'),
     forceSmoke: () => request('POST', '/bot/force-smoke'),
+    forceOpen: () => request('POST', '/bot/force-open'),
+    remoteRestart: () => request('POST', '/admin/vps/remote-restart'),
 
     // Data
     getSignals: () => request('GET', '/signals'),

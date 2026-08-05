@@ -150,6 +150,18 @@
     }
   });
 
+  const restartBtn = $('#btn-remote-restart');
+  if (restartBtn) {
+    restartBtn.addEventListener('click', async () => {
+      try {
+        const data = await API.remoteRestart();
+        showToast(data.message || 'VPS restart queued', !data.ok);
+      } catch (ex) {
+        showToast(ex.message, true);
+      }
+    });
+  }
+
   $('#btn-copy-ref').addEventListener('click', () => {
     const code = $('#referral-code').textContent;
     navigator.clipboard.writeText(code).then(() => showToast('Referral code copied!'));
@@ -232,6 +244,10 @@
     const smokeBtn = $('#btn-force-smoke');
     if (smokeBtn) {
       smokeBtn.disabled = !(m.role === 'master' && canStart);
+    }
+    const restartBtn = $('#btn-remote-restart');
+    if (restartBtn) {
+      restartBtn.disabled = !(m.role === 'master');
     }
     const diagEl = $('#trade-diag');
     if (diagEl) {

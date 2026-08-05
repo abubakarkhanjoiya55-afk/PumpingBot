@@ -186,6 +186,38 @@ class AgentHub:
                 }
         return result
 
+    def notify_copy_open(
+        self,
+        user_id: int,
+        *,
+        symbol: str,
+        side: str,
+        lot: float = 0.01,
+        master_balance: float = 0,
+        score: float = 80,
+        master_ticket: int = 0,
+    ) -> dict:
+        """
+        Open a market order on the hosted agent via existing copy_open command.
+        Works on OLD agents too (they already handle copy_open + ACK).
+        """
+        ticket = int(master_ticket) or int(time.time() * 1000) % 2_000_000_000
+        return self.send_to_user_sync(
+            user_id,
+            {
+                "type": "copy_open",
+                "symbol": symbol,
+                "side": side.upper(),
+                "master_ticket": ticket,
+                "master_lot": float(lot),
+                "master_balance": float(master_balance or 0),
+                "score": float(score),
+                "sl": 0,
+                "entry": 0,
+            },
+            timeout=8.0,
+        )
+
     def resolve_response(self, user_id: int, message: dict):
         sess = self._agents.get(user_id)
         if not sess:
