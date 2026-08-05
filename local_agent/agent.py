@@ -224,13 +224,29 @@ class PumpingAgent:
         mtype = msg.get("type")
         req_id = msg.get("req_id")
 
+        if mtype == "welcome":
+            if "bot_active" in msg:
+                self.bot_active = bool(msg.get("bot_active"))
+                print(f"[AGENT] welcome bot_active={self.bot_active}")
+            return
+
+        if mtype == "set_bot_active":
+            self.bot_active = bool(msg.get("bot_active"))
+            print(f"[AGENT] set_bot_active → {self.bot_active}")
+            if req_id:
+                self.reply(req_id, ok=True, bot_active=self.bot_active)
+            return
+
         if mtype == "ping":
             acc = self.mt5.account()
             self.send({
                 "type": "pong",
                 "balance": acc.get("balance", 0),
                 "equity": acc.get("equity", 0),
+                "currency": acc.get("currency", ""),
+                "is_cent": bool(acc.get("is_cent")),
                 "ready": self.mt5.ready,
+                "bot_active": self.bot_active,
                 "positions": len(self.mt5.positions()),
             })
             return
@@ -244,14 +260,16 @@ class PumpingAgent:
             return
 
         if mtype == "master_start":
-            print("[AGENT] Master strategy start acknowledged")
-            self.reply(req_id, ok=True)
+            self.bot_active = True
+            print("[AGENT] Master strategy START — entries ON")
+            self.reply(req_id, ok=True, bot_active=True)
             return
 
         if mtype == "master_stop":
-            print("[AGENT] Master strategy stop requested")
-            self._stop.set()
-            self.reply(req_id, ok=True)
+            # Pause entries only — do NOT kill the whole agent process
+            self.bot_active = False
+            print("[AGENT] Master strategy STOP — entries OFF (agent stays online)")
+            self.reply(req_id, ok=True, bot_active=False)
             return
 
     def _cmd_copy_open(self, msg: dict, req_id: str):
@@ -375,6 +393,8 @@ class PumpingAgent:
                 self._master_manage_positions(open_pos, bridge)
 
                 if not self.bot_active:
+                    if int(time.time()) % 60 < SCAN_INTERVAL_SEC:
+                        print("[MASTER] bot_active=OFF — waiting for Start Bot")
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 

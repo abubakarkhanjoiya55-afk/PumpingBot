@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDc", "BTCUSDc", "ETHUSDc",
 ]
 
-API_VERSION = "3.29.0"   # Weekday Gold only; Sat/Sun BTC+ETH only
+API_VERSION = "3.29.1"   # Fix Start/Stop → live bot_active to agent; keep VPS online
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
@@ -2516,15 +2516,21 @@ def start_bot(current_user: User = Depends(get_current_user),
 
     # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
+        # Live-toggle entries on already-connected agent (no full restart needed)
+        notify = agent_hub.notify_bot_active(current_user.id, True)
+        if not notify.get("ok"):
+            print(f"[BOT START] agent notify: {notify}")
         online = bool(current_user.vps_ready) or any(
             a["user_id"] == current_user.id and a.get("ready")
             for a in agent_hub.list_agents()
         )
         msg = (
-            "Master bot ON. VPS pe master agent auto chalega."
+            "Master bot ON. VPS pe master agent trade karega."
             if is_master_user(current_user)
             else "Copy trading ON. VPS pe account connect ho raha hai."
         )
+        if not online:
+            msg += " Agent abhi offline — VPS supervisor check karo."
         return {
             "message": msg,
             "trading_backend": "vps_agent",
@@ -2558,8 +2564,22 @@ def stop_bot(current_user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     active_bots[current_user.id] = False
     current_user.bot_active = False
+    # Agent mode: keep VPS agent + MT5 online; only pause new entries
+    if agent_mode_enabled() and not USE_METAAPI:
+        current_user.vps_desired = True
+        current_user.vps_status = "running" if current_user.vps_ready else "starting"
+        db.commit()
+        db.refresh(current_user)
+        notify = agent_hub.notify_bot_active(current_user.id, False)
+        if not notify.get("ok"):
+            print(f"[BOT STOP] agent notify: {notify}")
+        return {
+            "message": "Bot stopped — nayi entries band; VPS/MT5 online rahega",
+            "bot_active": False,
+            "vps_desired": True,
+            "vps_status": current_user.vps_status,
+        }
     current_user.vps_desired = False
-    # Keep vps_ready until agent actually drops — UI uses bot_active for button
     current_user.vps_status = "stopping"
     db.commit()
     db.refresh(current_user)
@@ -2994,11 +3014,26 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                 session.is_cent = bool(msg.get("is_cent"))
                 session.ready = bool(msg.get("ready"))
                 session.last_seen = time.time()
+                # Always push DB Start/Stop so agent does not rely on stale BOT_ACTIVE env
+                db_hello = SessionLocal()
+                try:
+                    row_h = db_hello.query(User).filter(User.id == user.id).first()
+                    bot_on = bool(row_h and row_h.bot_active)
+                    if row_h is not None:
+                        row_h.vps_ready = bool(msg.get("ready"))
+                        row_h.vps_status = "running" if msg.get("ready") else "starting"
+                        if msg.get("balance") is not None:
+                            row_h.vps_balance = float(msg.get("balance") or 0)
+                        row_h.vps_last_seen = datetime.utcnow()
+                        db_hello.commit()
+                finally:
+                    db_hello.close()
                 await websocket.send_text(json.dumps({
                     "type": "welcome",
                     "user_id": user.id,
                     "role": session.role,
                     "backend": TRADING_BACKEND,
+                    "bot_active": bot_on,
                 }))
                 continue
 

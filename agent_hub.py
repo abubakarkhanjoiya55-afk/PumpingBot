@@ -141,6 +141,27 @@ class AgentHub:
         finally:
             sess.pending.pop(req_id, None)
 
+    def send_to_user_sync(self, user_id: int, payload: dict, timeout: float = 2.5) -> dict:
+        """Thread-safe notify from sync FastAPI routes (Start/Stop Bot)."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "no_loop"}
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                self.send_to_user(user_id, payload, timeout=timeout),
+                loop,
+            )
+            return fut.result(timeout=timeout + 1.0)
+        except Exception as e:
+            return {"ok": False, "error": str(e), "user_id": user_id}
+
+    def notify_bot_active(self, user_id: int, bot_active: bool) -> dict:
+        return self.send_to_user_sync(
+            user_id,
+            {"type": "set_bot_active", "bot_active": bool(bot_active)},
+            timeout=2.0,
+        )
+
     def resolve_response(self, user_id: int, message: dict):
         sess = self._agents.get(user_id)
         if not sess:

@@ -205,14 +205,14 @@ class Supervisor:
                 self.agents[uid] = self.start_agent(user)
                 continue
 
-            # Credentials / role / Start Bot flag changed → restart
+            # Credentials / role changed → restart.
+            # bot_active is toggled live over WebSocket (set_bot_active) — no restart.
             bot_active = bool(user.get("bot_active"))
             need_restart = (
                 int(user["mt5_login"]) != existing.login
                 or user["mt5_password"] != existing.password
                 or user["mt5_server"] != existing.server
                 or (user.get("role") or "follower") != existing.role
-                or bot_active != existing.bot_active
             )
             if need_restart:
                 self.stop_agent(existing)
@@ -235,6 +235,11 @@ class Supervisor:
                             capture_output=True,
                             check=False,
                         )
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", "python.exe"],
+                            capture_output=True,
+                            check=False,
+                        )
                 except Exception:
                     pass
                 time.sleep(3)
@@ -245,6 +250,11 @@ class Supervisor:
 
             # Refresh fields — do NOT mark ready just because process is alive
             existing.password = user["mt5_password"]
+            if bot_active != existing.bot_active:
+                print(
+                    f"[VPS] {existing.username} bot_active {existing.bot_active}→{bot_active} "
+                    f"(live WS; no restart)"
+                )
             existing.bot_active = bot_active
             existing.status = "running"
             # ready stays False here; agent WS heartbeat on Railway sets vps_ready
