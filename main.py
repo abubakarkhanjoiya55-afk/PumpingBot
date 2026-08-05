@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.2"   # Fix Windows UnicodeEncodeError crashing agent
+API_VERSION = "3.30.3"   # Force ASCII-safe agent prints on Windows VPS
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

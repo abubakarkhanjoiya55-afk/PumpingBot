@@ -29,12 +29,26 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse, urlunparse
 
-# Windows cp1252 consoles raise UnicodeEncodeError on arrows / special dashes
+# Windows cp1252 consoles raise UnicodeEncodeError on arrows / special dashes.
+# Force safe printing even when the log file / console is legacy-encoded.
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 except Exception:
     pass
+
+_builtin_print = print
+
+
+def print(*args, **kwargs):  # noqa: A001 - shadow builtin intentionally
+    try:
+        _builtin_print(*args, **kwargs)
+    except UnicodeEncodeError:
+        text = " ".join(str(a) for a in args)
+        text = text.encode("ascii", "replace").decode("ascii")
+        kwargs.pop("file", None)
+        _builtin_print(text, **kwargs)
+
 
 import requests
 
@@ -141,7 +155,7 @@ class PumpingAgent:
         self._copy_map = {}  # master_ticket -> local ticket
         self._ws_lock = threading.Lock()
 
-    # ── MT5 ────────────────────────────────────────────────────────────
+    # -- MT5 ------------------------------------------------------------
     def connect_mt5(self) -> bool:
         ok = self.mt5.connect()
         if ok:
@@ -162,7 +176,7 @@ class PumpingAgent:
                 print(f"[AGENT] Cleared SL/TP on {cleared} open bot position(s)")
         return ok
 
-    # ── WebSocket ──────────────────────────────────────────────────────
+    # -- WebSocket ------------------------------------------------------
     def start_ws(self):
         url = _ws_url(self.server_url, self.token)
         print(f"[AGENT] Connecting {url} as {self.role}")
@@ -226,7 +240,7 @@ class PumpingAgent:
         body = {"type": "ack", "req_id": req_id, **kwargs}
         self.send(body)
 
-    # ── Commands from server ───────────────────────────────────────────
+    # -- Commands from server -------------------------------------------
     def handle_command(self, msg: dict):
         mtype = msg.get("type")
         req_id = msg.get("req_id")
@@ -354,7 +368,7 @@ class PumpingAgent:
             print(f"[COPY CLOSE FAIL] {result} {ms:.0f}ms")
             self.reply(req_id, ok=False, error=result.get("error"), ms=ms)
 
-    # ── Heartbeat ──────────────────────────────────────────────────────
+    # -- Heartbeat ------------------------------------------------------
     def heartbeat_loop(self):
         while not self._stop.is_set():
             try:
@@ -372,7 +386,7 @@ class PumpingAgent:
                 print(f"[AGENT] heartbeat error: {e}")
             self._stop.wait(HEARTBEAT_SEC)
 
-    # ── Master strategy (local, fastest) ───────────────────────────────
+    # -- Master strategy (local, fastest) -------------------------------
     def master_loop(self):
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
