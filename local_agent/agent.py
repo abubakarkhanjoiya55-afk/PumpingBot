@@ -528,9 +528,9 @@ class PumpingAgent:
                         "opened_at": time.time(), "trade_mode": trade_mode,
                         "strong_trend": strong_trend, "peak_profit": 0.0,
                     }
-                    # Strong gold scalp → shorter cooldown for next attempt
                     cd = STRONG_COOLDOWN_SEC if (strong_trend and is_gold_symbol(symbol)) else MIN_COOLDOWN_SEC
-                    last_close[symbol] = time.time() - max(0, MIN_COOLDOWN_SEC - cd)
+                    last_close[symbol] = time.time()
+                    last_close[symbol + "_cd"] = cd
                     opened_this_cycle = True
 
                     self.send({
