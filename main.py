@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.7"   # Single MT5 attach: no 2nd login kick on Algo Trading
+API_VERSION = "3.30.8"   # Demo: softer H1 bias + gold M1 fallback for more entries
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")

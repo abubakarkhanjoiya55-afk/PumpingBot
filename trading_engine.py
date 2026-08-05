@@ -5,7 +5,7 @@ Entry: 1-minute closed candle patterns + direction confirmation.
 Sizing: score-based risk multiplier (higher score -> more margin/lot).
 """
 
-# ─── Engine constants ─────────────────────────────────────────────────────────
+# ??? Engine constants ?????????????????????????????????????????????????????????
 DAILY_MAX_LOSS_PCT    = 0.015
 DAILY_PROFIT_TARGET   = 0.05
 DAILY_TRAIL_START     = 0.03
@@ -41,8 +41,10 @@ HOLD_TRAIL_PCT        = 0.55    # trail giveback for fast scalp
 SL_BUFFER_ATR_MULT    = 0.35
 SL_HALF_POINT         = 0.5
 TP_HALF_POINT         = 0.5
-MIN_H1_STRENGTH       = MIN_TREND_STRUCTURE
-STRONG_TREND_STRENGTH = 30      # H1+M15 combined -> fast scalp
+MIN_H1_STRENGTH       = 16      # allow soft H1 bias for demo entries
+STRONG_TREND_STRENGTH = 28      # H1+M15 combined -> fast scalp
+# Gold: if M5 quiet, allow M1 entry with H1 bias (demo accuracy testing)
+GOLD_ALLOW_M1_FALLBACK = True
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,
@@ -89,7 +91,7 @@ TRAILING_LEVELS = [
 BREAKOUT_LOOKBACK = {"M15": 10, "H1": 20, "H4": 24}
 
 
-# ─── Price utilities ──────────────────────────────────────────────────────────
+# ??? Price utilities ??????????????????????????????????????????????????????????
 
 def calc_atr(highs, lows, closes, period=14):
     try:
@@ -132,7 +134,7 @@ def fetch_ohlc(symbol, timeframe, count, mt5_manager):
     }
 
 
-# ─── Candle patterns (OHLC only - no indicators) ──────────────────────────────
+# ??? Candle patterns (OHLC only - no indicators) ??????????????????????????????
 
 def detect_candle_pattern(opens, highs, lows, closes):
     """
@@ -343,7 +345,7 @@ def detect_m1_signal(symbol, mt5_manager):
     }
 
 
-# ─── Legacy HTF helpers (kept for position management / trend fail) ───────────
+# ??? Legacy HTF helpers (kept for position management / trend fail) ???????????
 
 def detect_htf_candle_patterns(symbol, mt5_manager):
     patterns = {}
@@ -593,12 +595,12 @@ def calculate_lot(balance, atr, symbol, score, mt5_manager, sl_distance=None):
         return None
 
 
-# ─── HTF bias + M5 S/R breakout/retest ───────────────────────────────────────
+# ??? HTF bias + M5 S/R breakout/retest ???????????????????????????????????????
 
 def _structure_bias(opens, highs, lows, closes, tag: str):
     """
-    Strict swing structure on closed bars.
-    Needs clear directional push - not a soft mid-cross.
+    Directional structure on closed bars.
+    Strong path: HH/HL or LH/LL. Soft demo path: mid + body majority.
     Returns ("BUY"|"SELL"|None, strength 0-30, detail).
     """
     c, h, l, o = closes[:-1], highs[:-1], lows[:-1], opens[:-1]
@@ -617,13 +619,21 @@ def _structure_bias(opens, highs, lows, closes, tag: str):
     bull_body = sum(1 for i in range(-4, 0) if c[i] > o[i])
     bear_body = sum(1 for i in range(-4, 0) if c[i] < o[i])
 
-    # Strict: need structure (HH/HL or LH/LL) - body count alone is not enough
+    # Strong structure
     if up and higher_lows and (higher_highs or bull_body >= 3):
         strength = 20 + (6 if higher_highs else 0) + (4 if bull_body >= 3 else 0)
         return "BUY", min(30, strength), f"{tag}_bull_struct"
     if down and lower_highs and (lower_lows or bear_body >= 3):
         strength = 20 + (6 if lower_lows else 0) + (4 if bear_body >= 3 else 0)
         return "SELL", min(30, strength), f"{tag}_bear_struct"
+
+    # Soft bias (demo accuracy): direction + body majority OR simple HL/LH
+    if up and (higher_lows or bull_body >= 2):
+        strength = 16 + (4 if higher_lows else 0) + (2 if bull_body >= 3 else 0)
+        return "BUY", min(28, strength), f"{tag}_bull_soft"
+    if down and (lower_highs or bear_body >= 2):
+        strength = 16 + (4 if lower_highs else 0) + (2 if bear_body >= 3 else 0)
+        return "SELL", min(28, strength), f"{tag}_bear_soft"
     return None, 0, f"{tag}_chop"
 
 
@@ -651,25 +661,43 @@ def get_m15_bias(symbol, mt5_manager):
 
 def get_strict_trend(symbol, mt5_manager):
     """
-    Sakhti se trend: H1 structure + M15 same direction.
-    Returns (dir, strength, detail_dict) or (None, 0, reason).
+    Trend filter: H1 direction required. M15 same side preferred.
+    Demo: if M15 chop/disagree lightly, still allow H1-only with lower strength.
     """
     h1_dir, h1_str, h1_d = get_h1_bias(symbol, mt5_manager)
     if not h1_dir or h1_str < MIN_H1_STRENGTH:
         return None, 0, {"reason": "weak_h1", "h1": h1_d, "h1_str": h1_str}
 
     m15_dir, m15_str, m15_d = get_m15_bias(symbol, mt5_manager)
+    if m15_dir and m15_dir != h1_dir:
+        # Soft disagree: keep H1 but mark weaker (still tradeable for demo)
+        strength = int(max(16, h1_str - 2))
+        strong = False
+        return h1_dir, strength, {
+            "reason": "ok",
+            "h1": h1_d,
+            "m15": m15_d,
+            "h1_str": h1_str,
+            "m15_str": m15_str,
+            "strong": strong,
+            "m15_soft": "disagree",
+        }
+
     if not m15_dir:
-        return None, 0, {"reason": "no_m15", "h1": h1_d, "m15": m15_d}
-    if m15_dir != h1_dir:
-        return None, 0, {
-            "reason": "m15_disagree",
-            "h1": h1_d, "m15": m15_d,
-            "h1_dir": h1_dir, "m15_dir": m15_dir,
+        strength = int(max(16, h1_str))
+        strong = False
+        return h1_dir, strength, {
+            "reason": "ok",
+            "h1": h1_d,
+            "m15": m15_d,
+            "h1_str": h1_str,
+            "m15_str": 0,
+            "strong": strong,
+            "m15_soft": "chop",
         }
 
     strength = int(h1_str + min(15, m15_str // 2 + 6))
-    strong = strength >= STRONG_TREND_STRENGTH and h1_str >= 24
+    strong = strength >= STRONG_TREND_STRENGTH and h1_str >= 22
     return h1_dir, strength, {
         "reason": "ok",
         "h1": h1_d,
@@ -824,9 +852,10 @@ def analyze_symbol(symbol, mt5_manager):
     signal = detect_m5_sr_signal(symbol, mt5_manager, bias_dir=trend_dir)
     source = "m5"
 
-    # Gold: sakhti - M5 break/retest only. Crypto may use M1 if M5 quiet.
+    # Prefer M5 break/retest; demo gold may fall back to M1 with H1 bias
     if signal is None or signal.get("skip"):
-        if gold:
+        allow_m1 = (not gold) or GOLD_ALLOW_M1_FALLBACK
+        if not allow_m1:
             return {
                 "skip": True,
                 "reason": (signal or {}).get("reason", "no_m5_setup"),
