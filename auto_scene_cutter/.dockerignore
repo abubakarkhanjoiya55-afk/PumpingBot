@@ -1,0 +1,14 @@
+__pycache__
+*.pyc
+.venv
+venv
+.git
+output
+_uploads
+projects
+releases
+dist
+build
+.pytest_cache
+tests
+*.webp

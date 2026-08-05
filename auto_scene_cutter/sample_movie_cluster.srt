@@ -1,0 +1,35 @@
+1
+00:00:01,000 --> 00:00:03,000
+Hello, welcome to the movie.
+
+2
+00:00:03,500 --> 00:00:05,500
+We need to find the hidden door.
+
+3
+00:00:06,000 --> 00:00:08,000
+Look by the old oak tree.
+
+4
+00:00:20,000 --> 00:00:21,000
+Wait.
+
+5
+00:00:28,000 --> 00:00:30,500
+Are you sure this is the right place?
+
+6
+00:00:31,000 --> 00:00:33,500
+Trust me. I've been here before.
+
+7
+00:00:34,000 --> 00:00:36,000
+Alright. Let's go.
+
+8
+00:00:50,000 --> 00:00:52,500
+The door opens into another world.
+
+9
+00:00:53,000 --> 00:00:55,000
+Stay close and follow my voice.

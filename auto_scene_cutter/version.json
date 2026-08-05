@@ -1,0 +1,11 @@
+{
+  "version": "1.6.3",
+  "title": "Silent push updates — app khud update",
+  "notes": [
+    "Ab update khud push hota hai — bar-bar app open nahi karna",
+    "App khuli ho to LIVE se silent update + auto restart",
+    "Timeline scroll end tak + CapCut drag/scrub pehle jaisa"
+  ],
+  "setup_url": "https://github.com/abubakarkhanjoiya55-afk/PumpingBot/releases/download/scenecut-desktop/SceneCutPro-Setup.exe",
+  "released_at": "2026-08-05"
+}

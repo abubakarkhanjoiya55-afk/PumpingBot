@@ -1,0 +1,11 @@
+_uploads/
+output/
+projects/
+releases/
+sample_movie.mp4
+sample_narration.m4a
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/

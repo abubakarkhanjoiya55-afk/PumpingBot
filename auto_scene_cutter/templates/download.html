@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Download SceneCut Pro for Windows</title>
+  <style>
+    :root {
+      --bg: #0e0e10;
+      --panel: #1c1c1e;
+      --line: #2e2e34;
+      --text: #f5f5f7;
+      --muted: #8e8e9a;
+      --accent: #8b5cf6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI Variable", "Segoe UI", "Avenir Next", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(900px 480px at 15% -10%, rgba(139,92,246,.28), transparent 55%),
+        radial-gradient(700px 420px at 90% 0%, rgba(56,189,248,.10), transparent 50%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: min(560px, 100%);
+      background: rgba(28,28,30,.92);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 30px 28px;
+      box-shadow: 0 20px 50px rgba(0,0,0,.45);
+    }
+    .mark {
+      width: 46px; height: 46px; border-radius: 12px;
+      background: linear-gradient(145deg, #9b74ff, #6d28d9);
+      display: grid; place-items: center;
+      font-weight: 800; margin-bottom: 16px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.55rem; letter-spacing: -0.02em; }
+    .lead { margin: 0 0 18px; color: var(--muted); line-height: 1.55; }
+    .meta {
+      font-size: 0.84rem;
+      color: var(--muted);
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: rgba(255,255,255,.03);
+      border: 1px solid var(--line);
+    }
+    .actions { display: grid; gap: 10px; }
+    a.btn {
+      display: block;
+      text-align: center;
+      text-decoration: none;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-weight: 700;
+      color: #fff;
+      background: linear-gradient(180deg, #9b74ff, #7c4dff);
+      box-shadow: 0 10px 24px rgba(124,77,255,.35);
+    }
+    a.btn.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,.35);
+      box-shadow: none;
+    }
+    ol { margin: 0; padding-left: 18px; color: var(--muted); line-height: 1.6; }
+    li { margin-bottom: 6px; }
+    .foot { margin-top: 18px; font-size: 0.78rem; color: var(--muted); }
+    .tag {
+      display: inline-block;
+      margin-bottom: 10px;
+      font-size: 0.72rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #c4b5fd;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="mark">S</div>
+    <div class="tag">Windows desktop app</div>
+    <h1>SceneCut Pro</h1>
+    <p class="lead">
+      CapCut / VLC jaisa: Setup download karo → Install → Desktop shortcut.
+      App apni window mein khulti hai — black CMD nahi.
+    </p>
+
+    <div class="actions">
+      {% if setup_ready %}
+      <a class="btn" href="{{ setup_url }}">⬇ Download for Windows (Setup.exe)</a>
+      {% else %}
+      <a class="btn" href="{{ setup_url }}">⬇ Download for Windows (Setup.exe)</a>
+      {% endif %}
+      {% if pack_ready %}
+      <a class="btn secondary" href="/api/download/student-pack">ZIP installer (backup)</a>
+      {% endif %}
+      <a class="btn secondary" href="/">Open Live Demo</a>
+    </div>
+
+    {% if pack_ready %}
+    <div class="meta" style="margin-top:16px;">
+      ZIP backup: <strong>{{ pack_name }}</strong> · {{ pack_size }} · {{ pack_mtime }}
+    </div>
+    {% endif %}
+
+    <p style="margin-top:20px;margin-bottom:8px;color:#c4b5fd;font-weight:700;">Install — 3 steps</p>
+    <ol>
+      <li><strong>Setup.exe</strong> download + double-click (Windows Installer)</li>
+      <li>Desktop pe <strong>SceneCut Pro+</strong> shortcut aa jayegi</li>
+      <li>Shortcut kholo → Home → <strong>New project</strong></li>
+    </ol>
+    <p class="foot">
+      Setup.exe abhi build ho raha ho / block ho to ZIP lo →
+      <strong>Install SceneCut Pro.vbs</strong> double-click (GUI installer, CMD nahi).
+    </p>
+  </div>
+</body>
+</html>

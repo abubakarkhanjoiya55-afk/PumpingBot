@@ -1,0 +1,105 @@
+name: Build SceneCut Windows Setup
+
+on:
+  push:
+    branches:
+      - main
+      - cursor/scenecut-pro-plus-ccb5
+    paths:
+      - 'auto_scene_cutter/**'
+      - '.github/workflows/build-scenecut-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python deps + PyInstaller
+        working-directory: auto_scene_cutter
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build SceneCutProPlus.exe (no console)
+        working-directory: auto_scene_cutter
+        run: |
+          python -m PyInstaller --noconfirm --clean desktop/SceneCutProPlus.spec
+          if (-not (Test-Path "dist/SceneCutProPlus/SceneCutProPlus.exe")) {
+            throw "PyInstaller output missing"
+          }
+
+      - name: Bundle portable ffmpeg (best effort)
+        working-directory: auto_scene_cutter
+        shell: pwsh
+        run: |
+          $tools = "dist/SceneCutProPlus/tools/ffmpeg/bin"
+          New-Item -ItemType Directory -Force -Path $tools | Out-Null
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $zip = "$env:TEMP/ffmpeg-essentials.zip"
+          try {
+            Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath "$env:TEMP/ffmpeg-essentials" -Force
+            $ff = Get-ChildItem "$env:TEMP/ffmpeg-essentials" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+            $fp = Get-ChildItem "$env:TEMP/ffmpeg-essentials" -Recurse -Filter ffprobe.exe | Select-Object -First 1
+            if ($ff) { Copy-Item $ff.FullName $tools -Force }
+            if ($fp) { Copy-Item $fp.FullName $tools -Force }
+            Write-Host "ffmpeg bundled:" (Test-Path "$tools/ffmpeg.exe")
+          } catch {
+            Write-Warning "ffmpeg bundle skipped: $_"
+          }
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile Setup.exe
+        working-directory: auto_scene_cutter
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path releases | Out-Null
+          $iscc = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          & $iscc "desktop\installer.iss"
+          if (-not (Test-Path "releases/SceneCutPro-Setup.exe")) {
+            throw "SceneCutPro-Setup.exe missing"
+          }
+          Get-Item "releases/SceneCutPro-Setup.exe" | Format-List Name, Length, FullName
+
+      - name: Upload Setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SceneCutPro-Setup
+          path: auto_scene_cutter/releases/SceneCutPro-Setup.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release (shareable installer)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: scenecut-desktop
+          name: SceneCut Pro+ Desktop
+          body: |
+            Professional Windows installer for SceneCut Pro+.
+
+            1. Download **SceneCutPro-Setup.exe**
+            2. Double-click → Install
+            3. Desktop shortcut **SceneCut Pro+** opens a CapCut-style native window (not Edge browser)
+
+            Live demo: https://scenecut-production.up.railway.app/
+          files: auto_scene_cutter/releases/SceneCutPro-Setup.exe
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
