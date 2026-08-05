@@ -13,38 +13,39 @@ DAILY_TRAIL_GAP       = 0.01
 RISK_PER_TRADE_PCT    = 0.004   # demo USD accuracy test sizing
 MAX_OPEN_TRADES       = 1       # one bot trade at a time
 MAX_TRADES_PER_SYMBOL = 1
-MIN_PATTERN_SCORE     = 60      # demo: clear setups (still needs H1+M15 agree)
-STRONG_SCORE          = 72      # strong trend -> FAST_SCALP
+MIN_PATTERN_SCORE     = 50      # demo: more entries for accuracy testing
+STRONG_SCORE          = 70
 MIN_BREAKOUT_SCORE    = MIN_PATTERN_SCORE  # legacy alias used by main.py
 MIN_SCORE             = MIN_PATTERN_SCORE
-MIN_TREND_STRUCTURE   = 20      # H1 structure floor
+MIN_TREND_STRUCTURE   = 14
 MIN_EFFECTIVE_SCORE   = MIN_PATTERN_SCORE
 MIN_CONFLUENCE        = 0
-SCAN_INTERVAL_SEC     = 4
-MARGIN_PROFIT_TRIGGER = 0.45    # strong scalp: take ~45% of margin as TP
+SCAN_INTERVAL_SEC     = 3
+MARGIN_PROFIT_TRIGGER = 0.35
 MARGIN_SL_LOCK_PCT    = 0.70
 MAX_SPREAD_POINTS     = 2000
-MIN_COOLDOWN_SEC      = 90      # demo accuracy: slightly faster cycle
-STRONG_COOLDOWN_SEC   = 40      # fast re-entry after strong scalp win
+MIN_COOLDOWN_SEC      = 60
+STRONG_COOLDOWN_SEC   = 30
 LOSS_COOLDOWN_SEC     = 600
 TRADE_MAX_LOSS_PCT    = 0.004
 EARLY_LOSS_CUT_PCT    = 0.0025
-MASTER_AUTO_LOSS_CUT  = False   # never bot-close in loss
-MASTER_AUTO_CLOSE     = True    # profit-only scalp exits (demo accuracy)
-MASTER_PROFIT_ONLY    = True    # closes only when profit > 0
-SESSION_MAX_DD_PCT    = 0.08    # stop new entries if equity -8% from session start
+MASTER_AUTO_LOSS_CUT  = False
+MASTER_AUTO_CLOSE     = True
+MASTER_PROFIT_ONLY    = True
+SESSION_MAX_DD_PCT    = 0.12
 STALE_LOSS_MINUTES    = 6
 BREAKEVEN_PROFIT_USD  = 3.0
-SCALP_ATR_MULT        = 0.7     # tight scalp target on strong trend
+SCALP_ATR_MULT        = 0.7
 HOLD_MIN_PROFIT       = 5.0
-HOLD_TRAIL_PCT        = 0.55    # trail giveback for fast scalp
+HOLD_TRAIL_PCT        = 0.55
 SL_BUFFER_ATR_MULT    = 0.35
 SL_HALF_POINT         = 0.5
 TP_HALF_POINT         = 0.5
-MIN_H1_STRENGTH       = 16      # allow soft H1 bias for demo entries
-STRONG_TREND_STRENGTH = 28      # H1+M15 combined -> fast scalp
-# Gold: if M5 quiet, allow M1 entry with H1 bias (demo accuracy testing)
+MIN_H1_STRENGTH       = 14
+STRONG_TREND_STRENGTH = 26
 GOLD_ALLOW_M1_FALLBACK = True
+# One min-lot open shortly after Start Bot to prove pipeline (standard/demo)
+DEMO_SMOKE_TRADE = True
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,
@@ -634,6 +635,11 @@ def _structure_bias(opens, highs, lows, closes, tag: str):
     if down and (lower_highs or bear_body >= 2):
         strength = 16 + (4 if lower_highs else 0) + (2 if bear_body >= 3 else 0)
         return "SELL", min(28, strength), f"{tag}_bear_soft"
+    # Softest lean: close vs prior mid (still directional)
+    if last4[-1] > mid_prior and c[-1] >= c[-2]:
+        return "BUY", 14, f"{tag}_bull_lean"
+    if last4[-1] < mid_prior and c[-1] <= c[-2]:
+        return "SELL", 14, f"{tag}_bear_lean"
     return None, 0, f"{tag}_chop"
 
 

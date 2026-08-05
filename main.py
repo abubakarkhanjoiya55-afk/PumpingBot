@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.8"   # Demo: softer H1 bias + gold M1 fallback for more entries
+API_VERSION = "3.30.9"   # Demo smoke trade + leaner entries; prove order path
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")

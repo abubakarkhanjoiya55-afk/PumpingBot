@@ -386,6 +386,92 @@ class PumpingAgent:
                 print(f"[AGENT] heartbeat error: {e}")
             self._stop.wait(HEARTBEAT_SEC)
 
+    def _demo_smoke_trade(self, bridge) -> bool:
+        """
+        One min-lot market order to prove MT5 Algo Trading + order path works.
+        Direction: soft H1 bias if any, else BUY.
+        """
+        from trading_engine import get_h1_bias, calc_margin_used, is_gold_symbol
+
+        symbols = active_trade_symbols(self.symbols)
+        if not symbols:
+            print("[SMOKE] no symbols for today - skip")
+            return False
+        symbol = symbols[0]
+        # Prefer gold on weekdays
+        for s in symbols:
+            if is_gold_symbol(s):
+                symbol = s
+                break
+
+        tick = self.mt5.symbol_tick(symbol)
+        if not tick:
+            print(f"[SMOKE FAIL] no tick for {symbol} - Market Watch mein symbol on karo")
+            return False
+
+        h1_dir, h1_str, h1_d = get_h1_bias(symbol, bridge)
+        side = h1_dir or "BUY"
+        info = bridge.symbol_info(symbol)
+        vmin = float(getattr(info, "volume_min", 0.01) or 0.01) if info else 0.01
+        lot = vmin
+        entry = tick.ask if side == "BUY" else tick.bid
+
+        acc = self.mt5.account()
+        print(
+            f"[SMOKE] opening {symbol} {side} lot={lot} "
+            f"h1={h1_d} trade_allowed check..."
+        )
+        if not bool(acc.get("balance")):
+            print("[SMOKE FAIL] balance missing")
+            return False
+
+        result = self.mt5.market_order(
+            symbol=symbol,
+            side=side,
+            volume=lot,
+            sl=0.0,
+            tp=0.0,
+            magic=BOT_MAGIC,
+            comment="PB_SMOKE_DEMO",
+        )
+        if not result.get("ok"):
+            print(f"[SMOKE FAIL] order rejected: {result}")
+            print(
+                "[SMOKE] Fix: MT5 Algo Trading GREEN + AutoTrading allowed + "
+                "correct symbol (XAUUSDm) in Market Watch"
+            )
+            return False
+
+        ticket = result["ticket"]
+        try:
+            self.mt5.clear_sl_tp(ticket)
+        except Exception:
+            pass
+        margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+        print(f"[SMOKE OK] ticket={ticket} {symbol} {side} lot={lot} margin~{margin:.2f}")
+        self._master_open[ticket] = {
+            "symbol": symbol, "side": side, "lot": lot,
+            "entry": entry, "sl": None, "score": 99,
+            "atr": 0, "levels": {}, "margin_used": margin,
+            "opened_at": time.time(), "trade_mode": "SMOKE",
+            "strong_trend": True, "peak_profit": 0.0,
+        }
+        self.send({
+            "type": "master_trade_open",
+            "master_ticket": ticket,
+            "symbol": symbol,
+            "side": side,
+            "lot": lot,
+            "balance": acc.get("balance") or 0,
+            "entry": entry,
+            "sl": 0,
+            "score": 99,
+            "atr": 0,
+            "source": "SMOKE",
+            "trade_mode": "SMOKE",
+        })
+        return True
+
     # -- Master strategy (local, fastest) -------------------------------
     def master_loop(self):
         from trading_engine import (
@@ -397,15 +483,18 @@ class PumpingAgent:
         )
 
         print(
-            f"[MASTER] DEMO/STRICT: gold=strong-trend->FAST_SCALP  "
+            f"[MASTER] DEMO mode account={self.account_type} "
             f"max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
-            f"profit_only_close={MASTER_AUTO_CLOSE} account={self.account_type}"
+            f"profit_only_close={MASTER_AUTO_CLOSE} smoke={_env('DEMO_SMOKE_TRADE','1')}"
         )
         last_close = {}
         session_start_equity = None
         entries_halted = False
         bridge = MasterMT5Bridge(self.mt5)
         _tiny_warned = False
+        _smoke_done = False
+        _smoke_after = time.time() + 12  # wait for WS welcome / Algo Trading
+        _status_log_at = 0.0
 
         while not self._stop.is_set():
             try:
@@ -421,6 +510,30 @@ class PumpingAgent:
                         print("[MASTER] bot_active=OFF - waiting for Start Bot")
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
+
+                # Heartbeat status so VPS log shows bot is scanning
+                now_ts = time.time()
+                if now_ts - _status_log_at >= 30:
+                    _status_log_at = now_ts
+                    print(
+                        f"[MASTER] scanning bot_active={self.bot_active} "
+                        f"open={len(open_pos)} symbols={active_trade_symbols(self.symbols)} "
+                        f"smoke_done={_smoke_done}"
+                    )
+
+                # Demo smoke: one min-lot trade to prove orders work
+                if (
+                    not _smoke_done
+                    and now_ts >= _smoke_after
+                    and len(open_pos) == 0
+                    and (_env("DEMO_SMOKE_TRADE", "1") or "1").strip() not in ("0", "false", "False")
+                    and self.account_type not in ("cent", "cents", "usc")
+                ):
+                    ok_smoke = self._demo_smoke_trade(bridge)
+                    _smoke_done = True
+                    if ok_smoke:
+                        time.sleep(SCAN_INTERVAL_SEC)
+                        continue
 
                 acc = self.mt5.account()
                 balance = acc.get("balance") or 0
