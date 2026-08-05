@@ -126,7 +126,7 @@ class Supervisor:
                 "MT5_PATH": mt5_path,
                 "AGENT_ROLE": agent.role,
                 "BOT_ACTIVE": "1" if user.get("bot_active") else "0",
-                "ACCOUNT_TYPE": os.environ.get("ACCOUNT_TYPE", "cent"),
+                "ACCOUNT_TYPE": os.environ.get("ACCOUNT_TYPE", "standard"),
                 "PYTHONUNBUFFERED": "1",
             })
             if os.environ.get("SYMBOLS"):

@@ -142,10 +142,10 @@ else:
               f"use standalone service {MY_SIGNALS_URL or '(set MY_SIGNALS_URL)'}")
 
 SYMBOLS = [
-    "XAUUSDc", "BTCUSDc", "ETHUSDc",
+    "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.29.1"   # Fix Start/Stop → live bot_active to agent; keep VPS online
+API_VERSION = "3.30.0"   # Demo USD: strict H1+M15 gold trend → fast profit scalp
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"

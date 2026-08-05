@@ -13,7 +13,10 @@ set AGENT_LOG_DIR=C:\PumpingBot\logs
 set MT5_BOOT_WAIT_SEC=20
 set POLL_SEC=10
 set PYTHONUNBUFFERED=1
-REM cent = *c symbols. Schedule (agent): Mon-Fri Gold only; Sat-Sun BTC+ETH only.
-set ACCOUNT_TYPE=cent
-REM Optional override pool (day filter still applies):
+REM standard = demo/real USD (*m). cent = USC (*c).
+REM Schedule: Mon-Fri Gold only; Sat-Sun BTC+ETH only.
+set ACCOUNT_TYPE=standard
+REM set SYMBOLS=XAUUSDm,BTCUSDm,ETHUSDm
+REM For cent book instead:
+REM set ACCOUNT_TYPE=cent
 REM set SYMBOLS=XAUUSDc,BTCUSDc,ETHUSDc

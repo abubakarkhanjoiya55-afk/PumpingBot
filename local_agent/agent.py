@@ -109,8 +109,8 @@ class PumpingAgent:
         self.password = _env("MT5_PASSWORD", "")
         self.server = _env("MT5_SERVER", "")
         self.mt5_path = _env("MT5_PATH")
-        # Default pool: Gold + BTC/ETH (day filter picks which to trade).
-        self.account_type = (_env("ACCOUNT_TYPE", "cent") or "cent").strip().lower()
+        # Default: demo/standard USD (*m). Set ACCOUNT_TYPE=cent for USC.
+        self.account_type = (_env("ACCOUNT_TYPE", "standard") or "standard").strip().lower()
         default_symbols = (
             "XAUUSDc,BTCUSDc,ETHUSDc"
             if self.account_type in ("cent", "cents", "usc")
@@ -370,12 +370,15 @@ class PumpingAgent:
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
             MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
-            MIN_COOLDOWN_SEC, SCAN_INTERVAL_SEC, SESSION_MAX_DD_PCT,
+            MIN_COOLDOWN_SEC, STRONG_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
+            SESSION_MAX_DD_PCT, STRONG_SCORE, MASTER_AUTO_CLOSE, MASTER_PROFIT_ONLY,
+            MARGIN_PROFIT_TRIGGER, HOLD_TRAIL_PCT, is_gold_symbol,
         )
 
         print(
-            f"[MASTER] SAFE MODE: max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
-            f"NO bot close / NO broker SL — owner exits only"
+            f"[MASTER] DEMO/STRICT: gold=strong-trend→FAST_SCALP  "
+            f"max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
+            f"profit_only_close={MASTER_AUTO_CLOSE} account={self.account_type}"
         )
         last_close = {}
         session_start_equity = None
@@ -450,7 +453,8 @@ class PumpingAgent:
                         break
                     if sum(1 for p in open_pos if p["symbol"] == symbol) >= MAX_TRADES_PER_SYMBOL:
                         continue
-                    if symbol in last_close and now - last_close[symbol] < MIN_COOLDOWN_SEC:
+                    cd_need = float(last_close.get(symbol + "_cd") or MIN_COOLDOWN_SEC)
+                    if symbol in last_close and now - last_close[symbol] < cd_need:
                         continue
 
                     analysis = analyze_symbol(symbol, bridge)
@@ -462,6 +466,8 @@ class PumpingAgent:
 
                     trend = analysis["trend"]
                     score = analysis["score"]
+                    trade_mode = analysis.get("trade_mode") or "SCALP"
+                    strong_trend = bool(analysis.get("strong_trend"))
                     atr = analysis.get("atr") or 0
                     levels = analysis.get("breakout_levels") or {}
                     tick = analysis["tick"]
@@ -473,14 +479,12 @@ class PumpingAgent:
                                         sl_distance=abs(entry - sl_for_size))
                     if not lot:
                         continue
-                    # Tiny accounts: always min lot
                     info = bridge.symbol_info(symbol)
                     vmin = float(getattr(info, "volume_min", 0.01) or 0.01)
                     if bal_usd < TINY_USD:
                         lot = vmin
                     lot = max(vmin, float(lot))
 
-                    # Hard margin gate — prevents Exness stop-out on tiny USC
                     needed = self.mt5.order_margin(symbol, trend, lot)
                     if needed is None:
                         from trading_engine import calc_margin_used
@@ -488,7 +492,7 @@ class PumpingAgent:
                     if free_margin > 0 and needed > free_margin * MAX_MARGIN_FRAC:
                         print(
                             f"[MASTER SKIP] {symbol} lot={lot} needs margin={needed:.2f} "
-                            f"but free={free_margin:.2f} (>{MAX_MARGIN_FRAC*100:.0f}% cap) — stop-out guard"
+                            f"but free={free_margin:.2f} (>{MAX_MARGIN_FRAC*100:.0f}% cap)"
                         )
                         continue
 
@@ -499,7 +503,7 @@ class PumpingAgent:
                         sl=0.0,
                         tp=0.0,
                         magic=BOT_MAGIC,
-                        comment=f"PB_S{int(score)}"[:31],
+                        comment=f"PB_{trade_mode[:6]}_{int(score)}"[:31],
                     )
                     if not result.get("ok"):
                         print(f"[MASTER FAIL] {symbol} {result}")
@@ -508,22 +512,25 @@ class PumpingAgent:
                     ticket = result["ticket"]
                     from trading_engine import calc_margin_used
                     margin = needed or calc_margin_used(lot, symbol, entry, bridge) or 0
-                    # Immediately ensure no SL/TP stuck on the fill
                     try:
                         self.mt5.clear_sl_tp(ticket)
                     except Exception:
                         pass
                     print(
-                        f"[MASTER OPEN] {symbol} {trend} score={score} lot={lot} "
-                        f"ticket={ticket} margin={margin:.2f} NO_SL NO_AUTO_CLOSE"
+                        f"[MASTER OPEN] {symbol} {trend} mode={trade_mode} "
+                        f"score={score} strong={strong_trend} lot={lot} "
+                        f"ticket={ticket} margin={margin:.2f} NO_SL profit_scalp_only"
                     )
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
                         "entry": entry, "sl": None, "score": score,
                         "atr": atr, "levels": levels, "margin_used": margin,
-                        "opened_at": time.time(),
+                        "opened_at": time.time(), "trade_mode": trade_mode,
+                        "strong_trend": strong_trend, "peak_profit": 0.0,
                     }
-                    last_close[symbol] = time.time()
+                    # Strong gold scalp → shorter cooldown for next attempt
+                    cd = STRONG_COOLDOWN_SEC if (strong_trend and is_gold_symbol(symbol)) else MIN_COOLDOWN_SEC
+                    last_close[symbol] = time.time() - max(0, MIN_COOLDOWN_SEC - cd)
                     opened_this_cycle = True
 
                     self.send({
@@ -538,6 +545,7 @@ class PumpingAgent:
                         "score": score,
                         "atr": atr,
                         "source": "BOT",
+                        "trade_mode": trade_mode,
                     })
 
                 time.sleep(SCAN_INTERVAL_SEC or MASTER_SCAN_SEC)
@@ -546,7 +554,15 @@ class PumpingAgent:
                 time.sleep(2)
 
     def _master_manage_positions(self, open_pos, bridge):
-        """Never auto-close master trades — owner manages in MT5. Only sync DB."""
+        """
+        Sync closed tickets + profit-only fast scalp exits.
+        Never closes a losing trade (MASTER_PROFIT_ONLY).
+        """
+        from trading_engine import (
+            MASTER_AUTO_CLOSE, MASTER_PROFIT_ONLY, MARGIN_PROFIT_TRIGGER,
+            HOLD_TRAIL_PCT, STRONG_SCORE, is_gold_symbol,
+        )
+
         live_tickets = {p["ticket"] for p in open_pos}
         for ticket in list(self._master_open.keys()):
             if ticket not in live_tickets:
@@ -561,10 +577,7 @@ class PumpingAgent:
                     f"reason={reason} profit={profit}"
                 )
                 if reason in ("StopOut", "StopLoss", "VMargin"):
-                    print(
-                        f"[WARN] Broker forced close ({reason}) — NOT bot. "
-                        f"Usually tiny margin / leftover SL. Deposit more or use forex-only."
-                    )
+                    print(f"[WARN] Broker forced close ({reason}) — NOT bot.")
                 self.send({
                     "type": "master_trade_close",
                     "master_ticket": ticket,
@@ -581,17 +594,47 @@ class PumpingAgent:
                 "score": 60,
                 "lot": pos["volume"],
                 "entry": pos["price_open"],
+                "trade_mode": "SCALP",
+                "strong_trend": False,
+                "peak_profit": 0.0,
             }
-            meta["last_profit"] = float(pos["profit"] or 0)
+            profit = float(pos["profit"] or 0)
+            meta["last_profit"] = profit
+            peak = float(meta.get("peak_profit") or 0)
+            if profit > peak:
+                meta["peak_profit"] = profit
+                peak = profit
             self._master_open[ticket] = meta
-            # Strip any leftover broker SL/TP so nothing auto-closes in loss
+
+            # Strip broker SL/TP — loss exits stay owner/broker only
             if float(pos.get("sl") or 0) or float(pos.get("tp") or 0):
                 try:
-                    ok = self.mt5.clear_sl_tp(ticket)
-                    if not ok:
-                        print(f"[WARN] clear SL/TP failed ticket={ticket}")
+                    self.mt5.clear_sl_tp(ticket)
                 except Exception as e:
                     print(f"[WARN] clear SL/TP error ticket={ticket}: {e}")
+
+            if not MASTER_AUTO_CLOSE:
+                continue
+            if MASTER_PROFIT_ONLY and profit <= 0:
+                continue
+
+            score = float(meta.get("score") or 0)
+            strong = bool(meta.get("strong_trend")) or score >= STRONG_SCORE
+            mode = (meta.get("trade_mode") or "").upper()
+            margin = float(meta.get("margin_used") or 0)
+            # Fast scalp: quicker TP when strong gold trend
+            tp_frac = MARGIN_PROFIT_TRIGGER
+            if strong or mode == "FAST_SCALP" or is_gold_symbol(meta.get("symbol") or ""):
+                tp_frac = min(tp_frac, 0.35)
+
+            if margin > 0 and profit >= margin * tp_frac:
+                self._master_close(ticket, meta, "FastScalpTP")
+                continue
+            if peak > 0 and profit >= max(0.5, peak * 0.25):
+                # Giveback trail — lock scalp after peak
+                if profit <= peak * HOLD_TRAIL_PCT and peak >= (margin * 0.2 if margin else 1.0):
+                    self._master_close(ticket, meta, "FastScalpTrail")
+                    continue
 
     def _master_close(self, ticket: int, meta: dict, reason: str):
         result = self.mt5.close_position(ticket, comment=f"PB_{reason}"[:31])
