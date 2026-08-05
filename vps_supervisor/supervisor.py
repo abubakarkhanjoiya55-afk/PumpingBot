@@ -211,10 +211,22 @@ class Supervisor:
         roster = self.fetch_roster()
         wanted = {int(u["user_id"]): u for u in roster}
 
-        # Stop agents no longer desired
+        if not wanted:
+            print(
+                "[VPS] Roster empty - website pe MT5 connect + Start Bot chahiye. "
+                "Agents stop nahi karenge jab tak pehle se chal rahe hain; "
+                "agar list khali hai to Stop is liye aata hai ke user roster se hat gaya."
+            )
+
+        # Stop agents no longer desired (usually: MT5 disconnected or Stop removed vps_desired)
         for uid in list(self.agents.keys()):
             if uid not in wanted:
-                self.stop_agent(self.agents[uid])
+                a = self.agents[uid]
+                print(
+                    f"[VPS] Stopping {a.username} user={uid} - "
+                    f"not in roster (MT5 disconnect / bot off on website)"
+                )
+                self.stop_agent(a)
                 del self.agents[uid]
 
         # Start / restart wanted agents
