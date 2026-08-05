@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.10"   # Smoke retry + force test trade; show why no orders
+API_VERSION = "3.30.11"   # /me trade diag + force-smoke timeout = queued
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")
@@ -2123,6 +2123,7 @@ def get_me(request: Request,
         "mt5_ready":         mt5_ready,
         "vps_ready":         bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
         "vps_status":        current_user.vps_status or "stopped",
+        "vps_last_error":    current_user.vps_last_error,
         "trading_backend":   "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
