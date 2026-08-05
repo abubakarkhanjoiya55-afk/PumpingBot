@@ -1,0 +1,19 @@
+1
+00:00:00,500 --> 00:00:03,000
+The hero welcomes us and we need to find the hidden door by the oak tree.
+
+2
+00:00:03,500 --> 00:00:06,000
+His friend asks if this is the right place, and he says trust me.
+
+3
+00:00:06,500 --> 00:00:09,000
+The door opens into another world, so stay close and follow.
+
+4
+00:00:09,500 --> 00:00:12,000
+They decide to go through the hidden door together.
+
+5
+00:00:12,500 --> 00:00:15,000
+Trust me again — this is the right place to begin.
