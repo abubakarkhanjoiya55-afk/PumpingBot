@@ -80,6 +80,7 @@ const API = (() => {
     // Bot
     startBot: () => request('POST', '/bot/start'),
     stopBot: () => request('POST', '/bot/stop'),
+    forceSmoke: () => request('POST', '/bot/force-smoke'),
 
     // Data
     getSignals: () => request('GET', '/signals'),

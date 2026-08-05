@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.9"   # Demo smoke trade + leaner entries; prove order path
+API_VERSION = "3.30.10"   # Smoke retry + force test trade; show why no orders
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")
@@ -2595,6 +2595,57 @@ def stop_bot(current_user: User = Depends(get_current_user),
         "vps_status": current_user.vps_status,
     }
 
+
+@app.post("/bot/force-smoke")
+def force_smoke_trade(current_user: User = Depends(get_current_user),
+                      db: Session = Depends(get_db)):
+    """
+    Force one min-lot demo trade on the VPS agent (Algo Trading proof).
+    Website green does not mean MT5 accepts orders — this proves the path.
+    """
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Master only")
+    if not current_user.mt5_login:
+        raise HTTPException(400, "Connect MT5 first")
+    if not has_active_subscription(current_user):
+        raise HTTPException(402, "Subscription inactive")
+
+    active_bots[current_user.id] = True
+    current_user.bot_active = True
+    current_user.vps_desired = True
+    current_user.vps_last_error = "smoke_queued"
+    db.commit()
+
+    if not (agent_mode_enabled() and not USE_METAAPI):
+        raise HTTPException(400, "Force smoke only works in VPS agent mode")
+
+    agent_hub.notify_bot_active(current_user.id, True)
+    notify = agent_hub.notify_force_smoke(current_user.id)
+    online = any(
+        a["user_id"] == current_user.id and a.get("ready")
+        for a in agent_hub.list_agents()
+    )
+    if not notify.get("ok"):
+        return {
+            "ok": False,
+            "message": (
+                "Agent offline ya purana code — VPS pe git pull + supervisor restart karo. "
+                f"Detail: {notify.get('error') or notify}"
+            ),
+            "agent_online": online,
+            "notify": notify,
+        }
+    return {
+        "ok": True,
+        "message": (
+            "Test trade queued. 10-30 sec wait — Open Positions mein XAUUSDm dikhna chahiye. "
+            "Agar fail: MT5 Algo Trading GREEN + XAUUSDm Market Watch. VPS log: [SMOKE OK]/[SMOKE FAIL]"
+        ),
+        "agent_online": online,
+        "notify": notify,
+    }
+
+
 @app.get("/signals", response_model=list[SignalOut])
 def get_signals(current_user: User = Depends(get_current_user),
                 db: Session = Depends(get_db)):
@@ -2715,6 +2766,7 @@ def get_status(current_user: User = Depends(get_current_user)):
         "vps_status":       current_user.vps_status or "stopped",
         "mt5_ready":        ready,
         "agents_online":    len(agent_hub.list_agents()),
+        "vps_last_error":   current_user.vps_last_error,
     }
 
 
@@ -3049,7 +3101,22 @@ async def ws_agent(websocket: WebSocket, token: str = Query(...)):
                         row.vps_ready = bool(msg.get("ready"))
                         row.vps_status = "running" if msg.get("ready") else "starting"
                         row.vps_last_seen = datetime.utcnow()
-                        row.vps_last_error = None
+                        # Keep last smoke/skip reason visible on dashboard (why no trades)
+                        diag = (msg.get("diag") or msg.get("last_smoke") or msg.get("last_skip") or "")
+                        if diag:
+                            # Do not clear a real supervisor error with empty; only overwrite with diag
+                            if str(diag).startswith("fail:") or str(diag).startswith("ok:"):
+                                row.vps_last_error = str(diag)[:240]
+                            elif not row.vps_last_error or str(row.vps_last_error).startswith(
+                                ("fail:", "ok:", "smoke_", "skip:")
+                            ):
+                                skip = msg.get("last_skip")
+                                if skip and not msg.get("smoke_ok"):
+                                    row.vps_last_error = f"skip:{skip}"[:240]
+                                elif msg.get("smoke_ok"):
+                                    row.vps_last_error = None
+                        else:
+                            row.vps_last_error = None
                         # Upsert open trades from live MT5 positions (agent mode UI)
                         if isinstance(positions, list):
                             live_tickets = set()

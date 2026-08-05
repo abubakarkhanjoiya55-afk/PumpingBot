@@ -138,6 +138,18 @@
     }
   });
 
+  $('#btn-force-smoke').addEventListener('click', async () => {
+    try {
+      const data = await API.forceSmoke();
+      showToast(data.message || 'Test trade queued', !data.ok);
+      await refreshDashboard();
+      setTimeout(() => refreshDashboard(), 8000);
+      setTimeout(() => refreshDashboard(), 20000);
+    } catch (ex) {
+      showToast(ex.message, true);
+    }
+  });
+
   $('#btn-copy-ref').addEventListener('click', () => {
     const code = $('#referral-code').textContent;
     navigator.clipboard.writeText(code).then(() => showToast('Referral code copied!'));
@@ -217,6 +229,21 @@
     );
     $('#btn-start').disabled = !canStart || m.bot_active;
     $('#btn-stop').disabled = !m.bot_active;
+    const smokeBtn = $('#btn-force-smoke');
+    if (smokeBtn) {
+      smokeBtn.disabled = !(m.role === 'master' && canStart);
+    }
+    const diagEl = $('#trade-diag');
+    if (diagEl) {
+      const err = m.vps_last_error || '';
+      if (err) {
+        diagEl.textContent = `Trade status: ${err}`;
+      } else if (m.bot_active && (m.open_trades_count || 0) === 0) {
+        diagEl.textContent = 'Bot ON, 0 trades — waiting setup, ya VPS pe Test Trade / Algo Trading check.';
+      } else {
+        diagEl.textContent = '';
+      }
+    }
 
     const banner = $('#payment-banner');
     if (m.payment_status === 'pending' || m.payment_status === 'overdue') {

@@ -154,6 +154,13 @@ class PumpingAgent:
         self._master_open = {}  # master_ticket -> local info (master role)
         self._copy_map = {}  # master_ticket -> local ticket
         self._ws_lock = threading.Lock()
+        # Demo smoke / diagnostics (shared with WS force_smoke)
+        self._smoke_ok = False
+        self._smoke_next_at = 0.0
+        self._smoke_attempts = 0
+        self._force_smoke = False
+        self._last_smoke = ""
+        self._last_skip = ""
 
     # -- MT5 ------------------------------------------------------------
     def connect_mt5(self) -> bool:
@@ -254,8 +261,27 @@ class PumpingAgent:
         if mtype == "set_bot_active":
             self.bot_active = bool(msg.get("bot_active"))
             print(f"[AGENT] set_bot_active -> {self.bot_active}")
+            # Start Bot again = allow another smoke attempt (orders may have been blocked)
+            if self.bot_active:
+                self._smoke_ok = False
+                self._smoke_next_at = time.time() + 8
+                self._last_smoke = "queued_after_start"
+                print("[SMOKE] re-armed after Start Bot")
             if req_id:
                 self.reply(req_id, ok=True, bot_active=self.bot_active)
+            return
+
+        if mtype == "force_smoke":
+            self._force_smoke = True
+            self._smoke_ok = False
+            self._smoke_next_at = 0.0
+            self.bot_active = True
+            print("[SMOKE] force_smoke requested from server")
+            if req_id:
+                self.reply(
+                    req_id, ok=True, queued=True,
+                    attempts=self._smoke_attempts, last_smoke=self._last_smoke,
+                )
             return
 
         if mtype == "ping":
@@ -269,6 +295,9 @@ class PumpingAgent:
                 "ready": self.mt5.ready,
                 "bot_active": self.bot_active,
                 "positions": len(self.mt5.positions()),
+                "last_smoke": self._last_smoke,
+                "last_skip": self._last_skip,
+                "smoke_ok": self._smoke_ok,
             })
             return
 
@@ -282,6 +311,8 @@ class PumpingAgent:
 
         if mtype == "master_start":
             self.bot_active = True
+            self._smoke_ok = False
+            self._smoke_next_at = time.time() + 8
             print("[AGENT] Master strategy START - entries ON")
             self.reply(req_id, ok=True, bot_active=True)
             return
@@ -373,6 +404,7 @@ class PumpingAgent:
         while not self._stop.is_set():
             try:
                 acc = self.mt5.account()
+                diag = self._last_smoke or self._last_skip or ""
                 self.send({
                     "type": "heartbeat",
                     "balance": acc.get("balance", 0),
@@ -381,6 +413,12 @@ class PumpingAgent:
                     "is_cent": bool(acc.get("is_cent")),
                     "ready": self.mt5.ready,
                     "positions": self.mt5.positions(),
+                    "bot_active": self.bot_active,
+                    "smoke_ok": self._smoke_ok,
+                    "smoke_attempts": self._smoke_attempts,
+                    "last_smoke": self._last_smoke,
+                    "last_skip": self._last_skip,
+                    "diag": diag[:200],
                 })
             except Exception as e:
                 print(f"[AGENT] heartbeat error: {e}")
@@ -395,6 +433,7 @@ class PumpingAgent:
 
         symbols = active_trade_symbols(self.symbols)
         if not symbols:
+            self._last_smoke = "fail:no_symbols_today"
             print("[SMOKE] no symbols for today - skip")
             return False
         symbol = symbols[0]
@@ -406,6 +445,7 @@ class PumpingAgent:
 
         tick = self.mt5.symbol_tick(symbol)
         if not tick:
+            self._last_smoke = f"fail:no_tick:{symbol}"
             print(f"[SMOKE FAIL] no tick for {symbol} - Market Watch mein symbol on karo")
             return False
 
@@ -419,9 +459,10 @@ class PumpingAgent:
         acc = self.mt5.account()
         print(
             f"[SMOKE] opening {symbol} {side} lot={lot} "
-            f"h1={h1_d} trade_allowed check..."
+            f"h1={h1_d} attempt={self._smoke_attempts + 1}"
         )
         if not bool(acc.get("balance")):
+            self._last_smoke = "fail:balance_missing"
             print("[SMOKE FAIL] balance missing")
             return False
 
@@ -435,6 +476,8 @@ class PumpingAgent:
             comment="PB_SMOKE_DEMO",
         )
         if not result.get("ok"):
+            err = result.get("error") or result.get("comment") or str(result)
+            self._last_smoke = f"fail:{err}"
             print(f"[SMOKE FAIL] order rejected: {result}")
             print(
                 "[SMOKE] Fix: MT5 Algo Trading GREEN + AutoTrading allowed + "
@@ -448,6 +491,7 @@ class PumpingAgent:
         except Exception:
             pass
         margin = calc_margin_used(lot, symbol, entry, bridge) or 0
+        self._last_smoke = f"ok:{symbol}:{side}:ticket={ticket}"
         print(f"[SMOKE OK] ticket={ticket} {symbol} {side} lot={lot} margin~{margin:.2f}")
         self._master_open[ticket] = {
             "symbol": symbol, "side": side, "lot": lot,
@@ -492,8 +536,9 @@ class PumpingAgent:
         entries_halted = False
         bridge = MasterMT5Bridge(self.mt5)
         _tiny_warned = False
-        _smoke_done = False
-        _smoke_after = time.time() + 12  # wait for WS welcome / Algo Trading
+        # First smoke shortly after connect; retries until OK (or force_smoke)
+        if self._smoke_next_at <= 0:
+            self._smoke_next_at = time.time() + 12
         _status_log_at = 0.0
 
         while not self._stop.is_set():
@@ -518,22 +563,41 @@ class PumpingAgent:
                     print(
                         f"[MASTER] scanning bot_active={self.bot_active} "
                         f"open={len(open_pos)} symbols={active_trade_symbols(self.symbols)} "
-                        f"smoke_done={_smoke_done}"
+                        f"smoke_ok={self._smoke_ok} attempts={self._smoke_attempts} "
+                        f"last_smoke={self._last_smoke or '-'} last_skip={self._last_skip or '-'}"
                     )
 
-                # Demo smoke: one min-lot trade to prove orders work
-                if (
-                    not _smoke_done
-                    and now_ts >= _smoke_after
-                    and len(open_pos) == 0
-                    and (_env("DEMO_SMOKE_TRADE", "1") or "1").strip() not in ("0", "false", "False")
+                # Force / retry smoke until one order proves the path
+                if self._force_smoke:
+                    self._force_smoke = False
+                    self._smoke_ok = False
+                    self._smoke_next_at = 0.0
+                    print("[SMOKE] running forced test trade now")
+
+                smoke_enabled = (
+                    (_env("DEMO_SMOKE_TRADE", "1") or "1").strip()
+                    not in ("0", "false", "False")
                     and self.account_type not in ("cent", "cents", "usc")
+                )
+                if (
+                    smoke_enabled
+                    and not self._smoke_ok
+                    and now_ts >= self._smoke_next_at
+                    and len(open_pos) == 0
                 ):
                     ok_smoke = self._demo_smoke_trade(bridge)
-                    _smoke_done = True
+                    self._smoke_attempts += 1
                     if ok_smoke:
+                        self._smoke_ok = True
                         time.sleep(SCAN_INTERVAL_SEC)
                         continue
+                    # Retry: 30s, then 60s, cap 120s — do NOT give up after one fail
+                    delay = min(120, 30 + 15 * max(0, self._smoke_attempts - 1))
+                    self._smoke_next_at = now_ts + delay
+                    print(
+                        f"[SMOKE] retry in {delay}s "
+                        f"(attempt={self._smoke_attempts} last={self._last_smoke})"
+                    )
 
                 acc = self.mt5.account()
                 balance = acc.get("balance") or 0
@@ -594,6 +658,7 @@ class PumpingAgent:
                     analysis = analyze_symbol(symbol, bridge)
                     if not analysis or analysis.get("skip"):
                         reason = (analysis or {}).get("reason", "no_analysis")
+                        self._last_skip = f"{symbol}:{reason}"
                         # Log skip every ~60s so VPS log shows why no trades
                         key = f"skip_{symbol}_{reason}"
                         last_log = float(last_close.get(key) or 0)
@@ -603,6 +668,7 @@ class PumpingAgent:
                         continue
                     ok, reason = trade_eligible(analysis)
                     if not ok:
+                        self._last_skip = f"{symbol}:{reason}"
                         key = f"elig_{symbol}_{reason}"
                         last_log = float(last_close.get(key) or 0)
                         if now - last_log >= 60:
