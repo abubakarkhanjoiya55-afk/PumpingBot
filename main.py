@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.6"   # Clearer VPS stop reason when roster empty
+API_VERSION = "3.30.7"   # Single MT5 attach: no 2nd login kick on Algo Trading
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")

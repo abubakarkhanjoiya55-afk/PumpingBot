@@ -29,37 +29,65 @@ class LocalMT5:
             return False
 
         self._mt5 = mt5
-        kwargs = {}
-        if self.path:
-            kwargs["path"] = self.path
 
-        # IPC timeout (-10005) is common while terminal is still booting
+        # 1) Prefer already-open terminal (avoids 2nd login kicking Algo/session)
+        # 2) Then portable path from supervisor
+        attempts = []
+        attempts.append({})  # any running terminal
+        if self.path:
+            attempts.append({"path": self.path})
+
         last_err = None
-        for attempt in range(1, 6):
-            if mt5.initialize(**kwargs):
+        initialized = False
+        for kwargs in attempts:
+            for attempt in range(1, 4):
+                try:
+                    mt5.shutdown()
+                except Exception:
+                    pass
+                if mt5.initialize(**kwargs):
+                    initialized = True
+                    label = kwargs.get("path") or "default-running-terminal"
+                    print(f"[LOCAL MT5] initialize ok via {label}")
+                    break
+                last_err = mt5.last_error()
+                print(f"[LOCAL MT5] initialize failed (try {attempt}/3) {kwargs}: {last_err}")
+                time.sleep(3)
+            if initialized:
                 break
-            last_err = mt5.last_error()
-            print(f"[LOCAL MT5] initialize failed (try {attempt}/5): {last_err}")
-            try:
-                mt5.shutdown()
-            except Exception:
-                pass
-            time.sleep(5)
-        else:
+        if not initialized:
             print(f"[LOCAL MT5] initialize failed: {last_err}")
             return False
 
-        authorized = mt5.login(self.login, password=self.password, server=self.server)
-        if not authorized:
-            print(f"[LOCAL MT5] login failed: {mt5.last_error()}")
-            mt5.shutdown()
-            return False
+        info = mt5.account_info()
+        already = info and int(getattr(info, "login", 0) or 0) == int(self.login)
+        if already:
+            # Re-login on same account kicks other terminals / drops Algo Trading
+            print(
+                f"[LOCAL MT5] Already logged in as {self.login} - skip login() "
+                f"(keeps Algo Trading session stable)"
+            )
+        else:
+            authorized = mt5.login(self.login, password=self.password, server=self.server)
+            if not authorized:
+                print(f"[LOCAL MT5] login failed: {mt5.last_error()}")
+                mt5.shutdown()
+                return False
 
         self.ready = True
         info = mt5.account_info()
         cur = getattr(info, "currency", "") if info else ""
-        print(f"[LOCAL MT5] Connected {self.login}@{self.server} "
-              f"balance={getattr(info, 'balance', '?')} currency={cur}")
+        trade_allowed = bool(getattr(info, "trade_allowed", True)) if info else False
+        print(
+            f"[LOCAL MT5] Connected {self.login}@{self.server} "
+            f"balance={getattr(info, 'balance', '?')} currency={cur} "
+            f"trade_allowed={trade_allowed}"
+        )
+        if info and not trade_allowed:
+            print(
+                "[LOCAL MT5] WARN: trade_allowed=False - MT5 mein Algo Trading "
+                "button ON karo (green). Doosri MT5 window band rakho."
+            )
         return True
 
     def shutdown(self):

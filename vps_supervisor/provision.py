@@ -58,7 +58,7 @@ def ensure_portable_marker(dest: Path) -> None:
 
 def ensure_portable_instance(login: int | str) -> Path:
     """
-    Clone portable MT5 template → C:\\PumpingBot\\MT5_Instances\\{login}
+    Clone portable MT5 template -> C:\\PumpingBot\\MT5_Instances\\{login}
     Returns path to terminal64.exe
     """
     dest = instance_dir(login)
@@ -70,12 +70,12 @@ def ensure_portable_instance(login: int | str) -> Path:
     src = template_dir()
     if not (src / "terminal64.exe").is_file():
         raise FileNotFoundError(
-            f"MT5 template missing at {src}\\terminal64.exe — "
+            f"MT5 template missing at {src}\\terminal64.exe - "
             "install portable MT5 there first (see vps_supervisor/README.md)"
         )
 
     instances_root().mkdir(parents=True, exist_ok=True)
-    print(f"[PROVISION] Cloning MT5 template → {dest}")
+    print(f"[PROVISION] Cloning MT5 template -> {dest}")
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -86,17 +86,45 @@ def ensure_portable_instance(login: int | str) -> Path:
     for p in dest.rglob("*"):
         _clear_readonly(p)
 
-    # Portable mode marker — keeps data inside this folder
+    # Portable mode marker - keeps data inside this folder
     ensure_portable_marker(dest)
     if not exe.is_file():
         raise FileNotFoundError(f"terminal64.exe not found after clone: {exe}")
     return exe
 
 
+def _terminal_already_running(exe: Path) -> bool:
+    """True if any terminal64.exe is already running (avoid dual-login kick)."""
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        out = (r.stdout or "").lower()
+        return "terminal64.exe" in out
+    except Exception:
+        return False
+
+
 def start_terminal(login: int | str) -> subprocess.Popen | None:
-    """Launch terminal minimized; safe to call if already running."""
+    """
+    Launch portable terminal minimized.
+    If ANY terminal64 is already open (user logged into demo manually),
+    do NOT start a second one - second login kicks Algo Trading / closes session.
+    """
     exe = ensure_portable_instance(login)
-    # If already running with this cwd, skip
+    attach = (os.environ.get("ATTACH_EXISTING_MT5", "1") or "1").strip() not in (
+        "0", "false", "False", "no"
+    )
+    if attach and _terminal_already_running(exe):
+        print(
+            f"[PROVISION] terminal64 already running - skip second launch for {login} "
+            f"(prevents Algo Trading kick / account close)"
+        )
+        time.sleep(2)
+        return None
     try:
         # /portable is implied by portable file; start minimized
         proc = subprocess.Popen(
