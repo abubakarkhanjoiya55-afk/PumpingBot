@@ -145,14 +145,16 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.3"   # Force ASCII-safe agent prints on Windows VPS
+API_VERSION = "3.30.4"   # Single admin: Admin99 only; remove legacy admin
 
-ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")
 ADMIN99_EMAIL = os.environ.get("ADMIN99_EMAIL", "admin99@mysignals.app")
+# Only one admin account — legacy "admin" is removed on startup
+ADMIN_USERNAMES = frozenset({ADMIN99_USERNAME})
+LEGACY_ADMIN_USERNAME = "admin"
 
-MASTER_USER_ID = None   # Set at startup from admin username
+MASTER_USER_ID = None   # Set at startup from Admin99
 
 def is_master_user(user):
     return user is not None and user.username in ADMIN_USERNAMES
@@ -1391,7 +1393,7 @@ def calculate_daily_profits():
     try:
         users = db.query(User).filter(
             User.bot_active == True,
-            User.username != "admin"
+            User.username != ADMIN99_USERNAME,
         ).all()
 
         for user in users:
@@ -1550,7 +1552,7 @@ def pause_expired_subscriptions():
     """30 din package khatam — bot pause jab tak payment + admin approve na ho."""
     db = SessionLocal()
     try:
-        users = db.query(User).filter(User.username != "admin").all()
+        users = db.query(User).filter(User.username != ADMIN99_USERNAME).all()
         for user in users:
             prev = user.subscription_status
             status = refresh_subscription_status(user)
@@ -1945,7 +1947,10 @@ def admin_delete_user(user_id: int,
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    if is_master_user(user):
+    # Never delete the sole Admin99; legacy "admin" may be removed
+    if user.username == ADMIN99_USERNAME:
+        raise HTTPException(400, "Admin99 ko delete nahi kar sakte")
+    if is_master_user(user) and user.username != LEGACY_ADMIN_USERNAME:
         raise HTTPException(400, "Admin ko delete nahi kar sakte")
     active_bots[user_id] = False
     pool_remove(user_id)
@@ -2727,23 +2732,22 @@ async def startup_event():
 
     db = SessionLocal()
     try:
-        existing = db.query(User).filter(User.username == "admin").first()
-        if not existing:
-            new_user = User(
-                username="admin",
-                email="test123@gmail.com",
-                hashed_password=get_password_hash("Test123"),
-                mt5_login=474114625,
-                mt5_password="Tradingdemo.123",
-                mt5_server="Exness-MT5Trial15"
-            )
-            db.add(new_user)
+        # Single admin: Admin99 only. Remove legacy "admin" so VPS/roster cannot hijack.
+        legacy = db.query(User).filter(User.username == LEGACY_ADMIN_USERNAME).first()
+        if legacy:
+            # Move MT5 creds to Admin99 if Admin99 has none
+            admin99_pre = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
+            if admin99_pre and not admin99_pre.mt5_login and legacy.mt5_login:
+                admin99_pre.mt5_login = legacy.mt5_login
+                admin99_pre.mt5_password = legacy.mt5_password
+                admin99_pre.mt5_server = legacy.mt5_server
+                print(f"[STARTUP] Moved MT5 {legacy.mt5_login} from legacy admin -> Admin99")
+            db.query(Trade).filter(Trade.user_id == legacy.id).delete()
+            db.delete(legacy)
             db.commit()
-            print("[STARTUP] Admin user created!")
-        else:
-            print("[STARTUP] Admin user already exists!")
+            print("[STARTUP] Legacy admin user deleted — only Admin99 remains")
 
-        # Admin99 — My Signals admin panel login (users ko tab nazar nahi aati)
+        # Admin99 — sole admin / master
         admin99 = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
         if not admin99:
             admin99 = User(
@@ -2780,21 +2784,8 @@ async def startup_event():
             print(f"[STARTUP] Backfilled referral_code for {len(missing_refs)} user(s)")
 
         global MASTER_USER_ID
-        # Prefer legacy admin for MT5 master; Admin99 still is_master_user for panel
-        admin_user = db.query(User).filter(User.username == "admin").first()
-        if admin_user:
-            MASTER_USER_ID = admin_user.id
-            admin_user.subscription_status = "active"
-            admin_user.subscription_expires_at = datetime.utcnow() + timedelta(days=3650)
-            admin_user.payment_status = "clear"
-            admin_user.subscription_fee_owed = 0.0
-            if not admin_user.referral_code:
-                admin_user.referral_code = generate_referral_code(db)
-            db.commit()
-            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (admin, subscription forever)")
-        else:
-            MASTER_USER_ID = admin99.id
-            print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (Admin99)")
+        MASTER_USER_ID = admin99.id
+        print(f"[STARTUP] MASTER_USER_ID = {MASTER_USER_ID} (Admin99 only)")
 
         # Expire any packages that ended while server was down
         pause_expired_subscriptions()
@@ -2805,7 +2796,7 @@ async def startup_event():
             print("[STARTUP] Master/followers: Start Bot → VPS supervisor hosts agents")
         else:
             # Legacy MetaAPI cloud terminals
-            user = db.query(User).filter(User.username == "admin").first()
+            user = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
             if user and user.mt5_login:
                 print(f"[STARTUP] Initializing MetaApi with login={user.mt5_login} server={user.mt5_server}")
                 mt5_manager.initialize(
@@ -2814,7 +2805,7 @@ async def startup_event():
                     server=user.mt5_server
                 )
             else:
-                print("[STARTUP] No credentials found — calling initialize() without args")
+                print("[STARTUP] No credentials found - calling initialize() without args")
                 mt5_manager.initialize()
 
             print("[STARTUP] Waiting for MetaApi _ready...")
@@ -2829,15 +2820,15 @@ async def startup_event():
 
             if mt5_manager._ready:
                 metaapi_ready_event.set()
-                print("[STARTUP] metaapi_ready_event SET ✓")
+                print("[STARTUP] metaapi_ready_event SET")
                 try:
                     warmup_followers()
                 except Exception as e:
                     print(f"[STARTUP] follower warmup: {e}")
             else:
-                print("[STARTUP] MetaApi NOT ready — bot will NOT auto-start")
+                print("[STARTUP] MetaApi NOT ready - bot will NOT auto-start")
 
-            user = db.query(User).filter(User.username == "admin").first()
+            user = db.query(User).filter(User.username == ADMIN99_USERNAME).first()
             if user and mt5_manager._ready and not active_bots.get(user.id):
                 active_bots[user.id] = True
                 user.bot_active = True
@@ -2851,7 +2842,7 @@ async def startup_event():
 
             followers = db.query(User).filter(
                 User.bot_active == True,
-                User.username != "admin",
+                User.username != ADMIN99_USERNAME,
                 User.metaapi_account_id != None,
                 User.subscription_status == "active",
             ).all()
