@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.0"   # Demo USD: strict H1+M15 gold trend → fast profit scalp
+API_VERSION = "3.30.1"   # Fix VPS supervisor self-kill on agent restart
 
 ADMIN_USERNAMES = frozenset({"admin", "Admin99"})
 ADMIN99_USERNAME = "Admin99"
