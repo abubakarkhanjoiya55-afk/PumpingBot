@@ -162,6 +162,14 @@ class AgentHub:
             timeout=2.0,
         )
 
+    def notify_force_smoke(self, user_id: int) -> dict:
+        """Ask master agent to open one min-lot test trade immediately."""
+        return self.send_to_user_sync(
+            user_id,
+            {"type": "force_smoke"},
+            timeout=3.0,
+        )
+
     def resolve_response(self, user_id: int, message: dict):
         sess = self._agents.get(user_id)
         if not sess:
