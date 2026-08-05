@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.30.4"   # Single admin: Admin99 only; remove legacy admin
+API_VERSION = "3.30.5"   # Demo: allow clear H1+M15 gold setups; skip logging
 
 ADMIN99_USERNAME = "Admin99"
 ADMIN99_PASSWORD = os.environ.get("ADMIN99_PASSWORD", "Goku.k.g99")

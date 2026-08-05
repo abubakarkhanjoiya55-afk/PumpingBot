@@ -480,9 +480,25 @@ class PumpingAgent:
 
                     analysis = analyze_symbol(symbol, bridge)
                     if not analysis or analysis.get("skip"):
+                        reason = (analysis or {}).get("reason", "no_analysis")
+                        # Log skip every ~60s so VPS log shows why no trades
+                        key = f"skip_{symbol}_{reason}"
+                        last_log = float(last_close.get(key) or 0)
+                        if now - last_log >= 60:
+                            print(f"[MASTER SKIP] {symbol} reason={reason}")
+                            last_close[key] = now
                         continue
                     ok, reason = trade_eligible(analysis)
                     if not ok:
+                        key = f"elig_{symbol}_{reason}"
+                        last_log = float(last_close.get(key) or 0)
+                        if now - last_log >= 60:
+                            print(
+                                f"[MASTER SKIP] {symbol} eligible=no "
+                                f"reason={reason} score={analysis.get('score')} "
+                                f"strong={analysis.get('strong_trend')}"
+                            )
+                            last_close[key] = now
                         continue
 
                     trend = analysis["trend"]

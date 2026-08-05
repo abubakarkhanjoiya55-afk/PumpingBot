@@ -1,8 +1,8 @@
 """
-PumpingBot Trading Engine — M1 candle-pattern strategy (no indicators).
+PumpingBot Trading Engine - M1 candle-pattern strategy (no indicators).
 
 Entry: 1-minute closed candle patterns + direction confirmation.
-Sizing: score-based risk multiplier (higher score → more margin/lot).
+Sizing: score-based risk multiplier (higher score -> more margin/lot).
 """
 
 # ─── Engine constants ─────────────────────────────────────────────────────────
@@ -13,19 +13,19 @@ DAILY_TRAIL_GAP       = 0.01
 RISK_PER_TRADE_PCT    = 0.004   # demo USD accuracy test sizing
 MAX_OPEN_TRADES       = 1       # one bot trade at a time
 MAX_TRADES_PER_SYMBOL = 1
-MIN_PATTERN_SCORE     = 68      # strict: only clean setups
-STRONG_SCORE          = 78      # strong trend → fast scalp mode
+MIN_PATTERN_SCORE     = 60      # demo: clear setups (still needs H1+M15 agree)
+STRONG_SCORE          = 72      # strong trend -> FAST_SCALP
 MIN_BREAKOUT_SCORE    = MIN_PATTERN_SCORE  # legacy alias used by main.py
 MIN_SCORE             = MIN_PATTERN_SCORE
-MIN_TREND_STRUCTURE   = 22      # H1 strength floor (sakhti se trend)
+MIN_TREND_STRUCTURE   = 20      # H1 structure floor
 MIN_EFFECTIVE_SCORE   = MIN_PATTERN_SCORE
 MIN_CONFLUENCE        = 0
 SCAN_INTERVAL_SEC     = 4
 MARGIN_PROFIT_TRIGGER = 0.45    # strong scalp: take ~45% of margin as TP
 MARGIN_SL_LOCK_PCT    = 0.70
 MAX_SPREAD_POINTS     = 2000
-MIN_COOLDOWN_SEC      = 120     # 2 min between entries
-STRONG_COOLDOWN_SEC   = 45      # fast re-entry after strong scalp win
+MIN_COOLDOWN_SEC      = 90      # demo accuracy: slightly faster cycle
+STRONG_COOLDOWN_SEC   = 40      # fast re-entry after strong scalp win
 LOSS_COOLDOWN_SEC     = 600
 TRADE_MAX_LOSS_PCT    = 0.004
 EARLY_LOSS_CUT_PCT    = 0.0025
@@ -42,7 +42,7 @@ SL_BUFFER_ATR_MULT    = 0.35
 SL_HALF_POINT         = 0.5
 TP_HALF_POINT         = 0.5
 MIN_H1_STRENGTH       = MIN_TREND_STRUCTURE
-STRONG_TREND_STRENGTH = 34      # H1+M15 combined → fast scalp
+STRONG_TREND_STRENGTH = 30      # H1+M15 combined -> fast scalp
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,
@@ -57,7 +57,7 @@ SYMBOL_MAX_SPREAD = {
     "USDCADm":  2000,
     "GBPJPYm":  8000,
     "NZDUSDm":  2000,
-    # Exness CENT (*c) — same point budgets as standard
+    # Exness CENT (*c) - same point budgets as standard
     "XAUUSDc":  30000,
     "XAGUSDc":  5000,
     "BTCUSDc":  2000000,
@@ -132,7 +132,7 @@ def fetch_ohlc(symbol, timeframe, count, mt5_manager):
     }
 
 
-# ─── Candle patterns (OHLC only — no indicators) ──────────────────────────────
+# ─── Candle patterns (OHLC only - no indicators) ──────────────────────────────
 
 def detect_candle_pattern(opens, highs, lows, closes):
     """
@@ -198,7 +198,7 @@ def detect_candle_pattern(opens, highs, lows, closes):
 
 def confirm_m1_direction(opens, highs, lows, closes, direction):
     """
-    Direction confirmation on 1m — no indicators.
+    Direction confirmation on 1m - no indicators.
     Uses closed-candle structure after the pattern candle.
     Returns (confirmed: bool, bonus_score: int, reason: str)
     """
@@ -262,7 +262,7 @@ def score_m1_setup(pattern_score, confirm_bonus, atr, body, range_):
     # Momentum quality: larger body vs range boosts score
     if range_ and range_ > 0:
         raw += min(10, (body / range_) * 12)
-    # Mild ATR context — not an indicator entry, just size realism
+    # Mild ATR context - not an indicator entry, just size realism
     if atr and atr > 0 and body > atr * 0.35:
         raw += 6
     return int(max(0, min(100, round(raw))))
@@ -527,7 +527,7 @@ def profit_to_price(entry_price, trade_type, target_profit, lot, symbol, mt5_man
 
 
 def get_trend(symbol, mt5_manager):
-    """M1 micro-structure bias for position fail checks — no indicators."""
+    """M1 micro-structure bias for position fail checks - no indicators."""
     tf = getattr(mt5_manager, "TIMEFRAME_M1", "1m")
     ohlc = fetch_ohlc(symbol, tf, 30, mt5_manager)
     if ohlc is None:
@@ -544,7 +544,7 @@ def get_trend(symbol, mt5_manager):
 
 
 def get_risk_multiplier(score):
-    """Higher pattern score → more margin/lot on that trade."""
+    """Higher pattern score -> more margin/lot on that trade."""
     if score >= 90:
         return 3.5
     if score >= STRONG_SCORE:
@@ -598,7 +598,7 @@ def calculate_lot(balance, atr, symbol, score, mt5_manager, sl_distance=None):
 def _structure_bias(opens, highs, lows, closes, tag: str):
     """
     Strict swing structure on closed bars.
-    Needs clear directional push — not a soft mid-cross.
+    Needs clear directional push - not a soft mid-cross.
     Returns ("BUY"|"SELL"|None, strength 0-30, detail).
     """
     c, h, l, o = closes[:-1], highs[:-1], lows[:-1], opens[:-1]
@@ -617,7 +617,7 @@ def _structure_bias(opens, highs, lows, closes, tag: str):
     bull_body = sum(1 for i in range(-4, 0) if c[i] > o[i])
     bear_body = sum(1 for i in range(-4, 0) if c[i] < o[i])
 
-    # Strict: need structure (HH/HL or LH/LL) — body count alone is not enough
+    # Strict: need structure (HH/HL or LH/LL) - body count alone is not enough
     if up and higher_lows and (higher_highs or bull_body >= 3):
         strength = 20 + (6 if higher_highs else 0) + (4 if bull_body >= 3 else 0)
         return "BUY", min(30, strength), f"{tag}_bull_struct"
@@ -628,7 +628,7 @@ def _structure_bias(opens, highs, lows, closes, tag: str):
 
 
 def get_h1_bias(symbol, mt5_manager):
-    """1H swing structure — only trade this side when clear."""
+    """1H swing structure - only trade this side when clear."""
     tf = getattr(mt5_manager, "TIMEFRAME_H1", "1h")
     ohlc = fetch_ohlc(symbol, tf, 40, mt5_manager)
     if ohlc is None or len(ohlc["closes"]) < 10:
@@ -639,7 +639,7 @@ def get_h1_bias(symbol, mt5_manager):
 
 
 def get_m15_bias(symbol, mt5_manager):
-    """M15 must agree with H1 — blocks chop entries."""
+    """M15 must agree with H1 - blocks chop entries."""
     tf = getattr(mt5_manager, "TIMEFRAME_M15", "15m")
     ohlc = fetch_ohlc(symbol, tf, 40, mt5_manager)
     if ohlc is None or len(ohlc["closes"]) < 10:
@@ -687,7 +687,7 @@ def is_gold_symbol(symbol: str) -> bool:
 
 def detect_m5_sr_signal(symbol, mt5_manager, bias_dir=None):
     """
-    M5 support/resistance: clear break → retest hold → continue.
+    M5 support/resistance: clear break -> retest hold -> continue.
     Also accepts strong M5 engulfs after level break.
     """
     tf = getattr(mt5_manager, "TIMEFRAME_M5", None) or getattr(
@@ -721,14 +721,14 @@ def detect_m5_sr_signal(symbol, mt5_manager, bias_dir=None):
     buf = max(atr * 0.15, rng * 0.05)
     b0, b1, b2 = -3, -2, -1  # break, retest, confirm (closed)
 
-    # Resistance break → retest → hold above
+    # Resistance break -> retest -> hold above
     broke_up = c[b0] > res + buf and o[b0] < res
     retest_hold_up = (
         l[b1] <= res + buf and l[b1] >= res - buf * 2 and c[b1] >= res - buf
     )
     confirm_up = c[b2] > res and c[b2] >= o[b2]
 
-    # Support break → retest → hold below
+    # Support break -> retest -> hold below
     broke_dn = c[b0] < sup - buf and o[b0] > sup
     retest_hold_dn = (
         h[b1] >= sup - buf and h[b1] <= sup + buf * 2 and c[b1] <= sup + buf
@@ -795,10 +795,10 @@ def detect_m5_sr_signal(symbol, mt5_manager, bias_dir=None):
 
 def analyze_symbol(symbol, mt5_manager):
     """
-    Strict trend → then entry:
+    Strict trend -> then entry:
       1) H1 + M15 same-direction structure (mandatory)
       2) Gold: only M5 S/R break+retest (no weak M1 spam)
-      3) Strong trend → FAST_SCALP mode (higher score / quicker exits)
+      3) Strong trend -> FAST_SCALP mode (higher score / quicker exits)
     """
     tick = mt5_manager.symbol_info_tick(symbol)
     sym_info = mt5_manager.symbol_info(symbol)
@@ -824,7 +824,7 @@ def analyze_symbol(symbol, mt5_manager):
     signal = detect_m5_sr_signal(symbol, mt5_manager, bias_dir=trend_dir)
     source = "m5"
 
-    # Gold: sakhti — M5 break/retest only. Crypto may use M1 if M5 quiet.
+    # Gold: sakhti - M5 break/retest only. Crypto may use M1 if M5 quiet.
     if signal is None or signal.get("skip"):
         if gold:
             return {
@@ -866,7 +866,7 @@ def analyze_symbol(symbol, mt5_manager):
         score += 8  # unlock fast scalp sizing / exits
     score = int(max(0, min(100, score)))
 
-    # Strong clear trend → fast scalp; otherwise wait for elite score
+    # Strong clear trend -> fast scalp; otherwise wait for elite score
     if strong_trend and score >= STRONG_SCORE:
         trade_mode = "FAST_SCALP"
     elif score >= STRONG_SCORE:
@@ -914,7 +914,11 @@ def analyze_symbol(symbol, mt5_manager):
 
 
 def trade_eligible(analysis):
-    """Strict trend + setup + min score. Gold FAST_SCALP needs strong_trend."""
+    """
+    Must have H1+M15 agreement + M5 setup + min score.
+    Strong trend -> FAST_SCALP (handled in analyze_symbol trade_mode).
+    Demo: clear trend is enough; strong is preferred not mandatory.
+    """
     if analysis.get("skip"):
         return False, analysis.get("reason", "skip")
 
@@ -928,13 +932,7 @@ def trade_eligible(analysis):
     if score < MIN_PATTERN_SCORE:
         return False, f"pattern_score_{score}_need_{MIN_PATTERN_SCORE}"
 
-    # Gold: only trade when trend is strong (fast scalp path)
-    if is_gold_symbol(analysis.get("symbol") or ""):
-        if not analysis.get("strong_trend"):
-            return False, "gold_trend_not_strong"
-        if score < STRONG_SCORE:
-            return False, f"gold_need_strong_{STRONG_SCORE}"
-
+    # Gold still requires HTF bias (set by analyze_symbol); no extra strong lock
     return True, "ok"
 
 
