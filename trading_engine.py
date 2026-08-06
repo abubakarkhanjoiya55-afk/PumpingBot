@@ -11,8 +11,13 @@ DAILY_PROFIT_TARGET   = 0.05
 DAILY_TRAIL_START     = 0.03
 DAILY_TRAIL_GAP       = 0.01
 RISK_PER_TRADE_PCT    = 0.004   # demo USD accuracy test sizing
-MAX_OPEN_TRADES       = 1       # one bot trade at a time
+MAX_OPEN_TRADES       = 1       # normal: one bot trade at a time
 MAX_TRADES_PER_SYMBOL = 1
+# While a trade waits in loss (profit-only), allow same-direction recovery adds
+RECOVERY_MAX_OPEN       = 3
+RECOVERY_MAX_PER_SYMBOL = 3
+RECOVERY_ADD_LOT_FRAC   = 0.55  # smaller than first entry
+RECOVERY_MIN_SCORE      = 65    # need clear trend before adding
 MIN_PATTERN_SCORE     = 40      # demo: more entries for accuracy testing
 STRONG_SCORE          = 65
 MIN_BREAKOUT_SCORE    = MIN_PATTERN_SCORE  # legacy alias used by main.py
@@ -49,6 +54,60 @@ GOLD_ALLOW_M1_FALLBACK = True
 DEMO_SMOKE_TRADE = True
 # If no bot position for this long, open soft H1 min-lot (demo accuracy)
 IDLE_FORCE_ENTRY_SEC  = 480
+
+
+def losing_bot_positions(open_pos: list) -> list:
+    """Positions with profit <= 0 (waiting for recovery; not loss-closed)."""
+    out = []
+    for p in open_pos or []:
+        try:
+            if float(p.get("profit") or 0) <= 0:
+                out.append(p)
+        except (TypeError, ValueError):
+            out.append(p)
+    return out
+
+
+def recovery_entry_plan(open_pos: list, symbol: str, side: str, score: float,
+                        strong_trend: bool = False) -> tuple[bool, str, str]:
+    """
+    Decide if a new entry is allowed given current open bot positions.
+
+    Returns (allowed, mode, reason):
+      mode = "normal" | "recovery_add" | "blocked"
+    """
+    open_pos = list(open_pos or [])
+    losing = losing_bot_positions(open_pos)
+    recovering = bool(losing)
+
+    max_open = RECOVERY_MAX_OPEN if recovering else MAX_OPEN_TRADES
+    max_sym = RECOVERY_MAX_PER_SYMBOL if recovering else MAX_TRADES_PER_SYMBOL
+
+    if len(open_pos) >= max_open:
+        return False, "blocked", f"max_open:{len(open_pos)}/{max_open}"
+
+    same_sym = [p for p in open_pos if p.get("symbol") == symbol]
+    if len(same_sym) >= max_sym:
+        return False, "blocked", f"max_per_symbol:{len(same_sym)}/{max_sym}"
+
+    if not recovering:
+        return True, "normal", "ok"
+
+    # Recovery mode: only pyramid WITH the waiting trade's side (same symbol).
+    lose_on_symbol = [p for p in losing if p.get("symbol") == symbol]
+    if not lose_on_symbol:
+        return False, "blocked", "recovery_other_symbol"
+
+    wait_side = str(lose_on_symbol[0].get("side") or "").upper()
+    if side.upper() != wait_side:
+        return False, "blocked", f"recovery_against:{wait_side}"
+
+    score = float(score or 0)
+    if not (strong_trend or score >= RECOVERY_MIN_SCORE):
+        return False, "blocked", f"recovery_weak_trend:score={score}"
+
+    return True, "recovery_add", "ok"
+
 
 SYMBOL_MAX_SPREAD = {
     "XAUUSDm":  30000,

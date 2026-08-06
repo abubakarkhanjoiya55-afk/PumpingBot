@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.31.0"   # Remote VPS restart + server idle entries via copy_open
+API_VERSION = "3.32.0"   # Recovery same-side adds + multi-user MT5 terminals
 CODE_REPO_BRANCH = "main"
 
 # Supervisor remote commands (in-memory; supervisor polls roster)

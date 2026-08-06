@@ -10,6 +10,8 @@ from trading_engine import (
     score_m1_setup,
     get_risk_multiplier,
     trade_eligible,
+    recovery_entry_plan,
+    losing_bot_positions,
     MIN_PATTERN_SCORE,
     STRONG_SCORE,
 )
@@ -81,6 +83,8 @@ class TestM1CandlePatterns(unittest.TestCase):
         ok, reason = trade_eligible({
             "m1_pattern": "Bullish Engulfing",
             "score": 55,
+            "htf_aligned": True,
+            "h1_bias": "BUY",
         })
         self.assertTrue(ok)
         self.assertEqual(reason, "ok")
@@ -88,6 +92,49 @@ class TestM1CandlePatterns(unittest.TestCase):
         bad, why = trade_eligible({"skip": True, "reason": "no_confirm"})
         self.assertFalse(bad)
         self.assertEqual(why, "no_confirm")
+
+
+class TestRecoveryAdds(unittest.TestCase):
+    def test_losing_positions_helper(self):
+        pos = [
+            {"symbol": "XAUUSDm", "side": "BUY", "profit": -3.0},
+            {"symbol": "XAUUSDm", "side": "BUY", "profit": 1.2},
+        ]
+        losing = losing_bot_positions(pos)
+        self.assertEqual(len(losing), 1)
+        self.assertEqual(losing[0]["profit"], -3.0)
+
+    def test_flat_allows_normal(self):
+        ok, mode, reason = recovery_entry_plan([], "XAUUSDm", "BUY", 55, False)
+        self.assertTrue(ok)
+        self.assertEqual(mode, "normal")
+
+    def test_winning_open_blocks_extra(self):
+        open_pos = [{"symbol": "XAUUSDm", "side": "BUY", "profit": 2.0}]
+        ok, mode, reason = recovery_entry_plan(open_pos, "XAUUSDm", "BUY", 80, True)
+        self.assertFalse(ok)
+        self.assertEqual(mode, "blocked")
+
+    def test_losing_allows_same_side_add(self):
+        open_pos = [{"symbol": "XAUUSDm", "side": "BUY", "profit": -5.0}]
+        ok, mode, reason = recovery_entry_plan(open_pos, "XAUUSDm", "BUY", 70, True)
+        self.assertTrue(ok)
+        self.assertEqual(mode, "recovery_add")
+
+    def test_losing_blocks_opposite_side(self):
+        open_pos = [{"symbol": "XAUUSDm", "side": "BUY", "profit": -5.0}]
+        ok, mode, reason = recovery_entry_plan(open_pos, "XAUUSDm", "SELL", 90, True)
+        self.assertFalse(ok)
+        self.assertIn("recovery_against", reason)
+
+    def test_recovery_needs_clear_trend(self):
+        open_pos = [{"symbol": "XAUUSDm", "side": "SELL", "profit": -1.0}]
+        ok, mode, reason = recovery_entry_plan(open_pos, "XAUUSDm", "SELL", 40, False)
+        self.assertFalse(ok)
+        self.assertIn("recovery_weak_trend", reason)
+        ok2, mode2, _ = recovery_entry_plan(open_pos, "XAUUSDm", "SELL", 40, True)
+        self.assertTrue(ok2)
+        self.assertEqual(mode2, "recovery_add")
 
 
 class TestParallelFanoutTiming(unittest.TestCase):

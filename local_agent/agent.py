@@ -166,6 +166,11 @@ class PumpingAgent:
     def connect_mt5(self) -> bool:
         ok = self.mt5.connect()
         if ok:
+            acc = self.mt5.account()
+            if acc.get("is_cent"):
+                self.prefer_suffix = "c"
+                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')} "
+                      f"prefer_suffix=c")
             # Resolve *c / *m against what this broker account actually has
             resolved = self.mt5.resolve_symbols(self.symbols, prefer_suffix=self.prefer_suffix)
             if resolved:
@@ -174,11 +179,6 @@ class PumpingAgent:
             today = active_trade_symbols(self.symbols)
             mode = "WEEKEND BTC/ETH" if _is_weekend() else "WEEKDAY GOLD"
             print(f"[AGENT] Schedule={mode} active={today}")
-            acc = self.mt5.account()
-            if acc.get("is_cent"):
-                self.prefer_suffix = "c"
-                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')} "
-                      f"prefer_suffix=c")
             # Kill leftover broker SL/TP so old positions cannot SL-close in loss
             cleared = self.mt5.clear_all_bot_sl_tp(BOT_MAGIC)
             if cleared:
@@ -547,17 +547,21 @@ class PumpingAgent:
         from trading_engine import (
             analyze_symbol, trade_eligible, calculate_lot, calc_breakout_sl,
             MAX_OPEN_TRADES, MAX_TRADES_PER_SYMBOL,
+            RECOVERY_MAX_OPEN, RECOVERY_ADD_LOT_FRAC,
             MIN_COOLDOWN_SEC, STRONG_COOLDOWN_SEC, SCAN_INTERVAL_SEC,
             SESSION_MAX_DD_PCT, STRONG_SCORE, MASTER_AUTO_CLOSE, MASTER_PROFIT_ONLY,
             MARGIN_PROFIT_TRIGGER, HOLD_TRAIL_PCT, is_gold_symbol,
             IDLE_FORCE_ENTRY_SEC, get_h1_bias, calc_margin_used,
+            losing_bot_positions, recovery_entry_plan,
         )
 
         print(
             f"[MASTER] DEMO mode account={self.account_type} "
-            f"max_open={MAX_OPEN_TRADES} cooldown={MIN_COOLDOWN_SEC}s "
+            f"max_open={MAX_OPEN_TRADES} recovery_max={RECOVERY_MAX_OPEN} "
+            f"cooldown={MIN_COOLDOWN_SEC}s "
             f"profit_only_close={MASTER_AUTO_CLOSE} smoke={_env('DEMO_SMOKE_TRADE','1')} "
-            f"idle_force={IDLE_FORCE_ENTRY_SEC}s"
+            f"idle_force={IDLE_FORCE_ENTRY_SEC}s "
+            f"recovery_adds=ON (same-side while waiting)"
         )
         last_close = {}
         session_start_equity = None
@@ -725,7 +729,10 @@ class PumpingAgent:
                     continue
                 _tiny_warned = False
 
-                if len(open_pos) >= MAX_OPEN_TRADES:
+                losing = losing_bot_positions(open_pos)
+                recovering = bool(losing)
+                hard_cap = RECOVERY_MAX_OPEN if recovering else MAX_OPEN_TRADES
+                if len(open_pos) >= hard_cap:
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
@@ -742,10 +749,11 @@ class PumpingAgent:
                     if opened_this_cycle:
                         break
                     open_pos = [p for p in self.mt5.positions() if p.get("magic") == BOT_MAGIC]
-                    if len(open_pos) >= MAX_OPEN_TRADES:
+                    losing = losing_bot_positions(open_pos)
+                    recovering = bool(losing)
+                    hard_cap = RECOVERY_MAX_OPEN if recovering else MAX_OPEN_TRADES
+                    if len(open_pos) >= hard_cap:
                         break
-                    if sum(1 for p in open_pos if p["symbol"] == symbol) >= MAX_TRADES_PER_SYMBOL:
-                        continue
                     cd_need = float(last_close.get(symbol + "_cd") or MIN_COOLDOWN_SEC)
                     if symbol in last_close and now - last_close[symbol] < cd_need:
                         continue
@@ -779,6 +787,18 @@ class PumpingAgent:
                     score = analysis["score"]
                     trade_mode = analysis.get("trade_mode") or "SCALP"
                     strong_trend = bool(analysis.get("strong_trend"))
+                    allow, entry_mode, plan_reason = recovery_entry_plan(
+                        open_pos, symbol, trend, score, strong_trend,
+                    )
+                    if not allow:
+                        self._last_skip = f"{symbol}:{plan_reason}"
+                        key = f"rec_{symbol}_{plan_reason}"
+                        last_log = float(last_close.get(key) or 0)
+                        if now - last_log >= 60:
+                            print(f"[MASTER SKIP] {symbol} {plan_reason}")
+                            last_close[key] = now
+                        continue
+
                     atr = analysis.get("atr") or 0
                     levels = analysis.get("breakout_levels") or {}
                     tick = analysis["tick"]
@@ -795,6 +815,8 @@ class PumpingAgent:
                     if bal_usd < TINY_USD:
                         lot = vmin
                     lot = max(vmin, float(lot))
+                    if entry_mode == "recovery_add":
+                        lot = max(vmin, round(float(lot) * RECOVERY_ADD_LOT_FRAC, 2))
 
                     needed = self.mt5.order_margin(symbol, trend, lot)
                     if needed is None:
@@ -807,6 +829,11 @@ class PumpingAgent:
                         )
                         continue
 
+                    comment = (
+                        f"PB_ADD_{trade_mode[:4]}_{int(score)}"
+                        if entry_mode == "recovery_add"
+                        else f"PB_{trade_mode[:6]}_{int(score)}"
+                    )[:31]
                     result = self.mt5.market_order(
                         symbol=symbol,
                         side=trend,
@@ -814,7 +841,7 @@ class PumpingAgent:
                         sl=0.0,
                         tp=0.0,
                         magic=BOT_MAGIC,
-                        comment=f"PB_{trade_mode[:6]}_{int(score)}"[:31],
+                        comment=comment,
                     )
                     if not result.get("ok"):
                         print(f"[MASTER FAIL] {symbol} {result}")
@@ -827,10 +854,12 @@ class PumpingAgent:
                         self.mt5.clear_sl_tp(ticket)
                     except Exception:
                         pass
+                    tag = "RECOVERY ADD" if entry_mode == "recovery_add" else "OPEN"
                     print(
-                        f"[MASTER OPEN] {symbol} {trend} mode={trade_mode} "
+                        f"[MASTER {tag}] {symbol} {trend} mode={trade_mode} "
                         f"score={score} strong={strong_trend} lot={lot} "
-                        f"ticket={ticket} margin={margin:.2f} NO_SL profit_scalp_only"
+                        f"ticket={ticket} margin={margin:.2f} NO_SL profit_scalp_only "
+                        f"open={len(open_pos)+1}"
                     )
                     self._master_open[ticket] = {
                         "symbol": symbol, "side": trend, "lot": lot,
@@ -838,8 +867,11 @@ class PumpingAgent:
                         "atr": atr, "levels": levels, "margin_used": margin,
                         "opened_at": time.time(), "trade_mode": trade_mode,
                         "strong_trend": strong_trend, "peak_profit": 0.0,
+                        "is_recovery_add": entry_mode == "recovery_add",
                     }
                     cd = STRONG_COOLDOWN_SEC if (strong_trend and is_gold_symbol(symbol)) else MIN_COOLDOWN_SEC
+                    if entry_mode == "recovery_add":
+                        cd = max(cd, STRONG_COOLDOWN_SEC)
                     last_close[symbol] = time.time()
                     last_close[symbol + "_cd"] = cd
                     _last_entry_at = time.time()
@@ -856,7 +888,7 @@ class PumpingAgent:
                         "sl": 0,
                         "score": score,
                         "atr": atr,
-                        "source": "BOT",
+                        "source": "BOT_ADD" if entry_mode == "recovery_add" else "BOT",
                         "trade_mode": trade_mode,
                     })
 
