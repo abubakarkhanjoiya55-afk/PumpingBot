@@ -1,9 +1,5 @@
 {
   "name": "pumpingbot-dev",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
-  },
   "install": "bash scripts/dev-install.sh",
   "start": "bash scripts/dev-start.sh",
   "ports": [

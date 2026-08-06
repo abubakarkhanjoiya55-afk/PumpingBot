@@ -3,13 +3,21 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "[dev-install] Ensure python3-venv (Ubuntu/Debian)"
+if ! python3 -m venv --help >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -qq
+    sudo apt-get install -y -qq python3-venv python3.12-venv || sudo apt-get install -y -qq python3-venv
+  fi
+fi
+
 echo "[dev-install] Python venv"
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
-pip install --upgrade pip
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install -r my_signals_service/requirements.txt
 # voltix pins uvicorn>=0.32; keep root uvicorn==0.30 for PumpingBot compatibility
