@@ -264,7 +264,13 @@ def _static(name: str, cache_control: str = "public, max-age=3600"):
     return FileResponse(p, headers={"Cache-Control": cache_control})
 
 
-@router.get("")
+# FastAPI rejects path="" when router prefix is also empty (standalone root).
+if APP_PREFIX:
+    @router.get("")
+    async def app_home_no_slash():
+        return _static("index.html", "no-cache")
+
+
 @router.get("/")
 async def app_home():
     return _static("index.html", "no-cache")
