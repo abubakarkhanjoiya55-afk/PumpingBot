@@ -1,0 +1,37 @@
+{
+  "name": "pumpingbot-dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "install": "bash scripts/dev-install.sh",
+  "start": "bash scripts/dev-start.sh",
+  "ports": [
+    { "name": "PumpingBot", "port": 8000 },
+    { "name": "My Signals", "port": 8010 },
+    { "name": "Voltix", "port": 8080 },
+    { "name": "MEXC Alerter", "port": 3847 }
+  ],
+  "terminals": [
+    {
+      "name": "pumpingbot",
+      "command": "source .venv/bin/activate && TRADING_BACKEND=agent USE_METAAPI=0 EMBED_MY_SIGNALS=0 uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+      "description": "PumpingBot FastAPI + React UI on :8000"
+    },
+    {
+      "name": "my-signals",
+      "command": "source .venv/bin/activate && MY_SIGNALS_PREFIX= uvicorn my_signals_service.app:app --host 0.0.0.0 --port 8010 --reload",
+      "description": "My Signals standalone PWA API on :8010"
+    },
+    {
+      "name": "voltix",
+      "command": "source .venv/bin/activate && cd voltix/server && PORT=8080 uvicorn main:app --host 0.0.0.0 --port 8080 --reload",
+      "description": "Voltix FastAPI + SPA on :8080"
+    },
+    {
+      "name": "mexc-alerter",
+      "command": "cd mexc-breakout-alerter && node src/index.js",
+      "description": "MEXC 4H breakout alerter dashboard on :3847"
+    }
+  ]
+}

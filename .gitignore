@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.db
 .env
+.venv/
 client/node_modules/
 client/dist/
 device_care/data/
@@ -9,3 +10,6 @@ uploads/
 
 voltix/node_modules/
 voltix/dist/
+voltix/server/data/
+mexc-breakout-alerter/node_modules/
+mexc-breakout-alerter/.env
