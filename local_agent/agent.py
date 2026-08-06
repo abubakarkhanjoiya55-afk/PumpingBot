@@ -176,7 +176,9 @@ class PumpingAgent:
             print(f"[AGENT] Schedule={mode} active={today}")
             acc = self.mt5.account()
             if acc.get("is_cent"):
-                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')}")
+                self.prefer_suffix = "c"
+                print(f"[AGENT] Cent/USC account detected currency={acc.get('currency')} "
+                      f"prefer_suffix=c")
             # Kill leftover broker SL/TP so old positions cannot SL-close in loss
             cleared = self.mt5.clear_all_bot_sl_tp(BOT_MAGIC)
             if cleared:
@@ -338,6 +340,16 @@ class PumpingAgent:
         if master_ticket and master_ticket in self._copy_map:
             self.reply(req_id, ok=True, skip=True, ticket=self._copy_map[master_ticket])
             return
+
+        # Master may send XAUUSDm while follower is cent (XAUUSDc) — remap.
+        try:
+            resolved = self.mt5.resolve_symbols([symbol], prefer_suffix=self.prefer_suffix)
+            if resolved:
+                if resolved[0] != symbol:
+                    print(f"[COPY OPEN] symbol remap {symbol} -> {resolved[0]}")
+                symbol = resolved[0]
+        except Exception as e:
+            print(f"[COPY OPEN] symbol remap failed for {symbol}: {e}")
 
         acc = self.mt5.account()
         bal = acc.get("balance") or 0

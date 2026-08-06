@@ -93,8 +93,39 @@ def ensure_portable_instance(login: int | str) -> Path:
     return exe
 
 
-def _terminal_already_running(exe: Path) -> bool:
-    """True if any terminal64.exe is already running (avoid dual-login kick)."""
+def _normalize_win_path(path: str | Path) -> str:
+    return str(path).lower().replace("/", "\\").rstrip("\\")
+
+
+def _running_terminal_paths() -> list[str]:
+    """Executable paths of running terminal64.exe processes (Windows)."""
+    paths: list[str] = []
+    try:
+        # Prefer path-aware query so multi-user portable instances are distinct.
+        r = subprocess.run(
+            [
+                "wmic",
+                "process",
+                "where",
+                "name='terminal64.exe'",
+                "get",
+                "ExecutablePath",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in (r.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.lower() == "executablepath":
+                continue
+            if line.lower().endswith("terminal64.exe"):
+                paths.append(_normalize_win_path(line))
+    except Exception:
+        pass
+    if paths:
+        return paths
+    # Fallback: only know that *some* terminal exists (no path detail).
     try:
         r = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq terminal64.exe", "/NH"],
@@ -102,26 +133,39 @@ def _terminal_already_running(exe: Path) -> bool:
             text=True,
             check=False,
         )
-        out = (r.stdout or "").lower()
-        return "terminal64.exe" in out
+        if "terminal64.exe" in (r.stdout or "").lower():
+            return ["*"]
     except Exception:
+        pass
+    return []
+
+
+def _this_instance_running(exe: Path) -> bool:
+    """True only if THIS login's portable terminal64.exe is already running."""
+    target = _normalize_win_path(exe)
+    running = _running_terminal_paths()
+    if not running:
         return False
+    if running == ["*"]:
+        # Path unknown — do NOT treat as this instance; allow launch for multi-user.
+        return False
+    return target in running
 
 
 def start_terminal(login: int | str) -> subprocess.Popen | None:
     """
-    Launch portable terminal minimized.
-    If ANY terminal64 is already open (user logged into demo manually),
-    do NOT start a second one - second login kicks Algo Trading / closes session.
+    Launch this login's portable terminal minimized.
+
+    Multi-user VPS: each MT5 login gets its own portable folder/process.
+    Only skip launch when THIS login's terminal64.exe is already running.
+    (Older logic skipped whenever ANY terminal64 was open — that blocked all
+    followers after Admin99's master terminal started.)
     """
     exe = ensure_portable_instance(login)
-    attach = (os.environ.get("ATTACH_EXISTING_MT5", "1") or "1").strip() not in (
-        "0", "false", "False", "no"
-    )
-    if attach and _terminal_already_running(exe):
+    if _this_instance_running(exe):
         print(
-            f"[PROVISION] terminal64 already running - skip second launch for {login} "
-            f"(prevents Algo Trading kick / account close)"
+            f"[PROVISION] This instance already running for {login} - "
+            f"reuse {exe} (no second launch of same portable)"
         )
         time.sleep(2)
         return None

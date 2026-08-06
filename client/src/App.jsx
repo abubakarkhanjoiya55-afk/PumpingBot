@@ -399,14 +399,22 @@ export default function App() {
     setBotMsg('');
     try {
       const res = wantOn ? await startBot() : await stopBot();
-      // Optimistic UI — don't wait for refresh if API already returned state
+      // Prefer server truth — agent mode keeps vps_desired on Stop; Start may
+      // return bot_active=true while agent_online=false (VPS still booting).
       setMe(prev => prev ? {
         ...prev,
-        bot_active: wantOn,
-        vps_desired: wantOn,
-        vps_status: wantOn ? 'starting' : 'stopping',
+        bot_active: res?.bot_active ?? wantOn,
+        vps_desired: res?.vps_desired ?? wantOn,
+        vps_status: res?.vps_status ?? (wantOn ? 'starting' : 'stopping'),
+        vps_ready: wantOn
+          ? (res?.agent_online === true ? true : false)
+          : prev.vps_ready,
       } : prev);
-      setBotMsg(res?.message || (wantOn ? 'Bot started' : 'Bot stopped'));
+      const msg = res?.message || (wantOn ? 'Bot started' : 'Bot stopped');
+      setBotMsg(msg);
+      if (wantOn && res?.agent_online === false) {
+        alert(msg);
+      }
       await refresh();
     } catch (ex) {
       const detail = ex.response?.data?.detail;

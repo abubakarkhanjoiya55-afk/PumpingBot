@@ -47,6 +47,50 @@ class TestVpsSupervisorHelpers(unittest.TestCase):
             self.assertTrue(str(provision.instance_dir(4242)).endswith("4242"))
             self.assertIn("terminal64.exe", str(provision.terminal_exe(4242)))
 
+    def test_this_instance_running_is_per_login_path(self):
+        """Follower must not be blocked just because master's terminal64 is open."""
+        import importlib
+        import vps_supervisor.provision as provision
+        importlib.reload(provision)
+
+        master = Path(r"C:\PumpingBot\MT5_Instances\111\terminal64.exe")
+        follower = Path(r"C:\PumpingBot\MT5_Instances\222\terminal64.exe")
+
+        with patch.object(
+            provision,
+            "_running_terminal_paths",
+            return_value=[provision._normalize_win_path(master)],
+        ):
+            self.assertTrue(provision._this_instance_running(master))
+            self.assertFalse(provision._this_instance_running(follower))
+
+        # Unknown path fallback ("*") must NOT block multi-user launches.
+        with patch.object(provision, "_running_terminal_paths", return_value=["*"]):
+            self.assertFalse(provision._this_instance_running(follower))
+
+    def test_start_terminal_launches_second_login_when_other_running(self):
+        import importlib
+        import vps_supervisor.provision as provision
+        importlib.reload(provision)
+
+        fake_exe = Path(r"C:\PumpingBot\MT5_Instances\222\terminal64.exe")
+        master_exe = Path(r"C:\PumpingBot\MT5_Instances\111\terminal64.exe")
+
+        with patch.object(provision, "ensure_portable_instance", return_value=fake_exe), \
+             patch.object(
+                 provision,
+                 "_running_terminal_paths",
+                 return_value=[provision._normalize_win_path(master_exe)],
+             ), \
+             patch.object(provision.subprocess, "Popen") as popen, \
+             patch.object(provision.time, "sleep"):
+            popen.return_value = object()
+            proc = provision.start_terminal(222)
+            self.assertIsNotNone(proc)
+            popen.assert_called_once()
+            args = popen.call_args[0][0]
+            self.assertEqual(args[0], str(fake_exe))
+
 
 class TestCopyTradingDefaults(unittest.TestCase):
     def test_metaapi_off_by_default(self):

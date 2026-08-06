@@ -30,16 +30,17 @@ class LocalMT5:
 
         self._mt5 = mt5
 
-        # 1) Prefer already-open terminal (avoids 2nd login kicking Algo/session)
-        # 2) Then portable path from supervisor
+        # Multi-user VPS: always prefer THIS account's portable path first.
+        # Attaching to a random already-open terminal first made followers land
+        # on Admin99's master terminal and fail / kick Algo Trading.
         attempts = []
-        attempts.append({})  # any running terminal
         if self.path:
             attempts.append({"path": self.path})
+        attempts.append({})  # fallback: any default/running terminal
 
         last_err = None
-        initialized = False
         for kwargs in attempts:
+            initialized = False
             for attempt in range(1, 4):
                 try:
                     mt5.shutdown()
@@ -53,42 +54,59 @@ class LocalMT5:
                 last_err = mt5.last_error()
                 print(f"[LOCAL MT5] initialize failed (try {attempt}/3) {kwargs}: {last_err}")
                 time.sleep(3)
-            if initialized:
-                break
-        if not initialized:
-            print(f"[LOCAL MT5] initialize failed: {last_err}")
-            return False
+            if not initialized:
+                continue
 
-        info = mt5.account_info()
-        already = info and int(getattr(info, "login", 0) or 0) == int(self.login)
-        if already:
-            # Re-login on same account kicks other terminals / drops Algo Trading
-            print(
-                f"[LOCAL MT5] Already logged in as {self.login} - skip login() "
-                f"(keeps Algo Trading session stable)"
-            )
-        else:
-            authorized = mt5.login(self.login, password=self.password, server=self.server)
-            if not authorized:
-                print(f"[LOCAL MT5] login failed: {mt5.last_error()}")
-                mt5.shutdown()
-                return False
+            info = mt5.account_info()
+            current_login = int(getattr(info, "login", 0) or 0) if info else 0
+            if current_login == int(self.login):
+                # Re-login on same account kicks other IPC / drops Algo Trading
+                print(
+                    f"[LOCAL MT5] Already logged in as {self.login} - skip login() "
+                    f"(keeps Algo Trading session stable)"
+                )
+            elif not kwargs.get("path"):
+                # Wrong account on some other open terminal — do NOT login() into it.
+                print(
+                    f"[LOCAL MT5] Default terminal is login={current_login}, "
+                    f"need {self.login} — skip attach, try next"
+                )
+                try:
+                    mt5.shutdown()
+                except Exception:
+                    pass
+                continue
+            else:
+                # Correct portable instance path — login this account here.
+                authorized = mt5.login(
+                    self.login, password=self.password, server=self.server
+                )
+                if not authorized:
+                    print(f"[LOCAL MT5] login failed: {mt5.last_error()}")
+                    try:
+                        mt5.shutdown()
+                    except Exception:
+                        pass
+                    continue
 
-        self.ready = True
-        info = mt5.account_info()
-        cur = getattr(info, "currency", "") if info else ""
-        trade_allowed = bool(getattr(info, "trade_allowed", True)) if info else False
-        print(
-            f"[LOCAL MT5] Connected {self.login}@{self.server} "
-            f"balance={getattr(info, 'balance', '?')} currency={cur} "
-            f"trade_allowed={trade_allowed}"
-        )
-        if info and not trade_allowed:
+            self.ready = True
+            info = mt5.account_info()
+            cur = getattr(info, "currency", "") if info else ""
+            trade_allowed = bool(getattr(info, "trade_allowed", True)) if info else False
             print(
-                "[LOCAL MT5] WARN: trade_allowed=False - MT5 mein Algo Trading "
-                "button ON karo (green). Doosri MT5 window band rakho."
+                f"[LOCAL MT5] Connected {self.login}@{self.server} "
+                f"balance={getattr(info, 'balance', '?')} currency={cur} "
+                f"trade_allowed={trade_allowed}"
             )
-        return True
+            if info and not trade_allowed:
+                print(
+                    "[LOCAL MT5] WARN: trade_allowed=False - MT5 mein Algo Trading "
+                    "button ON karo (green) on THIS account's terminal."
+                )
+            return True
+
+        print(f"[LOCAL MT5] initialize/login failed: {last_err}")
+        return False
 
     def shutdown(self):
         if self._mt5:
