@@ -1,7 +1,6 @@
 """Daily 25% unlock gate — unit tests (no MT5)."""
 
 import unittest
-from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
