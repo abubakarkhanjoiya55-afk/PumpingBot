@@ -38,7 +38,7 @@ from device_care.smc import (
 )
 
 APP_NAME = "Crypto Pumping"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.1")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.2")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()

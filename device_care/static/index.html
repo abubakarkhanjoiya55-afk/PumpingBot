@@ -115,12 +115,48 @@
       padding: 4px 8px; border-radius: 999px;
       background: rgba(255,255,255,0.7); border: 1px solid rgba(126,200,227,0.4);
     }
-    .btn-update-inline {
-      border: 1px solid rgba(47,158,122,0.45) !important;
-      background: linear-gradient(135deg, #5ebfd8, #2f9e7a) !important;
-      color: #fff !important; font-weight: 800 !important;
+    .btn-update-inline,
+    .btn-update-main {
+      border: 1px solid rgba(126,200,227,0.45) !important;
+      background: rgba(255,255,255,0.75) !important;
+      color: #4a6880 !important;
+      font-weight: 800 !important;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
     }
-    .btn-update-inline.hidden { display: none !important; }
+    .btn-update-main {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      margin-top: 10px; min-width: 180px;
+      padding: 12px 18px !important; border-radius: 14px !important;
+      font-size: 0.92rem !important; cursor: pointer;
+    }
+    .btn-update-inline.ready,
+    .btn-update-main.ready {
+      border-color: rgba(47,158,122,0.55) !important;
+      background: linear-gradient(135deg, #5ebfd8, #2f9e7a) !important;
+      color: #fff !important;
+      box-shadow: 0 8px 24px rgba(47,158,122,0.35) !important;
+      animation: updatePulse 1.1s ease-in-out infinite, updateWiggle 1.6s ease-in-out infinite;
+    }
+    .btn-update-inline.busy,
+    .btn-update-main.busy {
+      opacity: 0.75; pointer-events: none;
+      animation: none !important;
+    }
+    @keyframes updatePulse {
+      0%, 100% { transform: scale(1); box-shadow: 0 8px 22px rgba(47,158,122,0.28); }
+      50% { transform: scale(1.06); box-shadow: 0 12px 30px rgba(47,158,122,0.48); }
+    }
+    @keyframes updateWiggle {
+      0%, 100% { rotate: 0deg; }
+      20% { rotate: -1.4deg; }
+      40% { rotate: 1.4deg; }
+      60% { rotate: -1deg; }
+      80% { rotate: 1deg; }
+    }
+    .update-status {
+      margin-top: 6px; font-size: 0.72rem; color: var(--muted); min-height: 1.1em;
+    }
+    .update-status.ready { color: #1f7a5c; font-weight: 700; }
 
     .strategy-tag {
       display: inline-block; margin-top: 6px; font-size: 0.68rem; font-weight: 700;
@@ -536,6 +572,8 @@
       <div class="logo"><img src="icon-192.png" alt="Crypto Pumping" width="56" height="56"></div>
       <h1>Crypto Pumping</h1>
       <p class="sub" id="authSubtitle">24h FREE trial · then $10 / 30 days</p>
+      <button type="button" class="btn-update-main" id="btnUpdateAuth">↻ Update</button>
+      <p class="update-status" id="updateStatusAuth">App up to date</p>
     </div>
     <div class="auth-tabs">
       <button type="button" class="on" id="tabUserLogin">User Login</button>
@@ -588,8 +626,8 @@
   <div class="top-user">
     <div class="who" id="userWho">—</div>
     <div class="actions">
-      <span class="ver-chip" id="appVerChip" title="Installed app version">v4.2.1</span>
-      <button type="button" id="btnCheckUpdate" class="btn-update-inline hidden">Update</button>
+      <span class="ver-chip" id="appVerChip" title="Installed app version">v4.2.2</span>
+      <button type="button" id="btnCheckUpdate" class="btn-update-inline" aria-live="polite">Update</button>
       <button type="button" id="btnAdminNav" class="hidden">Admin</button>
       <button type="button" id="btnSignalsNav">Signals</button>
       <button type="button" id="btnLogout">Logout</button>
@@ -606,7 +644,9 @@
     <div class="logo"><img src="icon-192.png" alt="Crypto Pumping" width="56" height="56"></div>
     <h1>Crypto Pumping</h1>
     <p class="sub">Candle + Triangle patterns · har angle · milky crystal charts</p>
-    <p class="sub" style="margin-top:6px"><span class="ver-chip" id="headerVerChip">v4.2.1</span></p>
+    <p class="sub" style="margin-top:6px"><span class="ver-chip" id="headerVerChip">v4.2.2</span></p>
+    <button type="button" class="btn-update-main" id="btnUpdateMain">↻ Update</button>
+    <p class="update-status" id="updateStatusText">App up to date — jab naya update aaye button harkat karega</p>
   </div>
   <div class="trial-banner hidden" id="trialBanner">
     🎁 Free trial: <b id="trialRemain">—</b> remaining — phir $10 pay + approve zaroori
@@ -2001,27 +2041,22 @@
       activateBtn.disabled = false;
     }
 
-    const APP_BUILD = '4.2.1';
+    const APP_BUILD = '4.2.2';
     let waitingWorker = null;
     let remoteVersion = null;
-    let updateDismissedFor = null;
+    let updateReady = false;
+    let updateApplying = false;
     const updateBanner = document.getElementById('updateBanner');
     const updateVerText = document.getElementById('updateVerText');
     const btnCheckUpdate = document.getElementById('btnCheckUpdate');
+    const btnUpdateMain = document.getElementById('btnUpdateMain');
+    const btnUpdateAuth = document.getElementById('btnUpdateAuth');
+    const updateStatusText = document.getElementById('updateStatusText');
+    const updateStatusAuth = document.getElementById('updateStatusAuth');
+    const updateButtons = [btnCheckUpdate, btnUpdateMain, btnUpdateAuth].filter(Boolean);
 
     function normalizeVer(v) {
       return String(v || '').trim().replace(/^v/i, '');
-    }
-    function isNewer(remote, local) {
-      const a = normalizeVer(remote).split('.').map(n => parseInt(n, 10) || 0);
-      const b = normalizeVer(local).split('.').map(n => parseInt(n, 10) || 0);
-      const len = Math.max(a.length, b.length);
-      for (let i = 0; i < len; i++) {
-        const x = a[i] || 0, y = b[i] || 0;
-        if (x > y) return true;
-        if (x < y) return false;
-      }
-      return false;
     }
     function setLocalVersionLabels() {
       const label = `v${APP_BUILD}`;
@@ -2030,19 +2065,57 @@
       if (chip) chip.textContent = label;
       if (headerChip) headerChip.textContent = label;
     }
-    function showUpdateBanner(reason) {
-      if (updateDismissedFor && updateDismissedFor === normalizeVer(remoteVersion || '')) return;
+    function setUpdateStatus(msg, ready) {
+      [updateStatusText, updateStatusAuth].forEach((el) => {
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.toggle('ready', !!ready);
+      });
+    }
+    function setButtonsIdle() {
+      updateReady = false;
+      updateButtons.forEach((btn) => {
+        btn.classList.remove('ready', 'busy');
+        btn.disabled = false;
+        if (btn.id === 'btnCheckUpdate') btn.textContent = 'Update';
+        else btn.textContent = '↻ Update';
+      });
+      if (updateBanner) updateBanner.classList.remove('show');
+      setUpdateStatus('App up to date — jab naya update aaye button harkat karega', false);
+    }
+    function setButtonsReady(reason) {
+      updateReady = true;
+      const remote = remoteVersion ? `v${normalizeVer(remoteVersion)}` : 'latest';
+      updateButtons.forEach((btn) => {
+        btn.classList.add('ready');
+        btn.classList.remove('busy');
+        btn.disabled = false;
+        if (btn.id === 'btnCheckUpdate') btn.textContent = 'Update!';
+        else btn.textContent = '↻ Update Ready';
+      });
       if (updateBanner) updateBanner.classList.add('show');
-      if (btnCheckUpdate) btnCheckUpdate.classList.remove('hidden');
       if (updateVerText) {
-        const remote = remoteVersion ? `v${normalizeVer(remoteVersion)}` : 'latest';
-        updateVerText.textContent = `Aapka: v${APP_BUILD} → Naya: ${remote}${reason ? ' · ' + reason : ''} — sirf Update Now dabao, link nahi chahiye.`;
+        updateVerText.textContent = `Aapka: v${APP_BUILD} → Naya: ${remote}${reason ? ' · ' + reason : ''} — Update button dabao, changes apply ho jayenge.`;
       }
+      setUpdateStatus(`Naya update ready (${remote}) — Update button harkat kar raha hai, dabao`, true);
+    }
+    function setButtonsBusy() {
+      updateApplying = true;
+      updateButtons.forEach((btn) => {
+        btn.classList.add('busy');
+        btn.classList.remove('ready');
+        btn.disabled = true;
+        btn.textContent = 'Updating…';
+      });
+      setUpdateStatus('Update apply ho raha hai — changes set ho rahe hain…', true);
+    }
+    function showUpdateBanner(reason) {
+      setButtonsReady(reason || '');
     }
     function hideUpdateBanner() {
+      // User dismissed banner, but keep animated Update buttons if still ready
       if (updateBanner) updateBanner.classList.remove('show');
-      if (btnCheckUpdate) btnCheckUpdate.classList.add('hidden');
-      if (remoteVersion) updateDismissedFor = normalizeVer(remoteVersion);
+      if (!updateReady) setButtonsIdle();
     }
     async function clearAppCaches() {
       try {
@@ -2056,7 +2129,8 @@
       } catch (_) { /* ignore */ }
     }
     async function applyAppUpdate() {
-      // In-app soft update — home-screen icon / link change nahi
+      if (updateApplying) return;
+      setButtonsBusy();
       try {
         if (waitingWorker) {
           waitingWorker.postMessage({ type: 'SKIP_WAITING' });
@@ -2065,9 +2139,10 @@
         if (reg?.waiting) {
           reg.waiting.postMessage({ type: 'SKIP_WAITING' });
         }
+        try { await reg?.update?.(); } catch (_) {}
         await clearAppCaches();
       } catch (_) { /* ignore */ }
-      // Soft reload keeps installed PWA shell; no external URL
+      // Soft reload keeps installed PWA; latest HTML/JS/CSS apply
       const url = new URL(location.href);
       url.searchParams.set('_upd', String(Date.now()));
       location.replace(url.toString());
@@ -2081,30 +2156,27 @@
         const ver = normalizeVer(data.version || data.appVersion || data.build);
         if (!ver) return;
         remoteVersion = ver;
-        // Also nudge SW update when server build changes
         try { await serviceWorkerRegistration?.update?.(); } catch (_) {}
         if (normalizeVer(ver) !== normalizeVer(APP_BUILD)) {
           showUpdateBanner('server build');
           return;
         }
-        // Already current — only keep SW waiting banner if present
-        if (!waitingWorker) {
-          if (updateBanner) updateBanner.classList.remove('show');
-          if (btnCheckUpdate) btnCheckUpdate.classList.add('hidden');
+        if (!waitingWorker && !updateApplying) {
+          setButtonsIdle();
         }
       } catch (_) { /* offline / starting */ }
     }
 
     document.getElementById('updateNowBtn')?.addEventListener('click', applyAppUpdate);
     document.getElementById('updateLaterBtn')?.addEventListener('click', hideUpdateBanner);
-    btnCheckUpdate?.addEventListener('click', applyAppUpdate);
+    updateButtons.forEach((btn) => btn.addEventListener('click', applyAppUpdate));
     setLocalVersionLabels();
+    setButtonsIdle();
 
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register(BASE + '/sw.js', { scope: BASE + '/' })
         .then((registration) => {
           serviceWorkerRegistration = registration;
-          // Fast periodic SW + server version check — pehli app destroy nahi hoti
           setInterval(() => {
             registration.update().catch(() => {});
             checkServerVersion();
@@ -2130,19 +2202,16 @@
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (refreshing) return;
         refreshing = true;
-        // Soft reload — home-screen app same rehti hai, sirf content update
         location.reload();
       });
       navigator.serviceWorker.addEventListener('message', (ev) => {
         const msg = ev.data || {};
         if (msg.type === 'SW_ACTIVATED') {
-          if (updateBanner) updateBanner.classList.remove('show');
-          if (btnCheckUpdate) btnCheckUpdate.classList.add('hidden');
+          if (!updateApplying) setButtonsIdle();
         }
       });
     }
 
-    // Status poll already runs — also check version on focus / resume
     checkServerVersion();
     setInterval(checkServerVersion, 60 * 1000);
     document.addEventListener('visibilitychange', () => {
