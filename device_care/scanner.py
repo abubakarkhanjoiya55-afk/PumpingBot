@@ -264,10 +264,16 @@ def _static(name: str, cache_control: str = "public, max-age=3600"):
     return FileResponse(p, headers={"Cache-Control": cache_control})
 
 
-@router.get("")
-@router.get("/")
-async def app_home():
-    return _static("index.html", "no-cache")
+# FastAPI: prefix="" + path="" is illegal — only register "" when mounted under /my-signals
+if APP_PREFIX:
+    @router.get("")
+    @router.get("/")
+    async def app_home():
+        return _static("index.html", "no-cache")
+else:
+    @router.get("/")
+    async def app_home():
+        return _static("index.html", "no-cache")
 
 
 @router.get("/manifest.json")
@@ -2154,4 +2160,7 @@ def start_device_care_scanner():
     _load_diversify()
     loop = asyncio.get_running_loop()
     _scan_task = loop.create_task(scan_loop())
-    print("[Crypto Pumping Signals] PWA → /my-signals (1H/4H/1D SMC + breakouts, parallel scan)")
+    print(
+        f"[Crypto Pumping Signals] PWA → {APP_PREFIX or '/'} "
+        "(1H/4H/1D SMC + breakouts, parallel scan)"
+    )
