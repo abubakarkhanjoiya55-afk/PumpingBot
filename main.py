@@ -24,6 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
 from agent_hub import agent_hub, AgentSession
+from ea_queue import ea_queue
 from vps_auth import require_vps_secret
 from copy_trading import (
     copy_trade_to_followers,
@@ -145,8 +146,10 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.32.3"   # Agent retries MT5 IPC instead of exiting (fixes Syncing stuck)
+API_VERSION = "3.35.0"   # One-click Windows installer for MT5 EA followers
 CODE_REPO_BRANCH = "main"
+ADMIN_PROFIT_SHARE = float(os.environ.get("ADMIN_PROFIT_SHARE", "0.25"))
+REFERRER_PROFIT_SHARE = float(os.environ.get("REFERRER_PROFIT_SHARE", "0.05"))
 
 # Supervisor remote commands (in-memory; supervisor polls roster)
 _vps_command_lock = threading.Lock()
@@ -164,6 +167,62 @@ MASTER_USER_ID = None   # Set at startup from Admin99
 
 def is_master_user(user):
     return user is not None and user.username in ADMIN_USERNAMES
+
+
+def pkt_today():
+    """Pakistan calendar date (UTC+5) as YYYY-MM-DD string."""
+    return (datetime.utcnow() + timedelta(hours=5)).date().isoformat()
+
+
+def grant_daily_unlock(user, day=None):
+    """Unlock follower for one PKT trading day after admin approve."""
+    user.daily_unlock_date = day or pkt_today()
+    user.payment_status = "clear"
+    user.daily_profit_owed = 0.0
+    user.referral_owed = 0.0
+
+
+def revoke_daily_unlock(user, reason="payment_pending"):
+    """Block new copy trades until admin re-approves."""
+    user.daily_unlock_date = None
+    user.bot_active = False
+    active_bots[user.id] = False
+    if reason:
+        user.payment_status = reason if reason in ("pending", "overdue", "pending_review") else "pending"
+
+
+def follower_can_copy(user) -> bool:
+    """
+    Hard gate for new copy opens (EA or Python agent):
+      - MT5 linked
+      - no unpaid daily profit share
+      - admin unlocked for today's PKT date
+      - payment clear
+    bot_active=False still blocks if user pressed Stop Bot.
+    Master always allowed (strategy side).
+    """
+    if user is None:
+        return False
+    if is_master_user(user):
+        return True
+    if not user.mt5_login:
+        return False
+    # Explicit stop — user/admin turned bot off after unlock
+    if user.bot_active is False and (user.vps_status or "") == "user_stopped":
+        return False
+    if (user.daily_profit_owed or 0) > 0:
+        return False
+    status = (user.payment_status or "clear").lower()
+    if status in ("pending", "overdue", "pending_review", "rejected"):
+        return False
+    return (user.daily_unlock_date or "") == pkt_today()
+
+
+def ensure_ea_token(user) -> str:
+    if getattr(user, "ea_token", None):
+        return user.ea_token
+    user.ea_token = uuid.uuid4().hex
+    return user.ea_token
 
 
 def refresh_subscription_status(user):
@@ -211,7 +270,7 @@ def has_active_subscription(user):
 
 
 def start_free_trial(user, hours=None):
-    """Naye user ko FREE_TRIAL_HOURS free signals."""
+    """Naye user ko FREE_TRIAL_HOURS free signals + pehla din unlock."""
     hrs = FREE_TRIAL_HOURS if hours is None else hours
     now = datetime.utcnow()
     user.subscription_status = "trial"
@@ -219,6 +278,9 @@ def start_free_trial(user, hours=None):
     user.payment_status = "clear"
     user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
     user.bot_active = False  # MT5 bot alag; signals PWA trial se chalti hai
+    user.hosting_mode = getattr(user, "hosting_mode", None) or "self"
+    user.payment_kind = "daily_share"
+    user.daily_unlock_date = pkt_today()  # pehla din free; raat ko expire / bill
 
 
 def generate_referral_code(db: Session) -> str:
@@ -353,13 +415,17 @@ class User(Base):
     # Referral credit: $3 per referred sub — accrue then withdraw (admin pays BEP20)
     referral_balance        = Column(Float, default=0.0)
     referral_wallet         = Column(String, nullable=True)  # user USDT BEP20
-    # Hosted on admin Windows VPS (users only login from mobile)
+    # Hosted on admin Windows VPS (optional) — default followers use own PC
     vps_desired         = Column(Boolean, default=False)
     vps_status          = Column(String, default="stopped")  # stopped/starting/running/error
     vps_ready           = Column(Boolean, default=False)
     vps_balance         = Column(Float, default=0.0)
     vps_last_error      = Column(String, nullable=True)
     vps_last_seen       = Column(DateTime, nullable=True)
+    hosting_mode        = Column(String, default="self")  # self | vps
+    payment_kind        = Column(String, default="daily_share")  # subscription | daily_share
+    daily_unlock_date   = Column(String, nullable=True)  # YYYY-MM-DD PKT
+    ea_token            = Column(String, nullable=True)  # MT5 EA auth (one-time from app)
     created_at          = Column(DateTime, default=datetime.utcnow)
 
 class ReferralWithdraw(Base):
@@ -1392,51 +1458,93 @@ def send_email_bg(to_email, subject, html_body):
     ).start()
 
 
-# ─── DAILY PROFIT CALCULATOR ──────────────────────────────────────────────────
+# ─── DAILY PROFIT CALCULATOR (25% admin share) ────────────────────────────────
 def calculate_daily_profits():
-    """Har user ka daily profit calculate karo — 25% admin + 5% referrer"""
+    """
+    PKT din ke closed winning trades → 25% admin + 5% referrer.
+    Bill lagte hi unlock revoke + bot OFF (nayi trades band).
+    """
+    from agent_hub import agent_hub
+
     db = SessionLocal()
     try:
-        users = db.query(User).filter(
-            User.bot_active == True,
-            User.username != ADMIN99_USERNAME,
-        ).all()
+        users = db.query(User).filter(User.username != ADMIN99_USERNAME).all()
+        today_pkt = pkt_today()
+        # Closed-at stored in UTC — match PKT calendar day window
+        day_start_utc = datetime.strptime(today_pkt, "%Y-%m-%d") - timedelta(hours=5)
+        day_end_utc = day_start_utc + timedelta(days=1)
 
         for user in users:
-            # Aaj ki closed trades se profit nikalo
-            today = datetime.utcnow().date()
+            if is_master_user(user):
+                continue
+
             today_trades = db.query(Trade).filter(
                 Trade.user_id == user.id,
-                Trade.status  == "closed",
-                Trade.profit  > 0,
+                Trade.status == "closed",
+                Trade.profit > 0,
+                Trade.closed_at != None,
+                Trade.closed_at >= day_start_utc,
+                Trade.closed_at < day_end_utc,
             ).all()
-
-            # Sirf aaj ki trades
-            today_profit = sum(
-                t.profit for t in today_trades
-                if t.closed_at and t.closed_at.date() == today
-            )
-
+            today_profit = sum(float(t.profit or 0) for t in today_trades)
             if today_profit <= 0:
                 continue
 
-            admin_share    = round(today_profit * 0.25, 2)
+            admin_share = round(today_profit * ADMIN_PROFIT_SHARE, 2)
             referrer_share = 0.0
-
-            # 5% referrer commission
             if user.referred_by:
-                referrer_share = round(today_profit * 0.05, 2)
+                referrer_share = round(today_profit * REFERRER_PROFIT_SHARE, 2)
 
-            user.daily_profit_owed += admin_share
-            user.referral_owed     += referrer_share
-            user.payment_status     = "pending"
+            user.daily_profit_owed = round((user.daily_profit_owed or 0) + admin_share, 2)
+            user.referral_owed = round((user.referral_owed or 0) + referrer_share, 2)
+            user.payment_kind = "daily_share"
+            revoke_daily_unlock(user, reason="pending")
+            try:
+                agent_hub.notify_bot_active(user.id, False)
+            except Exception:
+                pass
 
-            print(f"[PROFIT] {user.username}: Profit=${today_profit:.2f} "
-                  f"Admin={admin_share:.2f} Referrer={referrer_share:.2f}")
+            print(
+                f"[PROFIT] {user.username}: Profit=${today_profit:.2f} "
+                f"Admin={admin_share:.2f} Referrer={referrer_share:.2f} — LOCKED"
+            )
 
         db.commit()
     except Exception as e:
         print(f"[PROFIT CALC] Error: {e}")
+    finally:
+        db.close()
+
+
+def expire_daily_unlocks():
+    """
+    Naya PKT din — kal ka unlock expire.
+    Bina aaj ke admin approve ke nayi copy trades nahi lagenge.
+    """
+    from agent_hub import agent_hub
+
+    db = SessionLocal()
+    try:
+        today = pkt_today()
+        users = db.query(User).filter(User.username != ADMIN99_USERNAME).all()
+        for user in users:
+            if is_master_user(user):
+                continue
+            prev = user.daily_unlock_date
+            if prev and prev == today:
+                continue
+            if prev or user.bot_active:
+                user.daily_unlock_date = None
+                user.bot_active = False
+                active_bots[user.id] = False
+                try:
+                    agent_hub.notify_bot_active(user.id, False)
+                except Exception:
+                    pass
+                print(f"[DAILY UNLOCK] {user.username} expired (was {prev}) — need admin approve for {today}")
+        db.commit()
+    except Exception as e:
+        print(f"[DAILY UNLOCK] Error: {e}")
     finally:
         db.close()
 
@@ -1451,13 +1559,13 @@ def send_payment_notifications():
         ).all()
 
         for user in pending_users:
-            total_owed = round(user.daily_profit_owed + user.referral_owed, 2)
+            total_owed = round((user.daily_profit_owed or 0) + (user.referral_owed or 0), 2)
             html = f"""
             <div style="font-family:Arial;max-width:600px;margin:auto;padding:20px;
                         background:#1a1a2e;color:#fff;border-radius:10px;">
-                <h2 style="color:#f0b90b;">⚠️ PumpingBot — Payment Required</h2>
+                <h2 style="color:#f0b90b;">⚠️ PumpingBot — Daily 25% Share Due</h2>
                 <p>Hello <b>{user.username}</b>,</p>
-                <p>Aaj ki trading ke liye payment pending hai:</p>
+                <p>Aaj ke profit ka admin share pending hai. Approve ke baghair kal trades nahi lagenge:</p>
                 <table style="width:100%;border-collapse:collapse;margin:15px 0;">
                     <tr style="background:#16213e;">
                         <td style="padding:10px;border:1px solid #333;">Admin Share (25%)</td>
@@ -1465,9 +1573,9 @@ def send_payment_notifications():
                             <b>${user.daily_profit_owed:.2f}</b></td>
                     </tr>
                     <tr>
-                        <td style="padding:10px;border:1px solid #333;">Referrer Commission (5%)</td>
+                        <td style="padding:10px;border:1px solid #333;">Referrer (5%)</td>
                         <td style="padding:10px;border:1px solid #333;">
-                            ${user.referral_owed:.2f}</td>
+                            ${(user.referral_owed or 0):.2f}</td>
                     </tr>
                     <tr style="background:#16213e;">
                         <td style="padding:10px;border:1px solid #333;"><b>Total</b></td>
@@ -1475,24 +1583,19 @@ def send_payment_notifications():
                             <b>${total_owed:.2f}</b></td>
                     </tr>
                 </table>
-                <p style="color:#ff4444;font-weight:bold;">
-                    ⏰ 9 PM PKT tak payment nahi ki toh bot pause ho jayega!
-                </p>
-                <p>Admin ko payment karein: <b>{ADMIN_EMAIL}</b></p>
-                <p style="color:#888;font-size:12px;">PumpingBot Trading Platform</p>
+                <p>App → <b>Payment</b> page pe screenshot upload karein. Admin approve karega tab trades unlock.</p>
+                <p>Admin: <b>{ADMIN_EMAIL}</b> | USDT BEP20: <b>{ADMIN_USDT_BEP20}</b></p>
             </div>"""
-            send_email(user.email, "⚠️ PumpingBot Payment Due — Bot paused at 9 PM", html)
+            send_email(user.email, "⚠️ PumpingBot — Daily 25% share due (trades locked)", html)
 
-            # Admin ko bhi notify karo
             admin_html = f"""
             <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-                <h3 style="color:#f0b90b;">💰 Payment Pending: {user.username}</h3>
+                <h3 style="color:#f0b90b;">💰 Daily share pending: {user.username}</h3>
                 <p>User: <b>{user.email}</b></p>
                 <p>Amount: <b>${total_owed:.2f}</b></p>
                 <p>Admin Share: ${user.daily_profit_owed:.2f}</p>
-                <p>Referrer Share: ${user.referral_owed:.2f}</p>
             </div>"""
-            send_email(ADMIN_EMAIL, f"💰 Payment Pending: {user.username} — ${total_owed:.2f}", admin_html)
+            send_email(ADMIN_EMAIL, f"💰 Daily share: {user.username} — ${total_owed:.2f}", admin_html)
 
     except Exception as e:
         print(f"[NOTIFY] Error: {e}")
@@ -1501,7 +1604,9 @@ def send_payment_notifications():
 
 
 def pause_unpaid_bots():
-    """9 PM PKT — payment pending users ka bot pause karo"""
+    """9 PM PKT — unpaid daily share → overdue + bot OFF (agent notify)."""
+    from agent_hub import agent_hub
+
     db = SessionLocal()
     try:
         overdue_users = db.query(User).filter(
@@ -1510,42 +1615,44 @@ def pause_unpaid_bots():
         ).all()
 
         for user in overdue_users:
-            user.bot_active     = False
-            user.payment_status = "overdue"
-            active_bots[user.id] = False
+            revoke_daily_unlock(user, reason="overdue")
+            try:
+                agent_hub.notify_bot_active(user.id, False)
+            except Exception:
+                pass
 
-            # Sab positions close karo
+            # MetaAPI path: try close open bot positions
             conn = pool_get(user.id)
-            if conn and conn._ready:
-                positions = get_bot_positions(user.id, conn)
-                for pos in positions:
-                    conn.order_send({
-                        "action":       conn.TRADE_ACTION_DEAL,
-                        "symbol":       pos.symbol,
-                        "volume":       pos.volume,
-                        "type":         conn.ORDER_TYPE_SELL if pos.type == 0 else conn.ORDER_TYPE_BUY,
-                        "position":     pos.ticket,
-                        "price":        0,
-                        "deviation":    50,
-                        "magic":        888888,
-                        "comment":      "PB_PaymentOverdue",
-                        "type_time":    conn.ORDER_TIME_GTC,
-                        "type_filling": conn.ORDER_FILLING_IOC,
-                    })
+            if conn and getattr(conn, "_ready", False):
+                try:
+                    positions = get_bot_positions(user.id, conn)
+                    for pos in positions:
+                        conn.order_send({
+                            "action":       conn.TRADE_ACTION_DEAL,
+                            "symbol":       pos.symbol,
+                            "volume":       pos.volume,
+                            "type":         conn.ORDER_TYPE_SELL if pos.type == 0 else conn.ORDER_TYPE_BUY,
+                            "position":     pos.ticket,
+                            "price":        0,
+                            "deviation":    50,
+                            "magic":        888888,
+                            "comment":      "PB_PaymentOverdue",
+                            "type_time":    conn.ORDER_TIME_GTC,
+                            "type_filling": conn.ORDER_FILLING_IOC,
+                        })
+                except Exception as e:
+                    print(f"[PAUSE] close error {user.username}: {e}")
 
-            print(f"[PAUSE] {user.username} bot paused — payment overdue")
-
-            # User ko final warning email
+            print(f"[PAUSE] {user.username} overdue — daily share unpaid")
             html = f"""
             <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-                <h2 style="color:#ff4444;">🚫 Bot Paused — Payment Overdue</h2>
+                <h2 style="color:#ff4444;">🚫 Trades Locked — Daily 25% Unpaid</h2>
                 <p>Hello <b>{user.username}</b>,</p>
-                <p>Payment time pe nahi mili — aapka bot pause kar diya gaya hai.</p>
-                <p>Amount due: <b>${(user.daily_profit_owed + user.referral_owed):.2f}</b></p>
-                <p>Payment karne ke baad admin se contact karein bot resume karne ke liye.</p>
+                <p>Amount due: <b>${(user.daily_profit_owed or 0) + (user.referral_owed or 0):.2f}</b></p>
+                <p>Payment screenshot upload karein → admin approve → agla din unlock.</p>
                 <p>Admin: <b>{ADMIN_EMAIL}</b></p>
             </div>"""
-            send_email(user.email, "🚫 PumpingBot — Bot Paused (Payment Overdue)", html)
+            send_email(user.email, "🚫 PumpingBot — Trades locked (daily share)", html)
 
         db.commit()
     except Exception as e:
@@ -1585,33 +1692,38 @@ def pause_expired_subscriptions():
 
 
 def daily_scheduler():
-    """Background scheduler — subscription expiry + legacy payment windows"""
-    print("[SCHEDULER] Started — subscription expiry + 8/9 PM PKT checks")
-    notified_today  = None
-    paused_today    = None
-    last_sub_check  = None
+    """Background scheduler — daily unlock expire + 25% share bill + sub expiry"""
+    print("[SCHEDULER] Started — daily unlock + 8/9 PM PKT profit-share + sub expiry")
+    notified_today = None
+    paused_today = None
+    unlocked_day = None
+    last_sub_check = None
 
     while True:
         try:
             now_utc = datetime.utcnow()
             now_pkt = now_utc + timedelta(hours=5)
-            today   = now_pkt.date()
+            today = now_pkt.date()
 
-            # Har ghante subscription expiry check
+            # Naya PKT din — pehle unlock expire (daily admin approve zaroori)
+            if unlocked_day != today:
+                print(f"[SCHEDULER] New PKT day {today} — expiring yesterday unlocks")
+                expire_daily_unlocks()
+                unlocked_day = today
+
             hour_key = now_utc.strftime("%Y-%m-%d-%H")
             if last_sub_check != hour_key:
                 pause_expired_subscriptions()
                 last_sub_check = hour_key
 
-            # Legacy daily profit-share reminders (optional path)
             if now_pkt.hour == 20 and now_pkt.minute < 5 and notified_today != today:
-                print("[SCHEDULER] 8 PM PKT — calculating profits and sending notifications")
+                print("[SCHEDULER] 8 PM PKT — daily 25% profit bill + notify")
                 calculate_daily_profits()
                 send_payment_notifications()
                 notified_today = today
 
             if now_pkt.hour == 21 and now_pkt.minute < 5 and paused_today != today:
-                print("[SCHEDULER] 9 PM PKT — pausing unpaid bots")
+                print("[SCHEDULER] 9 PM PKT — overdue lock")
                 pause_unpaid_bots()
                 paused_today = today
 
@@ -1626,7 +1738,13 @@ def daily_scheduler():
 def confirm_payment(user_id: int,
                     current_user: User = Depends(get_current_user),
                     db: Session = Depends(get_db)):
-    """Admin payment/screenshot approve — 30 din package + bot start"""
+    """
+    Admin approve:
+      - daily_share / profit owed → clear 25% bill + unlock TODAY (PKT)
+      - else subscription screenshot → 30-din package + unlock today
+    """
+    from agent_hub import agent_hub
+
     if not is_master_user(current_user):
         raise HTTPException(403, "Admin only")
 
@@ -1634,31 +1752,70 @@ def confirm_payment(user_id: int,
     if not user:
         raise HTTPException(404, "User not found")
 
-    paid_amount = user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
-    if (user.daily_profit_owed or 0) + (user.referral_owed or 0) > 0:
-        paid_amount = (user.daily_profit_owed or 0) + (user.referral_owed or 0)
+    profit_due = round((user.daily_profit_owed or 0) + (user.referral_owed or 0), 2)
+    kind = (user.payment_kind or "daily_share").lower()
+    is_daily = profit_due > 0 or kind == "daily_share" or (
+        (user.payment_status or "").lower() in ("pending", "overdue", "pending_review")
+        and profit_due > 0
+    )
 
-    # Full fee admin wallet pe aati hai; referrer ko $3 in-app credit (withdraw later)
     referral_credited = 0.0
-    if user.referred_by:
+    paid_amount = profit_due
+
+    if is_daily and profit_due > 0:
+        paid_amount = profit_due
+        grant_daily_unlock(user)
+        user.payment_kind = "daily_share"
+        user.payment_screenshot = None
+        # Keep / extend access so Start Bot allowed
+        if refresh_subscription_status(user) not in ("active", "trial"):
+            activate_subscription(user)
+        user.bot_active = True
+        active_bots[user.id] = True
+        db.commit()
+        try:
+            agent_hub.notify_bot_active(user.id, True)
+        except Exception:
+            pass
+        html = f"""
+        <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
+            <h2 style="color:#00ff88;">✅ Daily 25% Approved — Trades Unlocked</h2>
+            <p>Hello <b>{user.username}</b>,</p>
+            <p>Aaj ({pkt_today()}) ke liye trading unlock ho gayi.</p>
+            <p>Paid share: <b>${paid_amount:.2f}</b></p>
+            <p>PC pe follower agent ON rakho + Dashboard → Start Bot.</p>
+        </div>"""
+        send_email_bg(user.email, "✅ PumpingBot — Daily share approved, trades unlocked", html)
+        return {
+            "message": f"Daily share confirmed for {user.username} — unlocked {pkt_today()}",
+            "kind": "daily_share",
+            "daily_unlock_date": user.daily_unlock_date,
+            "paid_amount": paid_amount,
+            "bot_active": True,
+        }
+
+    # Subscription path (or zero-owed daily unlock via screenshot)
+    paid_amount = user.subscription_fee_owed or SUBSCRIPTION_FEE_USD
+    if user.referred_by and kind != "daily_share":
         referrer = db.query(User).filter(User.id == user.referred_by).first()
         if referrer and not is_master_user(referrer):
             referral_credited = REFERRAL_COMMISSION_USD
             referrer.referral_balance = round(
                 (referrer.referral_balance or 0.0) + REFERRAL_COMMISSION_USD, 2
             )
-            print(
-                f"[COMMISSION] {referrer.username} +${REFERRAL_COMMISSION_USD:.0f} "
-                f"credit (balance=${referrer.referral_balance:.2f}) — "
-                f"admin keeps ${SUBSCRIPTION_FEE_USD - REFERRAL_COMMISSION_USD:.0f}"
-            )
 
     activate_subscription(user)
+    grant_daily_unlock(user)
     user.bot_active = True
+    user.payment_screenshot = None
     db.commit()
-
     active_bots[user.id] = True
-    if is_master_user(user) and user.mt5_login:
+    try:
+        agent_hub.notify_bot_active(user.id, True)
+    except Exception:
+        pass
+
+    if is_master_user(user) and user.mt5_login and USE_METAAPI:
         threading.Thread(
             target=run_user_bot_watchdog,
             args=(user.id, user.mt5_login, user.mt5_password, user.mt5_server),
@@ -1668,21 +1825,84 @@ def confirm_payment(user_id: int,
     expires = user.subscription_expires_at.strftime("%Y-%m-%d") if user.subscription_expires_at else "—"
     html = f"""
     <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-        <h2 style="color:#00ff88;">✅ Payment Approved — Package Active!</h2>
+        <h2 style="color:#00ff88;">✅ Payment Approved — Unlocked!</h2>
         <p>Hello <b>{user.username}</b>,</p>
-        <p>Aapki payment confirm ho gayi. 30-din ka package active hai.</p>
-        <p>Amount: <b>${paid_amount:.2f}</b></p>
-        <p>Expires: <b>{expires}</b></p>
-        <p>Signal bot ab start ho sakta hai. Happy Trading! 🚀</p>
+        <p>Payment confirm. Aaj ({pkt_today()}) trades unlock.</p>
+        <p>Amount: <b>${paid_amount:.2f}</b> | Package until: <b>{expires}</b></p>
+        <p>PC agent ON + Start Bot dabao.</p>
     </div>"""
-    send_email_bg(user.email, "✅ PumpingBot — Payment Approved, Bot Ready!", html)
+    send_email_bg(user.email, "✅ PumpingBot — Payment Approved", html)
 
     return {
-        "message": f"Payment confirmed for {user.username}, package active until {expires}",
+        "message": f"Payment confirmed for {user.username}, unlocked {pkt_today()}",
+        "kind": kind,
+        "daily_unlock_date": user.daily_unlock_date,
         "subscription_expires_at": user.subscription_expires_at.isoformat() if user.subscription_expires_at else None,
         "referral_credited": referral_credited,
-        "admin_share": round(SUBSCRIPTION_FEE_USD - (referral_credited or 0), 2),
+        "admin_share": round(paid_amount - (referral_credited or 0), 2),
     }
+
+
+@app.post("/admin/daily-unlock/{user_id}")
+def admin_daily_unlock(user_id: int,
+                       current_user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    """Admin: aaj ke liye unlock (jab profit $0 / pehle se paid)."""
+    from agent_hub import agent_hub
+
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if (user.daily_profit_owed or 0) > 0:
+        raise HTTPException(
+            400,
+            f"Pehle ${user.daily_profit_owed:.2f} daily share clear/approve karo",
+        )
+    grant_daily_unlock(user)
+    if refresh_subscription_status(user) not in ("active", "trial"):
+        activate_subscription(user)
+    user.bot_active = True
+    active_bots[user.id] = True
+    db.commit()
+    try:
+        agent_hub.notify_bot_active(user.id, True)
+    except Exception:
+        pass
+    return {
+        "message": f"{user.username} unlocked for {pkt_today()}",
+        "daily_unlock_date": user.daily_unlock_date,
+        "bot_active": True,
+    }
+
+
+@app.post("/admin/daily-unlock-all-clear")
+def admin_daily_unlock_all_clear(current_user: User = Depends(get_current_user),
+                                 db: Session = Depends(get_db)):
+    """Admin: jitne users ka daily_profit_owed=0 un sab ko aaj unlock."""
+    from agent_hub import agent_hub
+
+    if not is_master_user(current_user):
+        raise HTTPException(403, "Admin only")
+    today = pkt_today()
+    users = db.query(User).filter(User.username != ADMIN99_USERNAME).all()
+    unlocked = []
+    for user in users:
+        if is_master_user(user):
+            continue
+        if (user.daily_profit_owed or 0) > 0:
+            continue
+        grant_daily_unlock(user, today)
+        if refresh_subscription_status(user) not in ("active", "trial"):
+            activate_subscription(user)
+        unlocked.append(user.username)
+        try:
+            agent_hub.notify_bot_active(user.id, bool(user.bot_active))
+        except Exception:
+            pass
+    db.commit()
+    return {"message": f"Unlocked {len(unlocked)} users for {today}", "users": unlocked}
 
 
 @app.get("/admin/pending-payments")
@@ -1696,16 +1916,19 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
         or_(
             User.subscription_status == "pending_review",
             User.payment_status == "pending_review",
+            User.payment_status == "pending",
+            User.payment_status == "overdue",
             User.daily_profit_owed > 0,
         )
     ).all()
     result = []
+    today = pkt_today()
     for u in users:
-        # Rejected requests pending list se bahar
         if (u.payment_status or "").lower() == "rejected":
             continue
         fee = u.subscription_fee_owed or SUBSCRIPTION_FEE_USD
         profit_owed = round((u.daily_profit_owed or 0) + (u.referral_owed or 0), 2)
+        kind = u.payment_kind or ("daily_share" if profit_owed > 0 else "subscription")
         result.append({
             "user_id":       u.id,
             "username":      u.username,
@@ -1716,8 +1939,12 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
             "subscription_fee": fee,
             "subscription_status": u.subscription_status or "expired",
             "payment_screenshot": u.payment_screenshot,
+            "payment_kind":  kind,
+            "daily_unlock_date": u.daily_unlock_date,
+            "daily_unlocked_today": (u.daily_unlock_date or "") == today,
             "status":        u.payment_status or u.subscription_status,
             "bot_active":    u.bot_active,
+            "hosting_mode":  getattr(u, "hosting_mode", None) or "self",
         })
     return result
 
@@ -1725,16 +1952,22 @@ def get_pending_payments(current_user: User = Depends(get_current_user),
 @app.post("/subscription/upload-screenshot")
 async def upload_payment_screenshot(
     file: UploadFile = File(...),
+    kind: str = "auto",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """User $10 payment ka screenshot bheje — admin approve karega."""
+    """
+    Payment screenshot — admin approve.
+    kind=auto|daily_share|subscription
+    Default: agar daily_profit_owed > 0 to daily_share, warna subscription.
+    """
+    from agent_hub import agent_hub
+
     if is_master_user(current_user):
         raise HTTPException(400, "Admin ko payment upload ki zaroorat nahi")
 
     content_type = (file.content_type or "").lower()
     if not content_type.startswith("image/") and not content_type.endswith("pdf"):
-        # also allow common image extensions without content-type
         name = (file.filename or "").lower()
         if not any(name.endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf")):
             raise HTTPException(400, "Sirf image/PDF screenshot upload karein")
@@ -1748,30 +1981,48 @@ async def upload_payment_screenshot(
         shutil.copyfileobj(file.file, out)
 
     user = db.query(User).filter(User.id == current_user.id).first()
+    profit_due = round((user.daily_profit_owed or 0) + (user.referral_owed or 0), 2)
+    k = (kind or "auto").lower().strip()
+    if k == "auto":
+        k = "daily_share" if profit_due > 0 else "subscription"
+    if k not in ("daily_share", "subscription"):
+        k = "daily_share" if profit_due > 0 else "subscription"
+
     user.payment_screenshot = str(dest)
-    user.subscription_status = "pending_review"
+    user.payment_kind = k
     user.payment_status = "pending_review"
-    user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
     user.bot_active = False
     active_bots[user.id] = False
+    user.daily_unlock_date = None
+    if k == "subscription":
+        user.subscription_status = "pending_review"
+        user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
+        fee_label = f"${SUBSCRIPTION_FEE_USD:.0f} / 30 days"
+    else:
+        fee_label = f"${profit_due:.2f} daily 25% share"
     db.commit()
+    try:
+        agent_hub.notify_bot_active(user.id, False)
+    except Exception:
+        pass
 
     send_email_bg(
         ADMIN_EMAIL,
-        f"📸 Payment SS: {user.username} — ${SUBSCRIPTION_FEE_USD:.0f}",
+        f"📸 Payment SS: {user.username} — {fee_label}",
         f"""
         <div style="font-family:Arial;padding:20px;background:#1a1a2e;color:#fff;">
-          <h3 style="color:#f0b90b;">New subscription payment screenshot</h3>
+          <h3 style="color:#f0b90b;">Payment screenshot ({k})</h3>
           <p>User: <b>{user.username}</b> ({user.email})</p>
-          <p>Fee: <b>${SUBSCRIPTION_FEE_USD:.0f}</b> / 30 days</p>
+          <p>Amount: <b>{fee_label}</b></p>
           <p>File: {fname}</p>
-          <p>Admin panel se Approve karein — phir user ka signal bot start hoga.</p>
+          <p>Admin panel → Approve = aaj ki trading unlock.</p>
         </div>""",
     )
     return {
-        "message": "Screenshot uploaded — admin approve karega tab package active hoga",
-        "subscription_status": "pending_review",
-        "fee": SUBSCRIPTION_FEE_USD,
+        "message": "Screenshot uploaded — admin approve karega tab aaj ki trades unlock hongi",
+        "payment_status": "pending_review",
+        "payment_kind": k,
+        "amount": profit_due if k == "daily_share" else SUBSCRIPTION_FEE_USD,
     }
 
 
@@ -1804,14 +2055,20 @@ def reject_payment(user_id: int,
     user.payment_status = "rejected"
     user.subscription_fee_owed = SUBSCRIPTION_FEE_USD
     user.payment_screenshot = None  # dubara clean upload ke liye
+    user.daily_unlock_date = None
     user.bot_active = False
     active_bots[user.id] = False
     db.commit()
+    try:
+        from agent_hub import agent_hub
+        agent_hub.notify_bot_active(user.id, False)
+    except Exception:
+        pass
     send_email_bg(
         user.email,
         "❌ PumpingBot — Payment Rejected",
         f"<p>Hello {user.username}, payment screenshot reject ho gaya. "
-        f"Dubara ${SUBSCRIPTION_FEE_USD:.0f} ka clear screenshot upload karein.</p>",
+        f"Daily 25% / package ka clear screenshot dubara upload karein.</p>",
     )
     return {"message": f"Payment rejected for {user.username}"}
 
@@ -2071,6 +2328,8 @@ def get_me(request: Request,
     role = "master" if is_master_user(current_user) else "follower"
     sub_status = refresh_subscription_status(current_user)
     ref_code = ensure_referral_code(current_user, db)
+    if not is_master_user(current_user):
+        ensure_ea_token(current_user)
     db.commit()
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
     if sub_status not in ("active", "trial") and amount_owed <= 0:
@@ -2118,6 +2377,18 @@ def get_me(request: Request,
         trial_remaining_sec = max(0, int((expires_at - datetime.utcnow()).total_seconds()))
 
     invite_url = build_invite_url(request, ref_code)
+    today = pkt_today()
+    daily_unlocked = is_master_user(current_user) or (
+        (current_user.daily_unlock_date or "") == today
+        and (current_user.daily_profit_owed or 0) <= 0
+        and (current_user.payment_status or "clear").lower() == "clear"
+    )
+    profit_share_owed = round(current_user.daily_profit_owed or 0, 2)
+    agent_online = (
+        _agent_session_ready(current_user.id)
+        or bool(current_user.vps_ready)
+        or ea_queue.is_online(current_user.id)
+    )
 
     return {
         "username":          current_user.username,
@@ -2127,10 +2398,12 @@ def get_me(request: Request,
         "role":              role,
         "mt5_connected":     current_user.mt5_login is not None,
         "mt5_ready":         mt5_ready,
-        "vps_ready":         bool(current_user.vps_ready) or _agent_session_ready(current_user.id),
+        "vps_ready":         bool(current_user.vps_ready) or agent_online,
         "vps_status":        current_user.vps_status or "stopped",
         "vps_last_error":    current_user.vps_last_error,
-        "trading_backend":   "vps_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
+        "trading_backend":   "pc_agent" if (agent_mode_enabled() and not USE_METAAPI) else "metaapi",
+        "hosting_mode":      getattr(current_user, "hosting_mode", None) or ("vps" if is_master_user(current_user) else "self"),
+        "agent_online":      agent_online,
         "mt5_login":         current_user.mt5_login,
         "mt5_server":        current_user.mt5_server,
         "bot_active":        current_user.bot_active,
@@ -2145,7 +2418,18 @@ def get_me(request: Request,
         "referral_code":     ref_code,
         "invite_url":        invite_url,
         "payment_status":    current_user.payment_status or "clear",
+        "payment_kind":      current_user.payment_kind or "daily_share",
         "amount_owed":       amount_owed,
+        "daily_profit_owed": profit_share_owed,
+        "daily_unlock_date": current_user.daily_unlock_date,
+        "daily_unlocked_today": daily_unlocked,
+        "can_copy_today":    follower_can_copy(current_user) if not is_master_user(current_user) else True,
+        "ea_token":          None if is_master_user(current_user) else (
+            ensure_ea_token(current_user)
+        ),
+        "ea_online":         ea_queue.is_online(current_user.id),
+        "admin_profit_share_pct": int(ADMIN_PROFIT_SHARE * 100),
+        "pkt_today":         today,
         "subscription_status": sub_status,
         "subscription_expires_at": expires_at.isoformat() if expires_at else None,
         "subscription_fee": SUBSCRIPTION_FEE_USD,
@@ -2366,51 +2650,53 @@ async def connect_mt5(creds: MT5Credentials,
         current_user.bot_active = False
         print(f"[CONNECT] Switching account {current_user.mt5_login} → {creds.mt5_login}")
 
-    # ── Preferred path: VPS-hosted agents (mobile login only) ─────────
+    # ── Preferred path: local MT5 agents (user PC / admin PC) ─────────
     if agent_mode_enabled() and not USE_METAAPI:
         current_user.mt5_login = creds.mt5_login
         current_user.mt5_password = creds.mt5_password
         current_user.mt5_server = creds.mt5_server
-        # Pre-warm VPS agent as soon as MT5 is linked (supervisor auto-creates
-        # portable MT5 + local_agent). Start Bot then only flips bot_active ON.
-        can_host = is_master_user(current_user) or has_active_subscription(current_user)
-        if can_host:
-            current_user.vps_desired = True
+        # Followers: apna Windows PC pe agent. Master: apna PC (ya optional VPS supervisor).
+        if is_master_user(current_user):
+            current_user.hosting_mode = "self"
+            current_user.vps_desired = True  # optional supervisor on admin PC
             current_user.vps_status = "starting"
-            current_user.vps_ready = False
         else:
-            current_user.vps_desired = False
-            current_user.vps_status = "idle"
-            current_user.vps_ready = False
+            current_user.hosting_mode = "self"
+            current_user.vps_desired = False  # central VPS pe mat host karo
+            current_user.vps_status = "awaiting_ea"
+            ensure_ea_token(current_user)
+        current_user.vps_ready = False
         current_user.vps_last_error = None
         db.commit()
         role = "master" if is_master_user(current_user) else "follower"
         online = (
             bool(current_user.vps_ready)
+            or ea_queue.is_online(current_user.id)
             or any(a["user_id"] == current_user.id and a.get("ready")
                    for a in agent_hub.list_agents())
         )
-        if not can_host:
+        if is_master_user(current_user):
             msg = (
-                "MT5 saved, lekin subscription/trial inactive — "
-                "pehle plan active karo, phir Start Bot."
+                "MT5 linked — apne PC pe master agent chalao, phir Start Bot."
             )
         elif online:
             msg = (
-                "MT5 linked — VPS agent ready. Ab Start Bot dabao, trades start."
+                "MT5 linked — EA/agent online. Daily unlock ke baad trades auto copy."
             )
         else:
             msg = (
-                "MT5 linked — VPS pe agent apne aap ban raha hai (~20-40 sec). "
-                "Phir Start Bot dabao. Mobile se bas itna; user PC pe kuch nahi."
+                "MT5 linked. Ab PC pe Exness MT5 + Algo ON + PumpingBot EA chart pe laga do. "
+                "Token PC Setup se EA mein ek dafa paste."
             )
         return {
             "message": msg,
             "balance": float(current_user.vps_balance or 0),
             "mt5_ready": online,
             "role": role,
-            "trading_backend": "vps_agent",
+            "trading_backend": "mt5_ea",
+            "hosting_mode": current_user.hosting_mode,
             "agent_online": online,
+            "ea_token": None if is_master_user(current_user) else current_user.ea_token,
             "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status or "idle",
         }
@@ -2525,29 +2811,44 @@ def start_bot(current_user: User = Depends(get_current_user),
     if not current_user.mt5_login:
         raise HTTPException(400, "Connect MT5 first")
 
-    if not has_active_subscription(current_user):
-        db.commit()
-        raise HTTPException(
-            402,
-            f"Subscription inactive — ${SUBSCRIPTION_FEE_USD:.0f} pay karke screenshot upload karein. "
-            f"Admin approve karega tab bot start hoga. Status: {current_user.subscription_status}",
-        )
+    if not is_master_user(current_user):
+        if (current_user.daily_profit_owed or 0) > 0:
+            raise HTTPException(
+                402,
+                f"Daily 25% share pending: ${current_user.daily_profit_owed:.2f}. "
+                f"Payment screenshot upload → admin approve → phir Start Bot.",
+            )
+        if (current_user.payment_status or "").lower() in (
+            "pending", "overdue", "pending_review", "rejected"
+        ):
+            raise HTTPException(
+                402,
+                f"Payment status={current_user.payment_status}. "
+                f"Admin approve ke baghair trades nahi lagenge.",
+            )
+        if (current_user.daily_unlock_date or "") != pkt_today():
+            raise HTTPException(
+                402,
+                f"Aaj ({pkt_today()}) ke liye admin unlock nahi. "
+                f"Daily 25% pay + admin Approve zaroori (ya admin Daily Unlock).",
+            )
+        if not has_active_subscription(current_user):
+            # Auto-extend access when daily-unlocked (profit-share model)
+            activate_subscription(current_user)
 
     active_bots[current_user.id] = True
     current_user.bot_active = True
-    current_user.vps_desired = True
-    current_user.vps_status = "starting"
+    if is_master_user(current_user):
+        current_user.vps_desired = True
+        current_user.vps_status = "starting"
+    else:
+        current_user.hosting_mode = "self"
+        current_user.vps_desired = False
+        current_user.vps_status = "pc_agent"
     db.commit()
     db.refresh(current_user)
 
-    # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
-        # Ensure roster includes this user so supervisor creates/starts agent
-        current_user.vps_desired = True
-        if not current_user.vps_ready:
-            current_user.vps_status = "starting"
-        db.commit()
-        # Live-toggle entries on already-connected agent (no full restart needed)
         notify = agent_hub.notify_bot_active(current_user.id, True)
         if not notify.get("ok"):
             print(f"[BOT START] agent notify: {notify}")
@@ -2556,22 +2857,24 @@ def start_bot(current_user: User = Depends(get_current_user),
             for a in agent_hub.list_agents()
         )
         if is_master_user(current_user):
-            msg = "Master bot ON — VPS agent trade karega."
+            msg = "Master bot ON — aapke PC pe master agent trades karega."
         else:
-            msg = "Copy trading ON — VPS pe aapka agent auto start / ON ho raha hai."
+            msg = "Copy trading ON — aapke PC pe follower agent master copy karega."
         if online:
             msg += " Agent online."
         else:
             msg += (
-                " Agent ~20-40 sec mein auto ban/connect hoga "
-                "(supervisor OPEN hona chahiye). Refresh karke MT5 Live dekho."
+                " Agent offline — Windows PC pe START_FOLLOWER.bat / agent.py chalao, "
+                "MT5 login + Algo Trading ON, phir refresh."
             )
         return {
             "message": msg,
-            "trading_backend": "vps_agent",
+            "trading_backend": "pc_agent",
+            "hosting_mode": current_user.hosting_mode or "self",
             "agent_online": online,
             "bot_active": True,
-            "vps_desired": True,
+            "daily_unlock_date": current_user.daily_unlock_date,
+            "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status,
         }
 
@@ -2599,19 +2902,20 @@ def stop_bot(current_user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     active_bots[current_user.id] = False
     current_user.bot_active = False
-    # Agent mode: keep VPS agent + MT5 online; only pause new entries
+    current_user.vps_status = "user_stopped"
+    # Agent mode: keep EA/MT5 online; only pause new entries
     if agent_mode_enabled() and not USE_METAAPI:
-        current_user.vps_desired = True
-        current_user.vps_status = "running" if current_user.vps_ready else "starting"
+        if is_master_user(current_user):
+            current_user.vps_desired = True
         db.commit()
         db.refresh(current_user)
         notify = agent_hub.notify_bot_active(current_user.id, False)
         if not notify.get("ok"):
             print(f"[BOT STOP] agent notify: {notify}")
         return {
-            "message": "Bot stopped — nayi entries band; VPS/MT5 online rahega",
+            "message": "Bot stopped — nayi entries band; MT5/EA online reh sakta hai",
             "bot_active": False,
-            "vps_desired": True,
+            "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status,
         }
     current_user.vps_desired = False
@@ -3498,6 +3802,287 @@ def vps_agent_token(
         "role": "master" if is_master_user(user) else "follower",
         "expires_days": 30,
     }
+
+
+@app.post("/me/agent-token")
+def my_agent_token(current_user: User = Depends(get_current_user)):
+    """
+    User apne PC pe follower/master agent chalane ke liye long-lived JWT.
+    Mobile/app se token copy → Windows START_FOLLOWER.bat mein paste.
+    """
+    if not current_user.mt5_login:
+        raise HTTPException(400, "Pehle MT5 connect karo (app → MT5 page)")
+    token = create_access_token(
+        {"sub": current_user.username, "scope": "pc_agent"},
+        expires_minutes=60 * 24 * 30,
+    )
+    role = "master" if is_master_user(current_user) else "follower"
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "role": role,
+        "mt5_login": current_user.mt5_login,
+        "mt5_server": current_user.mt5_server,
+        "expires_days": 30,
+        "server_url": os.environ.get("PUBLIC_BASE_URL") or "",
+    }
+
+
+def _public_base(request: Request) -> str:
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if not base and host:
+        if proto != "https" and "railway.app" in host:
+            proto = "https"
+        base = f"{proto}://{host}"
+    return base
+
+
+@app.get("/me/agent-setup")
+def my_agent_setup(request: Request,
+                   current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """User PC: sirf Exness MT5 + Algo + PumpingBot EA (ek dafa)."""
+    base = _public_base(request)
+    role = "master" if is_master_user(current_user) else "follower"
+    tok = None
+    if not is_master_user(current_user):
+        tok = ensure_ea_token(current_user)
+        db.commit()
+    steps = [
+        "1) PC pe Exness MetaTrader 5 install + apna account login.",
+        "2) App → MT5 page pe wahi login save + yahan se EA Token COPY.",
+        "3) Neeche se Installer ZIP download → unzip → PumpingBotSetup.bat double-click.",
+        "4) Setup token maange to paste — baaki EA/config/WebRequest khud ho jayega.",
+        "5) MT5 mein AutoTrading ON + Navigator se PumpingBotFollower chart pe ek dafa drag.",
+        "6) Rozana: sirf MT5 open + login + AutoTrading ON.",
+    ]
+    return {
+        "role": role,
+        "server_url": base,
+        "mt5_login": current_user.mt5_login,
+        "mt5_server": current_user.mt5_server,
+        "hosting_mode": "ea",
+        "ea_token": tok,
+        "ea_online": ea_queue.is_online(current_user.id),
+        "ea_download": "/ea/download",
+        "installer_download": "/ea/installer.zip",
+        "daily_unlocked_today": (current_user.daily_unlock_date or "") == pkt_today(),
+        "daily_profit_owed": round(current_user.daily_profit_owed or 0, 2),
+        "admin_profit_share_pct": int(ADMIN_PROFIT_SHARE * 100),
+        "admin_usdt_bep20": ADMIN_USDT_BEP20,
+        "admin_email": ADMIN_EMAIL,
+        "steps": steps,
+        "doc": "USER_PC_SETUP.md",
+    }
+
+
+class EaHelloIn(BaseModel):
+    login: int
+    token: str
+    balance: float = 0
+    equity: float = 0
+    currency: str = ""
+    server: str = ""
+
+
+class EaAckIn(BaseModel):
+    login: int
+    token: str
+    cmd_id: str
+    ok: bool = True
+    ticket: Optional[int] = None
+    profit: Optional[float] = None
+    price: Optional[float] = None
+    error: Optional[str] = None
+    master_ticket: Optional[int] = None
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    lot: Optional[float] = None
+
+
+def _ea_auth_user(db: Session, login: int, token: str) -> "User":
+    if not login or not token:
+        raise HTTPException(401, "login + token required")
+    user = db.query(User).filter(User.mt5_login == int(login)).first()
+    if not user or is_master_user(user):
+        raise HTTPException(404, "Unknown MT5 login — pehle app pe MT5 connect karo")
+    if (user.ea_token or "") != (token or "").strip():
+        raise HTTPException(403, "Invalid EA token — app → PC Setup se naya token copy karo")
+    return user
+
+
+@app.get("/ea/download")
+def ea_download():
+    """PumpingBotFollower.mq5 — user MT5 Experts folder mein copy kare."""
+    path = Path(__file__).resolve().parent / "mql5" / "PumpingBotFollower.mq5"
+    if not path.is_file():
+        raise HTTPException(404, "EA file missing on server")
+    return FileResponse(
+        path,
+        filename="PumpingBotFollower.mq5",
+        media_type="text/plain",
+    )
+
+
+@app.get("/ea/installer.zip")
+def ea_installer_zip():
+    """
+    One-click Windows pack: Setup.bat + Setup.ps1 + EA mq5.
+    User unzip karke PumpingBotSetup.bat double-click kare.
+    """
+    import io
+    import zipfile
+    from fastapi.responses import Response
+
+    root = Path(__file__).resolve().parent
+    files = [
+        (root / "installer" / "PumpingBotSetup.bat", "PumpingBotSetup.bat"),
+        (root / "installer" / "PumpingBotSetup.ps1", "PumpingBotSetup.ps1"),
+        (root / "mql5" / "PumpingBotFollower.mq5", "PumpingBotFollower.mq5"),
+        (root / "installer" / "README.txt", "README.txt"),
+    ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        written = 0
+        for src, name in files:
+            if not src.is_file():
+                continue
+            zf.write(src, arcname=name)
+            written += 1
+        if written == 0:
+            raise HTTPException(404, "Installer files missing")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="PumpingBotSetup.zip"',
+        },
+    )
+
+
+@app.post("/ea/hello")
+def ea_hello(body: EaHelloIn, db: Session = Depends(get_db)):
+    """EA onInit / timer — marks follower online; auto-enables copy if unlocked today."""
+    user = _ea_auth_user(db, body.login, body.token)
+    ea_queue.touch(user.id, {
+        "balance": body.balance,
+        "equity": body.equity,
+        "currency": body.currency,
+        "server": body.server,
+        "login": body.login,
+    })
+    was_stopped = (user.vps_status or "") == "user_stopped"
+    user.vps_balance = float(body.balance or 0)
+    user.vps_ready = True
+    user.vps_last_seen = datetime.utcnow()
+    user.hosting_mode = "ea"
+    if not was_stopped:
+        user.vps_status = "ea_online"
+        # Auto copy ON when daily unlocked (no Start Bot needed)
+        if (
+            (user.daily_unlock_date or "") == pkt_today()
+            and (user.daily_profit_owed or 0) <= 0
+            and (user.payment_status or "clear").lower() == "clear"
+        ):
+            user.bot_active = True
+            active_bots[user.id] = True
+    db.commit()
+    return {
+        "ok": True,
+        "user_id": user.id,
+        "username": user.username,
+        "can_copy": follower_can_copy(user),
+        "daily_unlock_date": user.daily_unlock_date,
+        "bot_active": bool(user.bot_active),
+        "poll_sec": 1,
+    }
+
+
+@app.get("/ea/poll")
+def ea_poll(
+    login: int = Query(...),
+    token: str = Query(...),
+    balance: float = Query(0),
+    equity: float = Query(0),
+    db: Session = Depends(get_db),
+):
+    """EA timer: pending copy_open / copy_close commands."""
+    user = _ea_auth_user(db, login, token)
+    ea_queue.touch(user.id, {"balance": balance, "equity": equity, "login": login})
+    user.vps_ready = True
+    user.vps_status = "ea_online"
+    user.vps_last_seen = datetime.utcnow()
+    if balance:
+        user.vps_balance = float(balance)
+    db.commit()
+
+    if not follower_can_copy(user):
+        return {
+            "ok": True,
+            "can_copy": False,
+            "commands": [],
+            "reason": "locked_or_unpaid",
+            "daily_unlock_date": user.daily_unlock_date,
+            "daily_profit_owed": user.daily_profit_owed or 0,
+        }
+
+    cmds = ea_queue.poll(user.id, limit=5)
+    return {
+        "ok": True,
+        "can_copy": True,
+        "commands": cmds,
+        "bot_active": bool(user.bot_active),
+    }
+
+
+@app.post("/ea/ack")
+def ea_ack(body: EaAckIn, db: Session = Depends(get_db)):
+    """EA reports fill / close result → trades table."""
+    user = _ea_auth_user(db, body.login, body.token)
+    ea_queue.touch(user.id)
+
+    if body.ok and body.ticket and body.master_ticket and (body.side or body.symbol):
+        existing = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.master_ticket == int(body.master_ticket),
+            Trade.status == "open",
+        ).first()
+        if not existing:
+            db.add(Trade(
+                user_id=user.id,
+                symbol=body.symbol or "",
+                trade_type=(body.side or "BUY").upper(),
+                lot=float(body.lot or 0.01),
+                open_price=float(body.price or 0),
+                score=0,
+                mt5_ticket=int(body.ticket),
+                master_ticket=int(body.master_ticket),
+                status="open",
+            ))
+            db.commit()
+            return {"ok": True, "saved": "open"}
+
+    if body.master_ticket and (body.profit is not None or not body.ok):
+        row = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.master_ticket == int(body.master_ticket),
+            Trade.status == "open",
+        ).first()
+        if row:
+            row.status = "closed"
+            row.closed_at = datetime.utcnow()
+            if body.profit is not None:
+                row.profit = float(body.profit)
+            if body.price is not None:
+                row.close_price = float(body.price)
+            db.commit()
+            return {"ok": True, "saved": "closed"}
+
+    return {"ok": True, "saved": None, "error": body.error}
 
 
 @app.post("/admin/vps/report")

@@ -1,26 +1,40 @@
-# Local MT5 Agent
+# Local MT5 Agent (User PC / Admin PC)
 
-Yeh process **Windows VPS supervisor** khud chalata hai.  
-Group users ko ye manually nahi chalana — woh sirf **mobile se MT5 login** karte hain.
+**Default model (v3.33+):** har follower apne **Windows PC** pe yeh agent chalata hai.  
+Central VPS optional hai — zaroori nahi.
 
-Primary setup: **`../vps_supervisor/README.md`**
+- **Follower:** `START_FOLLOWER.bat` — master trades copy
+- **Master (Admin99):** `START_MASTER.bat` — strategy + fan-out
 
-## Manual run (debug only)
+Poora user guide: **`../USER_PC_SETUP.md`**
+
+## Quick start (follower)
+
+1. App pe MT5 connect + **PC Setup → Get Agent Token**
+2. `START_FOLLOWER.bat` edit (SERVER_URL, ACCESS_TOKEN, MT5_*)
+3. Bat double-click — window open rakho
+4. App → **Start Bot** (daily admin unlock + 25% share clear)
+
+```bat
+pip install -r local_agent\requirements.txt
+START_FOLLOWER.bat
+```
+
+## Daily 25% rule
+
+Raat ko system aaj ke profit ka **25%** bill karta hai.  
+Bina **admin approve** ke nayi copy trades **block**.  
+Har PKT din ke liye unlock / approve chahiye.
+
+## Manual env
 
 ```bat
 set SERVER_URL=https://YOUR-APP.up.railway.app
-set ACCESS_TOKEN=jwt-from-login
+set ACCESS_TOKEN=jwt-from-POST-/me/agent-token
 set MT5_LOGIN=12345678
 set MT5_PASSWORD=...
-set MT5_SERVER=Exness-MT5Trial15
-set MT5_PATH=C:\PumpingBot\MT5_Instances\12345678\terminal64.exe
+set MT5_SERVER=Exness-MT5Real
+set MT5_PATH=
 set AGENT_ROLE=follower
 python local_agent\agent.py
-```
-
-Master ke liye `AGENT_ROLE=master`.
-
-## Requirements
-```bat
-pip install -r local_agent\requirements.txt
 ```

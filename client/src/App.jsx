@@ -4,6 +4,7 @@ import {
   fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
   uploadPaymentScreenshot, fetchAdminStats, fetchAdminUsers, fetchPendingPayments,
   confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
+  fetchAgentToken, fetchAgentSetup, adminDailyUnlock, adminDailyUnlockAllClear, eaDownloadUrl, eaInstallerUrl,
   fetchApiInfo, applyAppUpdate,
 } from './api';
 
@@ -105,6 +106,9 @@ function SubscriptionPage({ me, onRefresh }) {
   const [msg, setMsg] = useState('');
   const status = me?.subscription_status || 'expired';
   const fee = me?.subscription_fee ?? 10;
+  const sharePct = me?.admin_profit_share_pct ?? 25;
+  const dailyOwed = me?.daily_profit_owed ?? 0;
+  const unlocked = !!me?.daily_unlocked_today;
 
   const onFile = async (e) => {
     const file = e.target.files?.[0];
@@ -112,7 +116,8 @@ function SubscriptionPage({ me, onRefresh }) {
     setUploading(true);
     setMsg('');
     try {
-      const res = await uploadPaymentScreenshot(file);
+      const kind = dailyOwed > 0 ? 'daily_share' : 'auto';
+      const res = await uploadPaymentScreenshot(file, kind);
       setMsg(res.message || 'Uploaded');
       await onRefresh();
     } catch (ex) {
@@ -123,59 +128,161 @@ function SubscriptionPage({ me, onRefresh }) {
 
   return (
     <>
-      <h1>💳 Subscription</h1>
+      <h1>💳 Payment (Daily {sharePct}%)</h1>
       <div className="stats-grid">
         <div className="stat-card">
-          <div className="stat-label">Status</div>
-          <div className={`stat-value ${status === 'active' || status === 'trial' ? 'green' : 'red'}`}>{status}</div>
+          <div className="stat-label">Today unlock</div>
+          <div className={`stat-value ${unlocked ? 'green' : 'red'}`}>{unlocked ? 'YES' : 'LOCKED'}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Fee</div>
-          <div className="stat-value">{fmt(fee)}</div>
+          <div className="stat-label">25% due</div>
+          <div className="stat-value">{fmt(dailyOwed)}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Package</div>
-          <div className="stat-value" style={{ fontSize: '1.1rem' }}>{me?.subscription_days || 30} days</div>
+          <div className="stat-label">Pay status</div>
+          <div className="stat-value" style={{ fontSize: '1rem' }}>{me?.payment_status || 'clear'}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Expires</div>
-          <div className="stat-value" style={{ fontSize: '1rem' }}>
-            {me?.subscription_expires_at ? new Date(me.subscription_expires_at).toLocaleDateString() : '—'}
-          </div>
+          <div className="stat-label">PKT date</div>
+          <div className="stat-value" style={{ fontSize: '1rem' }}>{me?.pkt_today || '—'}</div>
         </div>
       </div>
 
-      {status === 'trial' && (
-        <div className="warn-banner" style={{ borderColor: '#60a5fa' }}>
-          🎁 <strong>24h free trial</strong> active
-          {me?.trial_remaining_seconds != null
-            ? ` — ~${Math.max(0, Math.floor(me.trial_remaining_seconds / 3600))}h remaining.`
-            : '.'}
-          {' '}Trial ke baad ${fee} pay + screenshot + admin approve zaroori.
-        </div>
-      )}
-      {status !== 'active' && status !== 'trial' && (
+      {!unlocked && (
         <div className="warn-banner">
-          Package inactive / expired. <strong>${fee}</strong> admin ({me?.admin_email || 'admin'}) ko pay karke
-          neeche payment screenshot upload karo. Admin approve karega tab hi signal bot start hoga.
+          Aaj trades <strong>locked</strong>. Daily profit ka <strong>{sharePct}%</strong> admin ko bhejo,
+          screenshot upload karo → Admin <strong>Approve</strong>. Phir Start Bot.
         </div>
       )}
-      {status === 'pending_review' && (
-        <div className="warn-banner">Screenshot uploaded — admin approval ka wait.</div>
-      )}
-      {status === 'active' && (
+      {unlocked && dailyOwed <= 0 && (
         <div className="warn-banner" style={{ borderColor: '#00ff88', color: '#00ff88' }}>
-          Subscription active — signals/bot use kar sakte ho.
+          Aaj unlock hai — PC agent ON + Start Bot se copy trades lagenge.
+          Raat ko agar profit aaya to {sharePct}% bill + dubara approve.
         </div>
       )}
+      {dailyOwed > 0 && (
+        <div className="warn-banner">
+          Amount due: <strong>{fmt(dailyOwed)}</strong> ({sharePct}% admin share).
+          USDT BEP20: <code style={{ wordBreak: 'break-all' }}>{me?.admin_usdt_bep20 || '—'}</code>
+          <br />Admin: {me?.admin_email || '—'}
+        </div>
+      )}
+      {status === 'pending_review' || me?.payment_status === 'pending_review' ? (
+        <div className="warn-banner">Screenshot uploaded — admin approval ka wait.</div>
+      ) : null}
 
       <div className="sub-upload-card">
         <h2>Payment screenshot upload</h2>
-        <p>Pay ${fee} → screenshot yahan bhejo → admin approve → 30 din package open.</p>
+        <p>
+          {dailyOwed > 0
+            ? `Pay ${fmt(dailyOwed)} (daily ${sharePct}%) → screenshot → admin approve → trades unlock.`
+            : `Agar bill pending ho to ${sharePct}% bhejo. Optional package fee $${fee} bhi yahan SS se clear ho sakti hai.`}
+        </p>
         <input type="file" accept="image/*,.pdf" onChange={onFile} disabled={uploading || me?.is_admin} />
         {uploading && <p>Uploading…</p>}
         {msg && <p className="error" style={{ color: '#00ff88' }}>{msg}</p>}
         {me?.has_payment_screenshot && <p style={{ color: '#888', marginTop: '.5rem' }}>Last screenshot on file ✓</p>}
+      </div>
+    </>
+  );
+}
+
+function PcSetupPage({ me, onRefresh }) {
+  const [setup, setSetup] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAgentSetup()
+      .then(async (s) => {
+        if (cancelled) return;
+        setSetup(s);
+        await onRefresh();
+      })
+      .catch((ex) => {
+        if (!cancelled) setErr(ex.response?.data?.detail || ex.message);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const token = setup?.ea_token || me?.ea_token || '';
+  const copyToken = async () => {
+    if (!token) return;
+    try {
+      await navigator.clipboard.writeText(token);
+      alert('Token copied! Ab PumpingBotSetup.bat chalao aur jab pooche paste karo.');
+    } catch (_) {
+      alert(token);
+    }
+  };
+
+  return (
+    <>
+      <h1>💻 PC Setup</h1>
+      <div className="warn-banner" style={{ borderColor: '#00ff88' }}>
+        <strong>Asaan tarika:</strong> Installer ZIP download → Setup.bat → token paste.
+        Installer EA + WebRequest khud laga dega. Rozana sirf MT5 + AutoTrading ON.
+      </div>
+      {err && <p className="error">{err}</p>}
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-label">EA status</div>
+          <div className={`stat-value ${(me?.ea_online || me?.agent_online || me?.vps_ready) ? 'green' : 'red'}`}>
+            {(me?.ea_online || me?.agent_online || me?.vps_ready) ? 'ONLINE' : 'OFFLINE'}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">MT5 login</div>
+          <div className="stat-value" style={{ fontSize: '1rem' }}>{me?.mt5_login || '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Today unlock</div>
+          <div className={`stat-value ${me?.daily_unlocked_today ? 'green' : 'red'}`}>
+            {me?.daily_unlocked_today ? 'YES' : 'NO'}
+          </div>
+        </div>
+      </div>
+
+      <div className="sub-upload-card" style={{ marginBottom: '1rem' }}>
+        <h2>1) Installer (recommended)</h2>
+        <p>Pehle MT5 page pe account save karo, phir:</p>
+        <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+          <a className="btn-start" href={eaInstallerUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
+            Download Installer (ZIP)
+          </a>
+          <button type="button" className="btn-start" disabled={!token} onClick={copyToken}>
+            Copy EA Token
+          </button>
+        </div>
+        {token ? (
+          <textarea
+            readOnly
+            value={token}
+            rows={2}
+            style={{ width: '100%', background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 8, padding: 8 }}
+          />
+        ) : (
+          <p style={{ color: '#f59e0b' }}>MT5 connect ke baad token yahan aayega.</p>
+        )}
+        <ol style={{ paddingLeft: '1.2rem', lineHeight: 1.7, color: '#ddd', marginTop: '1rem' }}>
+          <li>ZIP unzip karo</li>
+          <li><strong>PumpingBotSetup.bat</strong> double-click</li>
+          <li>Token paste</li>
+          <li>MT5 → AutoTrading ON → PumpingBotFollower chart pe drag (ek dafa)</li>
+        </ol>
+      </div>
+
+      <div className="sub-upload-card">
+        <h2>2) Advanced (manual EA only)</h2>
+        <a className="btn-start" href={eaDownloadUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
+          Download EA (.mq5) only
+        </a>
+        <p style={{ color: '#888', marginTop: 8 }}>
+          Detail: <code>USER_PC_SETUP.md</code>
+          {setup?.server_url ? <> · Server: <code>{setup.server_url}</code></> : null}
+        </p>
       </div>
     </>
   );
@@ -217,12 +324,26 @@ function AdminPage() {
         </div>
       )}
 
+      <div style={{ margin: '1rem 0', display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className="btn-start"
+          onClick={async () => {
+            const r = await adminDailyUnlockAllClear();
+            alert(r.message || 'Done');
+            load();
+          }}
+        >
+          Unlock all ($0 owed) today
+        </button>
+      </div>
+
       <h2 style={{ margin: '1.5rem 0 .75rem' }}>Pending payments / screenshots</h2>
       <div className="table-container">
         <table className="data-table">
           <thead>
             <tr>
-              <th>User</th><th>Email</th><th>Fee</th><th>Status</th><th>SS</th><th>Actions</th>
+              <th>User</th><th>Email</th><th>Amount</th><th>Kind</th><th>Status</th><th>SS</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -231,7 +352,8 @@ function AdminPage() {
                 <td><strong>{p.username}</strong></td>
                 <td>{p.email}</td>
                 <td>{fmt(p.total_owed || p.subscription_fee)}</td>
-                <td>{p.subscription_status || p.status}</td>
+                <td>{p.payment_kind || '—'}</td>
+                <td>{p.status || p.subscription_status}</td>
                 <td>
                   {p.payment_screenshot
                     ? <a href={paymentScreenshotUrl(p.user_id)} target="_blank" rel="noreferrer"
@@ -249,6 +371,10 @@ function AdminPage() {
                   <button className="btn-start" style={{ padding: '.35rem .7rem', fontSize: '.8rem' }}
                     onClick={async () => { await confirmPayment(p.user_id); load(); }}>
                     Approve
+                  </button>
+                  <button className="btn-start" style={{ padding: '.35rem .7rem', fontSize: '.8rem', background: '#2563eb' }}
+                    onClick={async () => { await adminDailyUnlock(p.user_id); load(); }}>
+                    Unlock today
                   </button>
                   <button className="btn-stop" style={{ padding: '.35rem .7rem', fontSize: '.8rem' }}
                     onClick={async () => { await rejectPayment(p.user_id); load(); }}>
@@ -279,6 +405,10 @@ function AdminPage() {
                 <td>{u.subscription_expires_at ? new Date(u.subscription_expires_at).toLocaleDateString() : '—'}</td>
                 <td>{u.bot_active ? 'ON' : 'OFF'}</td>
                 <td style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
+                  <button className="btn-start" style={{ padding: '.3rem .6rem', fontSize: '.75rem' }}
+                    onClick={async () => { await adminDailyUnlock(u.user_id); load(); }}>
+                    Unlock
+                  </button>
                   <button className="btn-start" style={{ padding: '.3rem .6rem', fontSize: '.75rem' }}
                     onClick={async () => { await toggleUserBot(u.user_id); load(); }}>
                     Toggle Bot
@@ -388,11 +518,14 @@ export default function App() {
   const isAdmin = me?.is_admin || me?.username === 'admin';
   const isFollower = me?.role === 'follower';
   const subActive = isAdmin || me?.subscription_status === 'active' || me?.subscription_status === 'trial';
-  const mt5Live = !!(me?.mt5_ready || me?.vps_ready);
-  const canStartBot = !!(me?.mt5_connected && subActive);
+  const mt5Live = !!(me?.mt5_ready || me?.vps_ready || me?.agent_online);
+  const dailyOk = isAdmin || !!me?.daily_unlocked_today;
+  const canStartBot = !!(me?.mt5_connected && dailyOk && (me?.daily_profit_owed || 0) <= 0);
   const startBlockedReason = !me?.mt5_connected
     ? 'Pehle MT5 connect karo'
-    : (!subActive ? 'Subscription active chahiye' : '');
+    : (!dailyOk
+      ? 'Aaj admin unlock / 25% approve chahiye'
+      : ((me?.daily_profit_owed || 0) > 0 ? 'Pehle daily 25% clear karo' : ''));
 
   const toggleBot = async (wantOn) => {
     setBotBusy(true);
@@ -441,7 +574,8 @@ export default function App() {
 
   const nav = [
     { id: 'dashboard', icon: '📊', label: 'Dashboard' },
-    { id: 'subscription', icon: '💳', label: 'Subscription' },
+    { id: 'subscription', icon: '💳', label: 'Payment' },
+    { id: 'pc-setup', icon: '💻', label: 'PC Setup' },
     { id: 'mt5', icon: '🔗', label: 'MT5' },
     { id: 'signals', icon: '📡', label: 'Signals' },
     { id: 'open', icon: '🔴', label: 'Open Trades' },
@@ -498,25 +632,31 @@ export default function App() {
             <h1>Dashboard</h1>
             <div style={{ display: 'flex', gap: '.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
               <span className={mt5Live ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
-                {mt5Live ? 'MT5 Live' : me?.mt5_connected ? (me?.vps_status === 'starting' ? 'VPS Connecting…' : 'MT5 Syncing…') : 'MT5 Not Connected'}
+                {mt5Live ? 'MT5 Live (PC)' : me?.mt5_connected ? 'PC Agent offline…' : 'MT5 Not Connected'}
               </span>
-              <span className={subActive ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
-                Sub: {me?.subscription_status || 'expired'}
+              <span className={dailyOk ? 'badge-on' : 'badge-off'} style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem' }}>
+                Today: {dailyOk ? 'Unlocked' : 'Locked'}
               </span>
               {me?.role && (
                 <span style={{ padding: '.35rem .75rem', borderRadius: 6, fontSize: '.85rem', background: '#222', color: '#ccc' }}>
-                  {me.role === 'master' ? 'Master — trades copy to followers' : 'Follower — master trades mirror here'}
+                  {me.role === 'master' ? 'Master — trades copy to followers' : 'Follower — copy on your PC agent'}
                 </span>
               )}
             </div>
-            {!subActive && (
+            {!dailyOk && (
               <div className="warn-banner">
-                Access band — free trial khatam ya unpaid. <strong>Subscription</strong> page se ${me?.subscription_fee ?? 10} screenshot upload karo.
+                Aaj trades locked. <strong>Payment</strong> page se daily 25% screenshot → admin Approve
+                (ya admin Daily Unlock). Phir <strong>PC Setup</strong> + Start Bot.
+              </div>
+            )}
+            {(me?.daily_profit_owed || 0) > 0 && (
+              <div className="warn-banner">
+                Daily 25% due: <strong>{fmt(me.daily_profit_owed)}</strong> — Payment page pe upload karo.
               </div>
             )}
             {me?.subscription_status === 'trial' && (
               <div className="warn-banner" style={{ borderColor: '#60a5fa' }}>
-                🎁 Free trial active — ~{Math.max(0, Math.floor((me.trial_remaining_seconds || 0) / 3600))}h left.
+                🎁 Free trial / pehla din — ~{Math.max(0, Math.floor((me.trial_remaining_seconds || 0) / 3600))}h left.
               </div>
             )}
             <div className="stats-grid">
@@ -548,7 +688,12 @@ export default function App() {
 
             {!me?.mt5_connected && (
               <div className="warn-banner">
-                ⚠️ Pehle <strong>MT5</strong> page se account connect karo, phir Start Bot dabao.
+                ⚠️ Pehle <strong>MT5</strong> connect + <strong>PC Setup</strong> pe agent chalao, phir Start Bot.
+              </div>
+            )}
+            {me?.mt5_connected && !mt5Live && (
+              <div className="warn-banner">
+                EA offline — Exness MT5 open karo, Algo ON, PumpingBot EA chart pe (dekhó <strong>PC Setup</strong>).
               </div>
             )}
 
@@ -598,6 +743,7 @@ export default function App() {
         )}
 
         {page === 'subscription' && <SubscriptionPage me={me} onRefresh={refresh} />}
+        {page === 'pc-setup' && <PcSetupPage me={me} onRefresh={refresh} />}
         {page === 'admin-dash' && isAdmin && <AdminPage />}
 
         {page === 'open' && (
@@ -715,8 +861,8 @@ export default function App() {
           <>
             <h1>MT5 Connection</h1>
             <p className="mt5-hint">
-              Mobile se MT5 login save karo, phir Dashboard pe <strong>Start Bot</strong> —
-              trading VPS pe auto start hogi. Multiple accounts? <strong>Disconnect</strong> → naya login.
+              Yahan login <strong>save</strong> hota hai. Trades aapke PC pe <strong>Exness MT5 + PumpingBot EA</strong> se
+              lagenge — <strong>PC Setup</strong> dekho (ek dafa EA). Rozana bas MT5 + Algo ON.
             </p>
 
             {me?.mt5_connected ? (
@@ -724,7 +870,7 @@ export default function App() {
                 <div className="mt5-status-header">
                   <span className="mt5-status-icon">{mt5Live ? '✅' : '⏳'}</span>
                   <strong className={mt5Live ? 'green' : ''}>
-                    {mt5Live ? 'MT5 Connected (VPS)' : (me?.bot_active ? 'VPS Connecting…' : 'Saved — Start Bot')}
+                    {mt5Live ? 'MT5 / EA Connected' : 'Saved — Exness MT5 + EA chalao'}
                   </strong>
                 </div>
                 <div className="mt5-status-details">
@@ -734,18 +880,11 @@ export default function App() {
                   {me.is_cent_account && (
                     <p><span>Type:</span> Cent account ({me.account_currency || 'USC'})</p>
                   )}
-                  {me.vps_status && <p><span>VPS:</span> {me.vps_status}</p>}
+                  {me.hosting_mode && <p><span>Host:</span> {me.hosting_mode}</p>}
                 </div>
-                {!mt5Live && me?.bot_active && (
+                {!mt5Live && (
                   <p className="mt5-sync-note">
-                    VPS pe account connect ho raha hai — usually 30–90 sec.
-                    PC pe kuch install/chalane ki zarurat nahi.
-                  </p>
-                )}
-                {!mt5Live && !me?.bot_active && (
-                  <p className="mt5-sync-note">
-                    Account save ho gaya. Dashboard pe <strong>Start Bot</strong> dabao —
-                    VPS agent tabhi start hoga.
+                    PC Setup se EA download + token → chart pe lagao → AutoTrading ON.
                   </p>
                 )}
                 <button
