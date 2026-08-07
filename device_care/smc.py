@@ -858,12 +858,24 @@ def enrich_legacy_reasons(hit: dict, timeframe: str = "") -> dict:
             "Smart money continuation entry zone",
             "SL beyond retest wick; TP measured move / next liquidity",
         ]
-    elif pattern in ("Dragonfly Doji", "Hammer", "Doji + Green"):
+    elif pattern in (
+        "Dragonfly Doji", "Hammer", "Doji + Green",
+        "Bullish Engulfing", "Morning Star", "Piercing Line",
+        "Shooting Star", "Gravestone Doji",
+        "Bearish Engulfing", "Evening Star", "Dark Cloud",
+    ):
+        bullish = direction == "UP"
+        zone = "support" if bullish else "resistance"
         reasons = [
-            "1D support pe rejection candle (Doji/Hammer)",
-            "Next candle green close = confirmation",
-            "Daily bias LONG — swing traders ka classic reversal",
+            f"Candle pattern {pattern} @ {zone} (price-action angle)",
+            "Confirmation candle direction ke saath align",
+            "Indicators nahi — sirf OHLC candle geometry + S/R context",
+            "Har lihaaz: wick rejection · body strength · level proximity",
         ]
+        if pattern in ("Morning Star", "Evening Star"):
+            reasons.append("3-candle star structure — stronger multi-bar angle")
+        if pattern in ("Bullish Engulfing", "Bearish Engulfing"):
+            reasons.append("Engulfing body ne pehli candle ko fully cover kiya")
     else:
         reasons = [detail or f"{pattern} structure confirm"]
 
@@ -881,10 +893,18 @@ def enrich_legacy_reasons(hit: dict, timeframe: str = "") -> dict:
             "S/R Breakout": "Classic · S/R",
             "Retest Wait": "Classic · Retest",
             "Retest Complete": "Classic · Retest",
-            "Dragonfly Doji": "Classic · Candle",
-            "Hammer": "Classic · Candle",
-            "Doji + Green": "Classic · Candle",
-        }.get(pattern, "Classic")
+            "Dragonfly Doji": "Candle · Support",
+            "Hammer": "Candle · Support",
+            "Doji + Green": "Candle · Support",
+            "Bullish Engulfing": "Candle · Support",
+            "Morning Star": "Candle · Support",
+            "Piercing Line": "Candle · Support",
+            "Shooting Star": "Candle · Resistance",
+            "Gravestone Doji": "Candle · Resistance",
+            "Bearish Engulfing": "Candle · Resistance",
+            "Evening Star": "Candle · Resistance",
+            "Dark Cloud": "Candle · Resistance",
+        }.get(pattern, "Classic · Pattern")
 
     # Always refresh advice to include full basis
     existing = (hit.get("advice") or "").strip()

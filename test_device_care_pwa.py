@@ -29,6 +29,14 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertIn("Crypto Pumping", html)
         self.assertIn('id="updateBanner"', html)
         self.assertIn("Update Now", html)
+        self.assertIn("checkServerVersion", html)
+        self.assertIn("/api/version", html)
+        self.assertIn("btnCheckUpdate", html)
+        self.assertIn("btnUpdateMain", html)
+        self.assertIn("btnUpdateAuth", html)
+        self.assertIn("setButtonsReady", html)
+        self.assertIn("updatePulse", html)
+        self.assertIn("koi link nahi", html)
         self.assertIn('id="authScreen"', html)
         self.assertIn('id="userLoginForm"', html)
         self.assertIn('id="adminLoginForm"', html)
@@ -92,10 +100,19 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertIn('"/my-signals"', service_worker)
         self.assertIn("Crypto Pumping", service_worker)
         self.assertIn("SKIP_WAITING", service_worker)
-        self.assertIn("cps-v4.1.3", service_worker)
+        self.assertIn("cps-v4.2.3", service_worker)
         for icon in manifest["icons"]:
             self.assertIn(f"${{BASE}}/{icon['src']}", service_worker)
         self.assertIn('e.request.method !== "GET"', service_worker)
+
+    def test_version_endpoint_for_in_app_update(self):
+        response = self.client.get("/my-signals/api/version")
+        self.assertEqual(200, response.status_code)
+        data = response.json()
+        self.assertTrue(data.get("ok"))
+        self.assertEqual("4.2.3", data.get("version"))
+        self.assertEqual("4.2.3", data.get("appVersion"))
+        self.assertEqual("Crypto Pumping", data.get("app"))
 
 
 if __name__ == "__main__":

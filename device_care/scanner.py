@@ -4,10 +4,11 @@ Mount: /my-signals  (legacy alias: /device-care)
 
 Sirf USDT-M futures (spot nahi).
 
-Default focus: 1H + 4H + 1D
-  Classic: Triangle · S/R→retest · 1D Doji/Hammer@support
-  SMC (pro): BOS/CHoCH · Order Block · FVG · Liquidity Sweep · Equal Hi/Lo · Range Breakout
-  Har alert: Entry + SL + TP + RR + reasons[] (mukammal wazahat)
+Default focus: 1H + 4H + 1D — indicators/SMC OFF
+  Candle patterns (har TF / har angle): Doji · Hammer · Engulfing · Star · Shooting Star…
+  Triangle patterns: tip-to-tip compression → break up/down
+  Support: S/R → retest pipeline
+  Har alert: Entry + SL + TP + RR + chart + reasons[] (mukammal wazahat)
   Score >= 90 → ntfy phone push
 """
 import asyncio
@@ -37,7 +38,7 @@ from device_care.smc import (
 )
 
 APP_NAME = "Crypto Pumping"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.3")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.3")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -91,6 +92,14 @@ PATTERN_COOLDOWN_SEC = {
     "Dragonfly Doji": D1_PATTERN_ALERT_TTL_SEC,
     "Hammer": D1_PATTERN_ALERT_TTL_SEC,
     "Doji + Green": D1_PATTERN_ALERT_TTL_SEC,
+    "Bullish Engulfing": D1_PATTERN_ALERT_TTL_SEC,
+    "Bearish Engulfing": D1_PATTERN_ALERT_TTL_SEC,
+    "Morning Star": D1_PATTERN_ALERT_TTL_SEC,
+    "Evening Star": D1_PATTERN_ALERT_TTL_SEC,
+    "Shooting Star": D1_PATTERN_ALERT_TTL_SEC,
+    "Gravestone Doji": D1_PATTERN_ALERT_TTL_SEC,
+    "Piercing Line": D1_PATTERN_ALERT_TTL_SEC,
+    "Dark Cloud": D1_PATTERN_ALERT_TTL_SEC,
     "Range Breakout": int(os.environ.get("DC_RANGE_COOLDOWN_SEC", str(6 * 3600))),
     "BOS": int(os.environ.get("DC_BOS_COOLDOWN_SEC", str(6 * 3600))),
     "CHoCH": int(os.environ.get("DC_CHOCH_COOLDOWN_SEC", str(6 * 3600))),
@@ -110,16 +119,36 @@ NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 NTFY_TITLE = os.environ.get("NTFY_TITLE", "Crypto Pumping")
 
 FUTURES_BASE = "https://contract.mexc.com"
-CANDLE_PATTERNS = frozenset({"Dragonfly Doji", "Hammer", "Doji + Green"})
+CANDLE_PATTERNS = frozenset({
+    "Dragonfly Doji",
+    "Hammer",
+    "Doji + Green",
+    "Bullish Engulfing",
+    "Bearish Engulfing",
+    "Morning Star",
+    "Evening Star",
+    "Shooting Star",
+    "Gravestone Doji",
+    "Piercing Line",
+    "Dark Cloud",
+})
+BULLISH_CANDLES = frozenset({
+    "Dragonfly Doji", "Hammer", "Doji + Green",
+    "Bullish Engulfing", "Morning Star", "Piercing Line",
+})
+BEARISH_CANDLES = frozenset({
+    "Shooting Star", "Gravestone Doji",
+    "Bearish Engulfing", "Evening Star", "Dark Cloud",
+})
 CLEAN_PATTERNS = frozenset({"Clean Breakout", "Triangle Breakout"})
 # Back-compat alias used by TTL helpers
 D1_PATTERNS = CANDLE_PATTERNS
-# User strategy ON by default
+# User strategy ON by default — candle + triangle focus (SMC/indicators OFF)
 ENABLE_CANDLE_PATTERNS = os.environ.get("DC_ENABLE_CANDLE_PATTERNS", "1") == "1"
 ENABLE_SR_BREAKOUTS = os.environ.get("DC_ENABLE_SR", "1") == "1"
 ENABLE_TRIANGLE_BREAK = os.environ.get("DC_ENABLE_TRIANGLE", "1") == "1"
-ENABLE_SMC = os.environ.get("DC_ENABLE_SMC", "1") == "1"
-ENABLE_RANGE_BREAKOUT = os.environ.get("DC_ENABLE_RANGE", "1") == "1"
+ENABLE_SMC = os.environ.get("DC_ENABLE_SMC", "0") == "1"
+ENABLE_RANGE_BREAKOUT = os.environ.get("DC_ENABLE_RANGE", "0") == "1"
 # Order Block OFF — user: OB signals flop (wrong direction / SL hit)
 ENABLE_ORDER_BLOCK = os.environ.get("DC_ENABLE_OB", "0") == "1"
 # Equal Liquidity OFF — user: also flopping
@@ -129,11 +158,13 @@ SCAN_CONCURRENCY = int(os.environ.get("DC_SCAN_CONCURRENCY", "12"))
 # User kisi bhi TF ko on/off kar sakta hai
 BREAKOUT_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
 TRIANGLE_TFS = frozenset({"1h", "4H", "D1", "1W"})
-CANDLE_TFS = frozenset({"D1"})
+# Multi-angle: candle patterns on every primary TF (not D1-only)
+CANDLE_TFS = frozenset({"1h", "4H", "D1", "1W"})
 SIGNAL_CAPABLE_TFS = frozenset({"5m", "15m", "1h", "4H", "D1", "1W"})
 PRIMARY_TIP_TFS = frozenset({"1h", "4H", "D1"})
-# Doji/Hammer must print near support (ATR fraction)
+# Doji/Hammer must print near support / resistance (ATR fraction)
 SUPPORT_NEAR_ATR = float(os.environ.get("DC_SUPPORT_NEAR_ATR", "0.55"))
+RESISTANCE_NEAR_ATR = float(os.environ.get("DC_RESISTANCE_NEAR_ATR", "0.55"))
 # S/R must align on these higher timeframes (fake breakout filter)
 CONFLUENCE_TFS = ("4H", "D1", "1W")
 CONFLUENCE_FETCH = [
@@ -204,30 +235,34 @@ scan_stats = {
     "tfButtons": TF_BUTTONS,
     "enabledTfs": dict(enabled_tfs),
     "patterns": [
-        "Range Breakout",
-        "BOS",
-        "CHoCH",
-        "Fair Value Gap",
-        "Liquidity Sweep",
         "Triangle Breakout",
         "Retest Complete",
         "Dragonfly Doji",
         "Hammer",
         "Doji + Green",
+        "Bullish Engulfing",
+        "Bearish Engulfing",
+        "Morning Star",
+        "Evening Star",
+        "Shooting Star",
+        "Gravestone Doji",
+        "Piercing Line",
+        "Dark Cloud",
     ],
     "strategy": {
         "5m": "Off by default",
         "15m": "Off by default",
-        "1h": "Range break · SMC (BOS/FVG/Liq) · Triangle · S/R→retest",
-        "4H": "Range break · SMC · Triangle · S/R→retest",
-        "D1": "SMC · Range · Support Doji/Hammer · Triangle · S/R→retest",
-        "1W": "Off by default",
+        "1h": "Candle patterns (har angle) · Triangle break · S/R→retest",
+        "4H": "Candle patterns · Triangle compression break · S/R→retest",
+        "D1": "Candle reversals @ S/R · Triangle · S/R→retest",
+        "1W": "Off by default — weekly candle + triangle when on",
     },
     "smcEnabled": ENABLE_SMC,
     "orderBlockEnabled": ENABLE_ORDER_BLOCK,
     "equalLiquidityEnabled": ENABLE_EQUAL_LIQUIDITY,
     "rangeBreakoutEnabled": ENABLE_RANGE_BREAKOUT,
-    "chartStyle": "simple candles only (no tip/trendline draw)",
+    "chartStyle": "milky crystal candles + triangle tip lines + Entry/SL/TP",
+    "focus": "candle patterns + triangle patterns (indicators/SMC off)",
     "riskRules": {
         "sl": "recent swing / prior break area",
         "tp": "RR scales with score (~1.2–3.0)",
@@ -313,6 +348,19 @@ async def status():
     return {"ok": True, "app": APP_NAME, **scan_stats}
 
 
+@router.get("/api/version")
+async def app_version():
+    """Lightweight in-app update check — UI polls this, no external link needed."""
+    return {
+        "ok": True,
+        "app": APP_NAME,
+        "version": APP_VERSION,
+        "appVersion": APP_VERSION,
+        "build": APP_VERSION,
+        "updatedAt": int(time.time()),
+    }
+
+
 @router.get("/api/alerts")
 async def alerts():
     prune_alert_history()
@@ -325,7 +373,7 @@ async def get_timeframes():
         "buttons": TF_BUTTONS,
         "enabled": dict(enabled_tfs),
         "signalCapable": sorted(SIGNAL_CAPABLE_TFS),
-        "note": "1H+4H+1D default. SMC + Range breakouts + classic triangle/retest/Doji. Har trade pe reasons[].",
+        "note": "1H+4H+1D default. Candle patterns + Triangle breaks (har angle). SMC/indicators OFF. Har trade pe chart + reasons[].",
     }
 
 
@@ -679,18 +727,18 @@ def mark_diversified_emit(sym: str, tf: str = "", now: float | None = None):
 
 
 def pattern_priority(hit: dict) -> int:
-    """Higher = emit first when ranking candidates."""
+    """Higher = emit first when ranking candidates. Candle + triangle first."""
     p = hit.get("pattern") or ""
+    if p == "Triangle Breakout":
+        return 120 + int(hit.get("score") or 0)
+    if p in CANDLE_PATTERNS:
+        return 115 + int(hit.get("score") or 0)
     if p == "Retest Complete":
         return 110 + int(hit.get("score") or 0)
     if p in ("Order Block", "Fair Value Gap", "Liquidity Sweep"):
         return 105 + int(hit.get("score") or 0)
     if p in ("BOS", "CHoCH", "Equal Liquidity", "Range Breakout"):
         return 102 + int(hit.get("score") or 0)
-    if p == "Triangle Breakout":
-        return 100 + int(hit.get("score") or 0)
-    if p in CANDLE_PATTERNS:
-        return 90 + int(hit.get("score") or 0)
     if p == "Clean Breakout":
         return 80 + int(hit.get("score") or 0)
     if p == "S/R Breakout":
@@ -1028,12 +1076,23 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score += 4
 
     elif pattern in CANDLE_PATTERNS:
-        # Pattern candle is -3; confirmation (last closed) is -2
-        _, _, _, _, body_p, rng_p, uw_p, lw_p = _candle_parts(ohlc, -3)
-        _, _, _, _, body_g, rng_g, _, _ = _candle_parts(ohlc, -2)
-        pattern_low = float(l[-3])
+        # Multi-angle candle: bullish @ support / bearish @ resistance
+        bullish = pattern in BULLISH_CANDLES or direction == "UP"
+        # Pattern candle often -3; confirmation -2 (engulfing uses -2 as signal)
+        p_idx = -3 if pattern in (
+            "Dragonfly Doji", "Hammer", "Doji + Green",
+            "Morning Star", "Evening Star",
+            "Shooting Star", "Gravestone Doji",
+        ) else -2
+        try:
+            _, _, _, _, body_p, rng_p, uw_p, lw_p = _candle_parts(ohlc, p_idx)
+        except Exception:
+            body_p, rng_p, uw_p, lw_p = 0.0, 0.0001, 0.0, 0.0
+        pattern_low = float(l[p_idx])
+        pattern_high = float(h[p_idx])
         conf_low = candle_low
-        score = 70
+        conf_high = candle_high
+        score = 72
         if pattern == "Dragonfly Doji":
             score = 78
             wick_ratio = lw_p / (rng_p or 0.0001)
@@ -1044,19 +1103,41 @@ def enrich_trade_plan(ohlc: dict, hit: dict) -> dict:
             score = 74
             wick_ratio = lw_p / max(body_p, 0.0001)
             score += min(14, int(wick_ratio * 3))
+        elif pattern == "Bullish Engulfing":
+            score = 80
+            score += min(12, int(body_str * 8))
+        elif pattern == "Morning Star":
+            score = 82
+        elif pattern == "Piercing Line":
+            score = 76
+        elif pattern == "Shooting Star":
+            score = 74
+            wick_ratio = uw_p / max(body_p, 0.0001)
+            score += min(14, int(wick_ratio * 3))
+        elif pattern == "Gravestone Doji":
+            score = 78
+            wick_ratio = uw_p / (rng_p or 0.0001)
+            score += min(15, int(wick_ratio * 20))
+        elif pattern == "Bearish Engulfing":
+            score = 80
+            score += min(12, int(body_str * 8))
+        elif pattern == "Evening Star":
+            score = 82
+        elif pattern == "Dark Cloud":
+            score = 76
         else:  # Doji + Green
             score = 72
             if body_p <= rng_p * 0.05:
                 score += 5
             if lw_p >= rng_p * 0.4:
                 score += 5
-        # Green confirmation strength on last closed candle
-        score += min(15, int(body_str * 10))
-        if body_g >= rng_g * 0.4:
-            score += 4
-        if (close - conf_low) / (rng_g or 0.0001) > 0.7:
-            score += 4
-        sl = min(pattern_low, conf_low) - buffer
+        score += min(12, int(body_str * 8))
+        if bullish:
+            sl = min(pattern_low, conf_low) - buffer
+        else:
+            sl = max(pattern_high, conf_high) + buffer
+            if sl <= entry:
+                sl = entry + max(buffer * 2, abs(entry) * 0.004)
 
     elif pattern in SMC_PATTERNS:
         # Smart Money Concepts — structure-aware SL
@@ -1518,6 +1599,42 @@ def _near_support(ohlc: dict, pattern_idx: int = -3) -> bool:
     return pl <= float(support) + tol
 
 
+def _near_resistance(ohlc: dict, pattern_idx: int = -3) -> bool:
+    """Pattern candle high near recent resistance — bearish reversal angle."""
+    highs = ohlc.get("highs") or []
+    closes = ohlc.get("closes") or []
+    n = len(closes)
+    if n < 4:
+        return False
+    idx = pattern_idx if pattern_idx >= 0 else n + pattern_idx
+    if idx < 1 or idx >= n:
+        return False
+    look = min(LOOKBACK, max(3, idx))
+    start = max(0, idx - look)
+    hist = highs[start:idx]
+    if not hist:
+        return True
+    resistance = max(hist)
+    avg_rng = _avg_range(ohlc) or abs(closes[idx]) * 0.01
+    tol = max(avg_rng * RESISTANCE_NEAR_ATR, abs(closes[idx]) * 0.004)
+    ph = float(highs[idx])
+    return ph >= float(resistance) - tol
+
+
+def _is_red_confirmation(ohlc: dict, pattern_close: float, idx: int = -2) -> bool:
+    """Last closed candle red and closes below pattern close — bearish confirm."""
+    if len(ohlc["closes"]) < abs(idx):
+        return False
+    o_r, _, _, c_r, body_r, rng_r, _, _ = _candle_parts(ohlc, idx)
+    if c_r >= o_r:
+        return False
+    if body_r < rng_r * 0.2:
+        return False
+    if c_r >= pattern_close:
+        return False
+    return True
+
+
 def detect_dragonfly_doji(ohlc: dict) -> dict | None:
     """
     Dragonfly Doji on candle -3 near support, then last closed (-2) green close.
@@ -1540,7 +1657,7 @@ def detect_dragonfly_doji(ohlc: dict) -> dict | None:
         "level": min(float(shape["level"]), l_g),
         "close": c_g,
         "candleTime": ohlc["times"][-2],
-        "advice": "1D support pe Dragonfly + green close — LONG Entry/SL/TP dekho.",
+        "advice": "Support pe Dragonfly + green close — LONG Entry/SL/TP dekho.",
     }
 
 
@@ -1566,7 +1683,7 @@ def detect_hammer(ohlc: dict) -> dict | None:
         "level": min(float(shape["level"]), l_g),
         "close": c_g,
         "candleTime": ohlc["times"][-2],
-        "advice": "1D support pe Hammer + green close — LONG Entry/SL/TP dekho.",
+        "advice": "Support pe Hammer + green close — LONG Entry/SL/TP dekho.",
     }
 
 
@@ -1597,19 +1714,274 @@ def detect_doji_then_green(ohlc: dict) -> dict | None:
         "level": l_g,
         "close": c_g,
         "candleTime": ohlc["times"][green_i],
-        "advice": "1D support pe Doji + green close — LONG Entry/SL/TP dekho.",
+        "advice": "Support pe Doji + green close — LONG Entry/SL/TP dekho.",
+    }
+
+
+def detect_bullish_engulfing(ohlc: dict) -> dict | None:
+    """Prior red candle fully engulfed by green body near support."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o1, h1, l1, c1, body1, _, _, _ = _candle_parts(ohlc, -3)
+    o2, h2, l2, c2, body2, _, _, _ = _candle_parts(ohlc, -2)
+    if c1 >= o1:
+        return None  # prior must be red
+    if c2 <= o2:
+        return None  # signal must be green
+    if body2 < body1 * 1.05:
+        return None
+    if o2 > c1 or c2 < o1:
+        return None  # must engulf prior body
+    if not _near_support(ohlc, -2):
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Bullish Engulfing",
+        "patternDetail": "Support · bullish engulfing",
+        "level": min(l1, l2),
+        "close": c2,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Support pe bullish engulfing — LONG. Har angle: body ne pehli red ko cover kiya.",
+    }
+
+
+def detect_bearish_engulfing(ohlc: dict) -> dict | None:
+    """Prior green fully engulfed by red body near resistance."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o1, h1, l1, c1, body1, _, _, _ = _candle_parts(ohlc, -3)
+    o2, h2, l2, c2, body2, _, _, _ = _candle_parts(ohlc, -2)
+    if c1 <= o1:
+        return None
+    if c2 >= o2:
+        return None
+    if body2 < body1 * 1.05:
+        return None
+    if o2 < c1 or c2 > o1:
+        return None
+    if not _near_resistance(ohlc, -2):
+        return None
+    return {
+        "side": "SELL",
+        "direction": "DOWN",
+        "pattern": "Bearish Engulfing",
+        "patternDetail": "Resistance · bearish engulfing",
+        "level": max(h1, h2),
+        "close": c2,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Resistance pe bearish engulfing — SHORT. Opposite angle rejection.",
+    }
+
+
+def detect_shooting_star(ohlc: dict) -> dict | None:
+    """Long upper wick rejection at resistance + red confirmation."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, -3)
+    if body <= 0:
+        return None
+    if _is_doji(body, rng):
+        return None
+    if uw < body * 2:
+        return None
+    if lw > body * 0.3:
+        return None
+    if uw < rng * 0.5:
+        return None
+    if not _near_resistance(ohlc, -3):
+        return None
+    if not _is_red_confirmation(ohlc, c, -2):
+        return None
+    _, _, _, c_r, _, _, _, _ = _candle_parts(ohlc, -2)
+    return {
+        "side": "SELL",
+        "direction": "DOWN",
+        "pattern": "Shooting Star",
+        "patternDetail": "Resistance · shooting star + red close",
+        "level": h,
+        "close": c_r,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Resistance pe shooting star — SHORT. Upar se rejection angle.",
+    }
+
+
+def detect_gravestone_doji(ohlc: dict) -> dict | None:
+    """Gravestone doji at resistance + red confirmation."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o, h, l, c, body, rng, uw, lw = _candle_parts(ohlc, -3)
+    if not _is_doji(body, rng):
+        return None
+    if uw < rng * 0.6:
+        return None
+    if lw > rng * 0.1:
+        return None
+    if not _near_resistance(ohlc, -3):
+        return None
+    if not _is_red_confirmation(ohlc, c, -2):
+        return None
+    _, _, _, c_r, _, _, _, _ = _candle_parts(ohlc, -2)
+    return {
+        "side": "SELL",
+        "direction": "DOWN",
+        "pattern": "Gravestone Doji",
+        "patternDetail": "Resistance · gravestone + red close",
+        "level": h,
+        "close": c_r,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Resistance pe gravestone doji — SHORT. Top rejection angle.",
+    }
+
+
+def detect_morning_star(ohlc: dict) -> dict | None:
+    """3-candle morning star near support: red → small → strong green."""
+    if len(ohlc["closes"]) < 5:
+        return None
+    o1, _, l1, c1, body1, rng1, _, _ = _candle_parts(ohlc, -4)
+    o2, _, l2, c2, body2, rng2, _, _ = _candle_parts(ohlc, -3)
+    o3, _, l3, c3, body3, rng3, _, _ = _candle_parts(ohlc, -2)
+    if c1 >= o1:
+        return None
+    if body2 > rng2 * 0.35:
+        return None  # star / small body
+    if c3 <= o3 or body3 < body1 * 0.6:
+        return None
+    if c3 <= (o1 + c1) / 2:
+        return None
+    if not _near_support(ohlc, -3):
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Morning Star",
+        "patternDetail": "Support · morning star (3-candle)",
+        "level": min(l1, l2, l3),
+        "close": c3,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Morning star @ support — LONG. 3-candle reversal angle.",
+    }
+
+
+def detect_evening_star(ohlc: dict) -> dict | None:
+    """3-candle evening star near resistance."""
+    if len(ohlc["closes"]) < 5:
+        return None
+    o1, h1, _, c1, body1, rng1, _, _ = _candle_parts(ohlc, -4)
+    o2, h2, _, c2, body2, rng2, _, _ = _candle_parts(ohlc, -3)
+    o3, h3, _, c3, body3, rng3, _, _ = _candle_parts(ohlc, -2)
+    if c1 <= o1:
+        return None
+    if body2 > rng2 * 0.35:
+        return None
+    if c3 >= o3 or body3 < body1 * 0.6:
+        return None
+    if c3 >= (o1 + c1) / 2:
+        return None
+    if not _near_resistance(ohlc, -3):
+        return None
+    return {
+        "side": "SELL",
+        "direction": "DOWN",
+        "pattern": "Evening Star",
+        "patternDetail": "Resistance · evening star (3-candle)",
+        "level": max(h1, h2, h3),
+        "close": c3,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Evening star @ resistance — SHORT. 3-candle top angle.",
+    }
+
+
+def detect_piercing_line(ohlc: dict) -> dict | None:
+    """Red then green that closes above midpoint of prior body @ support."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o1, _, l1, c1, body1, _, _, _ = _candle_parts(ohlc, -3)
+    o2, _, l2, c2, body2, _, _, _ = _candle_parts(ohlc, -2)
+    if c1 >= o1 or c2 <= o2:
+        return None
+    mid = (o1 + c1) / 2
+    if o2 > c1:  # should gap/open into weakness
+        pass
+    if c2 < mid or c2 >= o1:
+        return None
+    if body2 < body1 * 0.5:
+        return None
+    if not _near_support(ohlc, -2):
+        return None
+    return {
+        "side": "BUY",
+        "direction": "UP",
+        "pattern": "Piercing Line",
+        "patternDetail": "Support · piercing line",
+        "level": min(l1, l2),
+        "close": c2,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Piercing line @ support — LONG. Mid-body reclaim angle.",
+    }
+
+
+def detect_dark_cloud(ohlc: dict) -> dict | None:
+    """Green then red that closes below midpoint of prior body @ resistance."""
+    if len(ohlc["closes"]) < 4:
+        return None
+    o1, h1, _, c1, body1, _, _, _ = _candle_parts(ohlc, -3)
+    o2, h2, _, c2, body2, _, _, _ = _candle_parts(ohlc, -2)
+    if c1 <= o1 or c2 >= o2:
+        return None
+    mid = (o1 + c1) / 2
+    if c2 > mid or c2 <= o1:
+        return None
+    if body2 < body1 * 0.5:
+        return None
+    if not _near_resistance(ohlc, -2):
+        return None
+    return {
+        "side": "SELL",
+        "direction": "DOWN",
+        "pattern": "Dark Cloud",
+        "patternDetail": "Resistance · dark cloud cover",
+        "level": max(h1, h2),
+        "close": c2,
+        "candleTime": ohlc["times"][-2],
+        "advice": "Dark cloud @ resistance — SHORT. Mid-body fail angle.",
     }
 
 
 def scan_candle_patterns(ohlc: dict) -> list[dict]:
     """
-    D1 bullish candle patterns at support — green close confirmation zaroori.
+    Multi-angle candle patterns:
+      - Bullish @ support (doji/hammer/engulfing/stars/piercing)
+      - Bearish @ resistance (shooting star/gravestone/engulfing/evening/dark cloud)
+    Har lihaaz se dekh ke trade setup dete hain.
     """
     hits = []
-    for detector in (detect_dragonfly_doji, detect_hammer, detect_doji_then_green):
+    seen: set[str] = set()
+    detectors = (
+        detect_dragonfly_doji,
+        detect_hammer,
+        detect_doji_then_green,
+        detect_bullish_engulfing,
+        detect_morning_star,
+        detect_piercing_line,
+        detect_shooting_star,
+        detect_gravestone_doji,
+        detect_bearish_engulfing,
+        detect_evening_star,
+        detect_dark_cloud,
+    )
+    for detector in detectors:
         hit = detector(ohlc)
-        if hit:
-            hits.append(hit)
+        if not hit:
+            continue
+        key = hit["pattern"]
+        if key in seen:
+            continue
+        # Prefer one signal per direction to avoid stacking noise
+        if hit["direction"] in {h["direction"] for h in hits}:
+            continue
+        seen.add(key)
+        hits.append(hit)
     return hits
 
 
@@ -1625,12 +1997,12 @@ def scan_ohlc(
     htf_confluence: bool = False,
 ) -> list[dict]:
     """
-    Full strategy stack:
-      1) SMC: BOS/CHoCH · Order Block · FVG · Liquidity · Equal Hi/Lo · Range Break
-      2) Triangle break up/down
+    Pattern-first stack (indicators/SMC off by default):
+      1) Triangle break up/down (har angle tip compression)
+      2) Candle patterns — support + resistance angles
       3) S/R break → retest pipeline
-      4) D1 Doji/Hammer near support + green close
-    Har hit pe Entry/SL/TP + reasons (mukammal wazahat).
+      4) Optional SMC (DC_ENABLE_SMC=1)
+    Har hit pe Entry/SL/TP + chart + reasons.
     """
     hits: list[dict] = []
     tf = timeframe or ""
@@ -1651,27 +2023,8 @@ def scan_ohlc(
     seen_dirs: set[str] = set()
     seen_patterns: set[tuple[str, str]] = set()
 
-    if run_smc:
-        for smc_hit in scan_smc(
-            ohlc,
-            timeframe=tf,
-            enable_range=ENABLE_RANGE_BREAKOUT,
-            enable_ob=ENABLE_ORDER_BLOCK,
-            enable_eq=ENABLE_EQUAL_LIQUIDITY,
-        ):
-            if smc_hit.get("pattern") in ("Order Block", "Equal Liquidity"):
-                continue  # hard block — never emit flopping pattern alerts
-            key = (smc_hit["pattern"], smc_hit["direction"])
-            if key in seen_patterns:
-                continue
-            seen_patterns.add(key)
-            # Don't block classic patterns entirely — only same dir for triangle
-            plan = enrich_trade_plan(ohlc, smc_hit)
-            attach_chart(ohlc, plan)
-            hits.append(plan)
-
+    # Triangle first — multi-angle structure
     if run_triangle:
-        # Only confirmed break up / break down — no tip-zone "Break Setup"
         for live in (True, False):
             clean = detect_clean_trendline_breakout(
                 ohlc, window=TRIANGLE_WINDOW, live=live, approaching=False
@@ -1680,7 +2033,6 @@ def scan_ohlc(
                 continue
             if clean["direction"] in seen_dirs:
                 continue
-            # Normalize name to Triangle Breakout
             tri = detect_triangle_breakout(ohlc, window=TRIANGLE_WINDOW) if not live else None
             if tri and not live:
                 clean = tri
@@ -1695,8 +2047,20 @@ def scan_ohlc(
             attach_chart(ohlc, plan)
             hits.append(plan)
 
+    # Candle patterns — every angle (support + resistance)
+    if run_candles:
+        for hit in scan_candle_patterns(ohlc):
+            # Allow candle even if triangle already took that dir — different thesis
+            key = (hit["pattern"], hit["direction"])
+            if key in seen_patterns:
+                continue
+            seen_patterns.add(key)
+            plan = enrich_trade_plan(ohlc, hit)
+            attach_chart(ohlc, plan)
+            hits.append(plan)
+
     if run_breakouts:
-        for live in (False, True):  # prefer closed break for retest quality
+        for live in (False, True):
             sr = detect_sr_breakout(ohlc, live=live)
             if not sr:
                 continue
@@ -1708,19 +2072,30 @@ def scan_ohlc(
                 sr["patternDetail"] = (
                     f"{sr.get('patternDetail', 'S/R')} · HTF 4H+1D+1W"
                 )
-            # Mark for scan_loop: register pending retest, don't treat as final trade
             sr["stage"] = "await_retest"
             sr["_register_retest"] = True
             plan = enrich_trade_plan(ohlc, sr)
-            # No chart/alert for raw break — wait for retest complete
             hits.append(plan)
             break
 
-    if run_candles:
-        for hit in scan_candle_patterns(ohlc):
-            plan = enrich_trade_plan(ohlc, hit)
+    if run_smc:
+        for smc_hit in scan_smc(
+            ohlc,
+            timeframe=tf,
+            enable_range=ENABLE_RANGE_BREAKOUT,
+            enable_ob=ENABLE_ORDER_BLOCK,
+            enable_eq=ENABLE_EQUAL_LIQUIDITY,
+        ):
+            if smc_hit.get("pattern") in ("Order Block", "Equal Liquidity"):
+                continue
+            key = (smc_hit["pattern"], smc_hit["direction"])
+            if key in seen_patterns:
+                continue
+            seen_patterns.add(key)
+            plan = enrich_trade_plan(ohlc, smc_hit)
             attach_chart(ohlc, plan)
             hits.append(plan)
+
     return hits
 
 
@@ -1980,8 +2355,8 @@ async def _scan_one_symbol(
 
 async def scan_loop():
     print(
-        "[Crypto Pumping Signals] Strategy: 1H/4H/1D Range+SMC "
-        "(BOS/CHoCH/OB/FVG/Liq) · Triangle · S/R→retest · 1D Doji@support"
+        "[Crypto Pumping Signals] Strategy: 1H/4H/1D Candle + Triangle "
+        "(har angle tip lines + charts) · Update button in-app · SMC OFF"
     )
     limits = httpx.Limits(max_connections=SCAN_CONCURRENCY + 4, max_keepalive_connections=SCAN_CONCURRENCY)
     async with httpx.AsyncClient(timeout=25, limits=limits) as client:

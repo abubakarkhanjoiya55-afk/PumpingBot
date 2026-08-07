@@ -204,7 +204,7 @@ class D1CandlePatternTests(unittest.TestCase):
 
     def test_tf_gating_breakouts_and_candles(self):
         size = 25
-        # Dragonfly + green — D1 only
+        # Dragonfly + green — multi-TF candle angles (1h / 4H / D1)
         highs = [100.0] * size
         lows = [90.0] * size
         opens = [95.0] * size
@@ -213,14 +213,18 @@ class D1CandlePatternTests(unittest.TestCase):
         highs[-2], lows[-2], opens[-2], closes[-2] = 105.0, 98.0, 99.0, 104.0
         ohlc = _ohlc(highs, lows, opens, closes)
 
-        self.assertFalse(any(
+        self.assertTrue(any(
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="1h")
         ))
-        self.assertFalse(any(
+        self.assertTrue(any(
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="4H")
         ))
         self.assertTrue(any(
             h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="D1")
+        ))
+        # 5m still not in CANDLE_TFS
+        self.assertFalse(any(
+            h["pattern"] == "Dragonfly Doji" for h in scan_ohlc(ohlc, timeframe="5m")
         ))
 
         # Clean / triangle style — 1h / 4H / D1 / 1W (not 5m)
