@@ -33,7 +33,8 @@ import requests
 
 from provision import ensure_portable_instance, start_terminal, terminal_exe
 
-POLL_SEC = float(os.environ.get("POLL_SEC", "10"))
+# Faster poll so Start Bot → agent appears quickly for new users
+POLL_SEC = float(os.environ.get("POLL_SEC", "5"))
 SERVER_URL = (os.environ.get("SERVER_URL") or "").rstrip("/")
 VPS_SECRET = os.environ.get("VPS_SECRET") or ""
 PYTHON_EXE = os.environ.get("PYTHON_EXE") or sys.executable

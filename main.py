@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.32.0"   # Recovery same-side adds + multi-user MT5 terminals
+API_VERSION = "3.32.1"   # Pre-warm VPS agent on MT5 connect; Start Bot = ON
 CODE_REPO_BRANCH = "main"
 
 # Supervisor remote commands (in-memory; supervisor polls roster)
@@ -2371,8 +2371,10 @@ async def connect_mt5(creds: MT5Credentials,
         current_user.mt5_login = creds.mt5_login
         current_user.mt5_password = creds.mt5_password
         current_user.mt5_server = creds.mt5_server
-        # Credentials only — VPS agent starts on /bot/start (Start Bot)
-        if current_user.bot_active:
+        # Pre-warm VPS agent as soon as MT5 is linked (supervisor auto-creates
+        # portable MT5 + local_agent). Start Bot then only flips bot_active ON.
+        can_host = is_master_user(current_user) or has_active_subscription(current_user)
+        if can_host:
             current_user.vps_desired = True
             current_user.vps_status = "starting"
             current_user.vps_ready = False
@@ -2388,16 +2390,28 @@ async def connect_mt5(creds: MT5Credentials,
             or any(a["user_id"] == current_user.id and a.get("ready")
                    for a in agent_hub.list_agents())
         )
+        if not can_host:
+            msg = (
+                "MT5 saved, lekin subscription/trial inactive — "
+                "pehle plan active karo, phir Start Bot."
+            )
+        elif online:
+            msg = (
+                "MT5 linked — VPS agent ready. Ab Start Bot dabao, trades start."
+            )
+        else:
+            msg = (
+                "MT5 linked — VPS pe agent apne aap ban raha hai (~20-40 sec). "
+                "Phir Start Bot dabao. Mobile se bas itna; user PC pe kuch nahi."
+            )
         return {
-            "message": (
-                "MT5 account saved. Ab Start Bot dabao — VPS pe agent auto chalega. "
-                "Mobile se bas itna; PC pe kuch install nahi."
-            ),
+            "message": msg,
             "balance": float(current_user.vps_balance or 0),
             "mt5_ready": online,
             "role": role,
             "trading_backend": "vps_agent",
             "agent_online": online,
+            "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status or "idle",
         }
 
@@ -2528,6 +2542,11 @@ def start_bot(current_user: User = Depends(get_current_user),
 
     # VPS-hosted agents: users only use mobile; Windows VPS runs MT5
     if agent_mode_enabled() and not USE_METAAPI:
+        # Ensure roster includes this user so supervisor creates/starts agent
+        current_user.vps_desired = True
+        if not current_user.vps_ready:
+            current_user.vps_status = "starting"
+        db.commit()
         # Live-toggle entries on already-connected agent (no full restart needed)
         notify = agent_hub.notify_bot_active(current_user.id, True)
         if not notify.get("ok"):
@@ -2536,13 +2555,17 @@ def start_bot(current_user: User = Depends(get_current_user),
             a["user_id"] == current_user.id and a.get("ready")
             for a in agent_hub.list_agents()
         )
-        msg = (
-            "Master bot ON. VPS pe master agent trade karega."
-            if is_master_user(current_user)
-            else "Copy trading ON. VPS pe account connect ho raha hai."
-        )
-        if not online:
-            msg += " Agent abhi offline — VPS supervisor check karo."
+        if is_master_user(current_user):
+            msg = "Master bot ON — VPS agent trade karega."
+        else:
+            msg = "Copy trading ON — VPS pe aapka agent auto start / ON ho raha hai."
+        if online:
+            msg += " Agent online."
+        else:
+            msg += (
+                " Agent ~20-40 sec mein auto ban/connect hoga "
+                "(supervisor OPEN hona chahiye). Refresh karke MT5 Live dekho."
+            )
         return {
             "message": msg,
             "trading_backend": "vps_agent",
