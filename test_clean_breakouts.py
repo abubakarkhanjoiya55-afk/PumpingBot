@@ -196,7 +196,9 @@ class WickTipLineTests(unittest.TestCase):
             self.assertIsNotNone(plan.get("sl"))
             self.assertIsNotNone(plan.get("tp"))
             self.assertTrue(plan.get("chartImage"))
-            self.assertNotIn("chartLines", plan)
+            # Triangle tip lines kept for milky crystal chart overlay
+            self.assertIn("chartLines", plan)
+            self.assertTrue(plan["chartLines"].get("upper") or plan["chartLines"].get("lower"))
 
     def test_default_tfs_focus_4h_d1(self):
         self.assertTrue(sc.enabled_tfs.get("4H"))
@@ -206,8 +208,9 @@ class WickTipLineTests(unittest.TestCase):
         self.assertTrue(sc.ENABLE_CANDLE_PATTERNS)
         self.assertTrue(sc.ENABLE_SR_BREAKOUTS)
         self.assertTrue(sc.ENABLE_TRIANGLE_BREAK)
-        self.assertTrue(sc.ENABLE_SMC)
-        self.assertTrue(sc.ENABLE_RANGE_BREAKOUT)
+        # Indicators / SMC off — candle + triangle focus
+        self.assertFalse(sc.ENABLE_SMC)
+        self.assertFalse(sc.ENABLE_RANGE_BREAKOUT)
 
     def test_scan_no_break_setup_noise(self):
         ohlc = _build_sol_style_triangle()

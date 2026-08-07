@@ -1,14 +1,14 @@
 {
   "name": "Crypto Pumping",
   "short_name": "Crypto Pumping",
-  "description": "1H · 4H · 1D crypto breakouts + Smart Money Concepts alerts",
+  "description": "Candle + Triangle pattern alerts with milky crystal charts — every angle",
   "id": "/my-signals/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#061018",
-  "theme_color": "#061018",
+  "background_color": "#eef6fb",
+  "theme_color": "#eef6fb",
   "icons": [
     {
       "src": "icon-192.png",
