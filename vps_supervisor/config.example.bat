@@ -11,7 +11,7 @@ set MT5_TEMPLATE_DIR=C:\PumpingBot\MT5_Template
 set MT5_INSTANCES_DIR=C:\PumpingBot\MT5_Instances
 set AGENT_LOG_DIR=C:\PumpingBot\logs
 set MT5_BOOT_WAIT_SEC=20
-set POLL_SEC=10
+set POLL_SEC=5
 set PYTHONUNBUFFERED=1
 REM standard = demo/real USD (*m). cent = USC (*c).
 REM Schedule: Mon-Fri Gold only; Sat-Sun BTC+ETH only.
