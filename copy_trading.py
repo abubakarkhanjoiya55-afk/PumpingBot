@@ -74,19 +74,22 @@ def _persist_agent_open_results(results, symbol, trend, score, master_ticket,
 
 def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance,
                            entry, sl, master_ticket, source="BOT"):
-    """Broadcast COPY_OPEN to online follower agents with bot_active=True."""
+    """Broadcast COPY_OPEN to online followers who passed daily unlock + bot_active."""
     from agent_hub import agent_hub
+    import main as main_mod
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
 
     db = SessionLocal()
     try:
-        active_ids = {
-            row[0] for row in db.query(User.id).filter(
-                User.bot_active == True,
-                User.mt5_login != None,
-                User.username.notin_(["admin", "Admin99"]),
-            ).all()
-        }
+        candidates = db.query(User).filter(
+            User.bot_active == True,
+            User.mt5_login != None,
+            User.username.notin_(["admin", "Admin99"]),
+        ).all()
+        active_ids = {u.id for u in candidates if main_mod.follower_can_copy(u)}
+        skipped = [u.username for u in candidates if u.id not in active_ids]
+        if skipped:
+            print(f"[COPY AGENT] Locked / not unlocked today (skip): {', '.join(skipped[:12])}")
     finally:
         db.close()
 
@@ -94,7 +97,7 @@ def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance
     online = {s.user_id for s in agent_hub.online_followers(require_ready=False)}
     targets = active_ids & online
     if not targets:
-        print("[COPY AGENT] No bot_active online followers for fan-out")
+        print("[COPY AGENT] No unlocked online followers for fan-out")
         return []
 
     payload = {

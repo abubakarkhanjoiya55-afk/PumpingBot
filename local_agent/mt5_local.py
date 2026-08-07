@@ -21,6 +21,11 @@ class LocalMT5:
         self.ready = False
 
     def connect(self) -> bool:
+        # Multi-user VPS: MUST use this login's portable path + portable=True.
+        # Without portable=True, Python IPC sticks to the first terminal's
+        # 127.0.0.1:22346 — followers show "MT5 Syncing..." / $0 forever.
+        # Single home-PC follower: MT5_PATH optional — uses default installed terminal.
+
         try:
             import MetaTrader5 as mt5
         except ImportError as e:
@@ -30,28 +35,33 @@ class LocalMT5:
 
         self._mt5 = mt5
 
-        # Multi-user VPS: MUST use this login's portable path + portable=True.
-        # Without portable=True, Python IPC sticks to the first terminal's
-        # 127.0.0.1:22346 — followers show "MT5 Syncing..." / $0 forever.
-        if not self.path:
-            print("[LOCAL MT5] MT5_PATH missing — cannot safely multi-attach")
-            return False
-
-        attempts = [
-            {
-                "path": self.path,
-                "portable": True,
-                "login": int(self.login),
-                "password": self.password,
-                "server": self.server,
-                "timeout": 120_000,
-            },
-            {
-                "path": self.path,
-                "portable": True,
-                "timeout": 120_000,
-            },
-        ]
+        if self.path:
+            attempts = [
+                {
+                    "path": self.path,
+                    "portable": True,
+                    "login": int(self.login),
+                    "password": self.password,
+                    "server": self.server,
+                    "timeout": 120_000,
+                },
+                {
+                    "path": self.path,
+                    "portable": True,
+                    "timeout": 120_000,
+                },
+            ]
+        else:
+            print("[LOCAL MT5] MT5_PATH unset — single-PC default terminal mode")
+            attempts = [
+                {
+                    "login": int(self.login),
+                    "password": self.password,
+                    "server": self.server,
+                    "timeout": 120_000,
+                },
+                {"timeout": 120_000},
+            ]
 
         last_err = None
         for kwargs in attempts:
@@ -71,7 +81,7 @@ class LocalMT5:
                 if ok:
                     initialized = True
                     print(
-                        f"[LOCAL MT5] initialize ok via {self.path} "
+                        f"[LOCAL MT5] initialize ok via {self.path or 'default'} "
                         f"portable={kwargs.get('portable', False)}"
                     )
                     break

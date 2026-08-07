@@ -337,6 +337,12 @@ class PumpingAgent:
         sl = float(msg.get("sl") or 0)
         entry = float(msg.get("entry") or 0)
 
+        # Defense in depth: server should not fan-out when locked, but refuse locally too
+        if not self.bot_active:
+            print("[COPY OPEN] refused — bot_active=OFF (daily unlock / Start Bot needed)")
+            self.reply(req_id, ok=False, skip=True, error="bot_active_off")
+            return
+
         if master_ticket and master_ticket in self._copy_map:
             self.reply(req_id, ok=True, skip=True, ticket=self._copy_map[master_ticket])
             return

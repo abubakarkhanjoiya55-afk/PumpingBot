@@ -24,6 +24,10 @@ USER_COLUMNS = {
     "vps_balance": "FLOAT DEFAULT 0.0",
     "vps_last_error": "VARCHAR",
     "vps_last_seen": "DATETIME",
+    # Self-PC follower agents + daily 25% profit-share unlock
+    "hosting_mode": "VARCHAR DEFAULT 'self'",  # self | vps
+    "payment_kind": "VARCHAR DEFAULT 'subscription'",  # subscription | daily_share
+    "daily_unlock_date": "VARCHAR",  # YYYY-MM-DD (PKT) — trades only that day
 }
 
 TRADE_COLUMNS = {

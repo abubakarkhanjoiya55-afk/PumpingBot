@@ -93,12 +93,32 @@ export async function stopBot() {
   return data;
 }
 
-export async function uploadPaymentScreenshot(file) {
+export async function uploadPaymentScreenshot(file, kind = 'auto') {
   const form = new FormData();
   form.append('file', file);
-  const { data } = await api.post('/subscription/upload-screenshot', form, {
+  const { data } = await api.post(`/subscription/upload-screenshot?kind=${encodeURIComponent(kind)}`, form, {
     headers: { ...authHeaders(), 'Content-Type': 'multipart/form-data' },
   });
+  return data;
+}
+
+export async function fetchAgentToken() {
+  const { data } = await api.post('/me/agent-token', null, { headers: authHeaders() });
+  return data;
+}
+
+export async function fetchAgentSetup() {
+  const { data } = await api.get('/me/agent-setup', { headers: authHeaders() });
+  return data;
+}
+
+export async function adminDailyUnlock(userId) {
+  const { data } = await api.post(`/admin/daily-unlock/${userId}`, null, { headers: authHeaders() });
+  return data;
+}
+
+export async function adminDailyUnlockAllClear() {
+  const { data } = await api.post('/admin/daily-unlock-all-clear', null, { headers: authHeaders() });
   return data;
 }
 
