@@ -15,10 +15,11 @@ COPY my_signals_service/start.sh /app/start.sh
 COPY device_care /app/device_care
 
 RUN chmod +x /app/start.sh \
-    && mkdir -p /app/device_care/data
+    && mkdir -p /app/device_care/data /app/device_care/uploads
 
 ENV PORT=8000
 ENV MY_SIGNALS_PREFIX=
+ENV MY_SIGNALS_VERSION=4.1.4
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 

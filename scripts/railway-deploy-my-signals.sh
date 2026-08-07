@@ -45,9 +45,11 @@ fi
 set +e
 railway variable set --service "$SERVICE" --skip-deploys \
   NTFY_TOPIC=pumpingbot-signals \
+  MY_SIGNALS_PREFIX= \
+  MY_SIGNALS_VERSION=4.1.4 \
   PORT=8000 2>/dev/null \
   || railway variable set --service my-signals --skip-deploys \
-       NTFY_TOPIC=pumpingbot-signals PORT=8000 2>/dev/null \
+       NTFY_TOPIC=pumpingbot-signals MY_SIGNALS_PREFIX= MY_SIGNALS_VERSION=4.1.4 PORT=8000 2>/dev/null \
   || echo "::warning::Could not set My Signals variables"
 set -e
 

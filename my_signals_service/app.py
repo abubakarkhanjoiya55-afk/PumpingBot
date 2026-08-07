@@ -1,7 +1,7 @@
 """
 My Signals — standalone FastAPI service (separate Railway deploy).
 
-PumpingBot se alag: sirf MEXC futures alerts PWA + scanner.
+PumpingBot se alag: crypto alert PWA + scanner + login/subscription.
 """
 
 from __future__ import annotations
@@ -15,14 +15,15 @@ from fastapi.responses import RedirectResponse
 # Standalone = serve PWA at site root (not /my-signals/...)
 os.environ.setdefault("MY_SIGNALS_PREFIX", "")
 
+from device_care.auth_api import init_auth_db, router as auth_router  # noqa: E402
 from device_care.scanner import (  # noqa: E402
-    router as my_signals_router,
-    legacy_router as legacy_router,
-    start_device_care_scanner,
     APP_PREFIX,
+    legacy_router,
+    router as my_signals_router,
+    start_device_care_scanner,
 )
 
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.0")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.1.4")
 
 app = FastAPI(title="Crypto Pumping Signals", version=APP_VERSION)
 app.add_middleware(
@@ -33,6 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Auth + subscription at site root (PWA expects /token /me /register …)
+app.include_router(auth_router)
+# Alerts PWA + scanner API
 app.include_router(my_signals_router)
 app.include_router(legacy_router)
 
@@ -46,11 +50,13 @@ def health():
         "app": "crypto-pumping-signals",
         "prefix": APP_PREFIX or "/",
         "embedded_in_pumpingbot": False,
+        "auth": True,
     }
 
 
 # If somehow prefix is non-empty, send / → /my-signals/
 if APP_PREFIX:
+
     @app.get("/")
     async def root_redirect():
         return RedirectResponse(url=f"{APP_PREFIX}/", status_code=307)
@@ -58,8 +64,9 @@ if APP_PREFIX:
 
 @app.on_event("startup")
 async def on_startup():
+    init_auth_db()
     start_device_care_scanner()
     print(
         f"[CPS] Standalone service v{APP_VERSION} "
-        f"prefix={APP_PREFIX or '/'} scanner started"
+        f"prefix={APP_PREFIX or '/'} auth+scanner started"
     )

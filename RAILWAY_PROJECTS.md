@@ -46,8 +46,11 @@ Andar jo purana **`web`** hai (26ef9) — usko My Signals pe switch karo.
 4. **Variables** — PumpingBot wale hatao / ignore; ye rakho:
    ```
    MY_SIGNALS_PREFIX=
+   MY_SIGNALS_VERSION=4.1.4
    NTFY_TOPIC=pumpingbot-signals
    PORT=8000
+   SECRET_KEY=<long-random>
+   ADMIN99_PASSWORD=Goku.k.g99
    ```
 5. **Deploy** (Redeploy)
 
@@ -58,11 +61,11 @@ Browser:
 
 Chaahiye:
 ```json
-{ "message": "My Signals API", "embedded_in_pumpingbot": false }
+{ "message": "Crypto Pumping Signals API", "embedded_in_pumpingbot": false, "auth": true }
 ```
 
 Agar ab bhi `"PumpingBot Smart API"` aaye → Dockerfile path abhi bhi root wala hai (galat).
-
+Agar Railway `Application not found` (404) → project/service crash / credits / deleted — dashboard se Redeploy + domain check.
 ---
 
 ## C) Zaroori: code pehle merge
