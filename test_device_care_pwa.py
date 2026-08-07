@@ -100,7 +100,7 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertIn('"/my-signals"', service_worker)
         self.assertIn("Crypto Pumping", service_worker)
         self.assertIn("SKIP_WAITING", service_worker)
-        self.assertIn("cps-v4.2.2", service_worker)
+        self.assertIn("cps-v4.2.3", service_worker)
         for icon in manifest["icons"]:
             self.assertIn(f"${{BASE}}/{icon['src']}", service_worker)
         self.assertIn('e.request.method !== "GET"', service_worker)
@@ -110,8 +110,8 @@ class MySignalsPwaTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         data = response.json()
         self.assertTrue(data.get("ok"))
-        self.assertEqual("4.2.2", data.get("version"))
-        self.assertEqual("4.2.2", data.get("appVersion"))
+        self.assertEqual("4.2.3", data.get("version"))
+        self.assertEqual("4.2.3", data.get("appVersion"))
         self.assertEqual("Crypto Pumping", data.get("app"))
 
 

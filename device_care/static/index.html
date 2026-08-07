@@ -535,12 +535,21 @@
     .wallet-box b { color: #2a7a94; }
     .wallet-box code { color: #1f7a5c; font-size: 0.7rem; }
     .ref-box {
-      background: #12121e; border: 1px solid var(--border); border-radius: 12px;
-      padding: 12px; margin: 12px 0; font-size: 0.8rem; color: #a0a4c0;
+      background: rgba(255,255,255,0.72); border: 1px solid rgba(126,200,227,0.4); border-radius: 16px;
+      padding: 12px; margin: 12px 0; font-size: 0.8rem; color: #3d5a70;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 22px rgba(126,200,227,0.12);
     }
     .ref-box input {
-      width: 100%; padding: 10px; margin: 6px 0; border-radius: 8px;
-      border: 1px solid #333; background: #0f1117; color: #fff; font-size: 0.85rem;
+      width: 100%; padding: 10px; margin: 6px 0; border-radius: 12px;
+      border: 1px solid rgba(126,200,227,0.4); background: rgba(255,255,255,0.9); color: var(--ink); font-size: 0.85rem;
+    }
+    .crystal-panel {
+      background: linear-gradient(145deg, rgba(255,255,255,0.78), rgba(232,244,252,0.88));
+      border: 1px solid rgba(126,200,227,0.4);
+      border-radius: 18px;
+      backdrop-filter: blur(14px);
+      box-shadow: 0 10px 28px rgba(126,200,227,0.14);
     }
   </style>
 </head>
@@ -567,7 +576,7 @@
   </div>
 
   <!-- LOGIN / REGISTER -->
-  <section class="auth-screen" id="authScreen">
+  <section class="auth-screen crystal-panel" id="authScreen">
     <div class="header" style="padding-top:0">
       <div class="logo"><img src="icon-192.png" alt="Crypto Pumping" width="56" height="56"></div>
       <h1>Crypto Pumping</h1>
@@ -602,7 +611,7 @@
   </section>
 
   <!-- SUBSCRIPTION GATE -->
-  <section class="sub-screen hidden" id="subScreen">
+  <section class="sub-screen crystal-panel hidden" id="subScreen">
     <h2>💳 Subscription</h2>
     <p class="auth-hint" style="margin-bottom:12px">
       Package: <b>$<span id="subFee">10</span> / 30 days</b><br>
@@ -618,7 +627,7 @@
     <input type="file" id="subFile" accept="image/*,.pdf" />
     <button type="button" class="btn-gold" id="subUploadBtn">Upload Payment Screenshot</button>
     <p class="auth-error hidden" id="subError"></p>
-    <button type="button" class="btn-gold" id="subLogoutBtn" style="background:#333;color:#ccc;margin-top:12px">Logout</button>
+    <button type="button" class="btn-gold" id="subLogoutBtn" style="margin-top:12px;background:rgba(255,255,255,0.75);color:#4a6880;border:1px solid rgba(126,200,227,0.4)">Logout</button>
   </section>
 
   <!-- APP SHELL (after login + active sub) -->
@@ -626,7 +635,7 @@
   <div class="top-user">
     <div class="who" id="userWho">—</div>
     <div class="actions">
-      <span class="ver-chip" id="appVerChip" title="Installed app version">v4.2.2</span>
+      <span class="ver-chip" id="appVerChip" title="Installed app version">v4.2.3</span>
       <button type="button" id="btnCheckUpdate" class="btn-update-inline" aria-live="polite">Update</button>
       <button type="button" id="btnAdminNav" class="hidden">Admin</button>
       <button type="button" id="btnSignalsNav">Signals</button>
@@ -644,7 +653,7 @@
     <div class="logo"><img src="icon-192.png" alt="Crypto Pumping" width="56" height="56"></div>
     <h1>Crypto Pumping</h1>
     <p class="sub">Candle + Triangle patterns · har angle · milky crystal charts</p>
-    <p class="sub" style="margin-top:6px"><span class="ver-chip" id="headerVerChip">v4.2.2</span></p>
+    <p class="sub" style="margin-top:6px"><span class="ver-chip" id="headerVerChip">v4.2.3</span></p>
     <button type="button" class="btn-update-main" id="btnUpdateMain">↻ Update</button>
     <p class="update-status" id="updateStatusText">App up to date — jab naya update aaye button harkat karega</p>
   </div>
@@ -746,7 +755,7 @@
   </div><!-- /signalsView -->
 
   <!-- REFERRAL / WITHDRAW -->
-  <section class="admin-screen hidden" id="referralView">
+  <section class="admin-screen crystal-panel hidden" id="referralView">
     <h2>🎁 Referral</h2>
     <div class="ref-box">
       <div>Aapka code: <b id="refCode">—</b></div>
@@ -782,7 +791,7 @@
   </section>
 
   <!-- ADMIN PANEL -->
-  <section class="admin-screen hidden" id="adminView">
+  <section class="admin-screen crystal-panel hidden" id="adminView">
     <h2>⚡ Admin Panel</h2>
     <div class="wallet-box" style="margin-top:8px">
       <b>Admin USDT BEP20 (receive $10):</b><br>
@@ -2041,7 +2050,7 @@
       activateBtn.disabled = false;
     }
 
-    const APP_BUILD = '4.2.2';
+    const APP_BUILD = '4.2.3';
     let waitingWorker = null;
     let remoteVersion = null;
     let updateReady = false;

@@ -38,7 +38,7 @@ from device_care.smc import (
 )
 
 APP_NAME = "Crypto Pumping"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.2")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.3")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -2355,8 +2355,8 @@ async def _scan_one_symbol(
 
 async def scan_loop():
     print(
-        "[Crypto Pumping Signals] Strategy: 1H/4H/1D Candle patterns + Triangle "
-        "(har angle) · S/R→retest · SMC/indicators OFF"
+        "[Crypto Pumping Signals] Strategy: 1H/4H/1D Candle + Triangle "
+        "(har angle tip lines + charts) · Update button in-app · SMC OFF"
     )
     limits = httpx.Limits(max_connections=SCAN_CONCURRENCY + 4, max_keepalive_connections=SCAN_CONCURRENCY)
     async with httpx.AsyncClient(timeout=25, limits=limits) as client:
