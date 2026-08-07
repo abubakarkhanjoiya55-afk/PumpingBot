@@ -38,7 +38,7 @@ from device_care.smc import (
 )
 
 APP_NAME = "Crypto Pumping"
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.0")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.1")
 # Standalone Railway service: MY_SIGNALS_PREFIX="" (root).
 # Embedded in PumpingBot: default "/my-signals".
 _raw_prefix = os.environ.get("MY_SIGNALS_PREFIX", "/my-signals").strip()
@@ -346,6 +346,19 @@ async def status():
     scan_stats["enabledTfs"] = dict(enabled_tfs)
     scan_stats["tfButtons"] = TF_BUTTONS
     return {"ok": True, "app": APP_NAME, **scan_stats}
+
+
+@router.get("/api/version")
+async def app_version():
+    """Lightweight in-app update check — UI polls this, no external link needed."""
+    return {
+        "ok": True,
+        "app": APP_NAME,
+        "version": APP_VERSION,
+        "appVersion": APP_VERSION,
+        "build": APP_VERSION,
+        "updatedAt": int(time.time()),
+    }
 
 
 @router.get("/api/alerts")

@@ -22,7 +22,7 @@ from device_care.scanner import (  # noqa: E402
     APP_PREFIX,
 )
 
-APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.0")
+APP_VERSION = os.environ.get("MY_SIGNALS_VERSION", "4.2.1")
 
 app = FastAPI(title="Crypto Pumping Signals", version=APP_VERSION)
 app.add_middleware(
