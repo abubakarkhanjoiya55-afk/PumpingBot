@@ -22,7 +22,7 @@ jobs:
       - name: Deploy Crypto Pumping Signals
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_MY_SIGNALS_SERVICE: ${{ secrets.RAILWAY_MY_SIGNALS_SERVICE || 'web' }}
+          RAILWAY_MY_SIGNALS_SERVICE: ${{ secrets.RAILWAY_MY_SIGNALS_SERVICE || 'my-signals' }}
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
             echo "::warning::RAILWAY_TOKEN missing — relying on Railway GitHub auto-deploy / PumpingBot embed"

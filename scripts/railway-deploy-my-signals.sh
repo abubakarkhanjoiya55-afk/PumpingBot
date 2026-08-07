@@ -5,7 +5,8 @@
 
 set -euo pipefail
 
-SERVICE="${RAILWAY_MY_SIGNALS_SERVICE:-web}"
+# Prefer dedicated my-signals service (created after trial). Fallback to web.
+SERVICE="${RAILWAY_MY_SIGNALS_SERVICE:-my-signals}"
 
 if [ -z "${RAILWAY_TOKEN:-}" ]; then
   echo "RAILWAY_TOKEN missing"
@@ -33,24 +34,27 @@ upload() {
 
 if upload "$SERVICE"; then
   echo "Deploy triggered for service=$SERVICE"
-elif upload my-signals; then
+elif [ "$SERVICE" != "my-signals" ] && upload my-signals; then
   echo "Deploy triggered for service=my-signals"
+elif upload web; then
+  echo "Deploy triggered for service=web"
 elif upload my_signals; then
   echo "Deploy triggered for service=my_signals"
 else
-  echo "::error::Could not railway up to web/my-signals"
+  echo "::error::Could not railway up to my-signals/web"
   exit 1
 fi
 
 set +e
-railway variable set --service "$SERVICE" --skip-deploys \
+railway variable set --service my-signals --skip-deploys \
+  MY_SIGNALS_PREFIX= \
   NTFY_TOPIC=pumpingbot-signals \
   PORT=8000 2>/dev/null \
-  || railway variable set --service my-signals --skip-deploys \
-       NTFY_TOPIC=pumpingbot-signals PORT=8000 2>/dev/null \
+  || railway variable set --service "$SERVICE" --skip-deploys \
+       MY_SIGNALS_PREFIX= NTFY_TOPIC=pumpingbot-signals PORT=8000 2>/dev/null \
   || echo "::warning::Could not set My Signals variables"
 set -e
 
 echo "Done. Confirm shortly:"
-echo "  https://web-production-26ef9.up.railway.app/api  → My Signals API"
-echo "  (or the my-signals service domain if web was not the target)"
+echo "  Railway → my-signals → Networking domain /api"
+echo "  Expect: Crypto Pumping Signals / My Signals API (not PumpingBot)"

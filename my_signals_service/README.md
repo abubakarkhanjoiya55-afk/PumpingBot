@@ -2,6 +2,8 @@
 
 PumpingBot se **alag** deploy. Sirf crypto alert PWA + scanner.
 
+> Redeploy note: after Railway plan reactivation, service `my-signals` needs an active deployment (`scripts/railway-deploy-my-signals.sh`).
+
 **Tumhara preferred layout:** [`../RAILWAY_PROJECTS.md`](../RAILWAY_PROJECTS.md)
 
 | Project | App |
