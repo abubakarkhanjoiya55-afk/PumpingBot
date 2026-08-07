@@ -74,31 +74,46 @@ def _persist_agent_open_results(results, symbol, trend, score, master_ticket,
 
 def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance,
                            entry, sl, master_ticket, source="BOT"):
-    """Broadcast COPY_OPEN to online followers who passed daily unlock + bot_active."""
+    """
+    COPY_OPEN to:
+      1) Python WS agents (if online)
+      2) MT5 EA queue for everyone else unlocked (user PC — Exness MT5 only)
+    """
     from agent_hub import agent_hub
+    from ea_queue import ea_queue
     import main as main_mod
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
 
     db = SessionLocal()
     try:
         candidates = db.query(User).filter(
-            User.bot_active == True,
+            User.mt5_login != None,
+            User.username.notin_(["admin", "Admin99"]),
+        ).all()
+        # Auto-enable bot_active for unlocked EA users so they receive copies
+        # without pressing Start Bot every day.
+        for u in candidates:
+            if main_mod.follower_can_copy(u):
+                continue
+            # Soft path: unlocked today + clear pay + mt5 → treat as copy-ready
+            if (
+                (u.daily_unlock_date or "") == main_mod.pkt_today()
+                and (u.daily_profit_owed or 0) <= 0
+                and (u.payment_status or "clear").lower() == "clear"
+                and u.mt5_login
+            ):
+                u.bot_active = True
+        db.commit()
+        candidates = db.query(User).filter(
             User.mt5_login != None,
             User.username.notin_(["admin", "Admin99"]),
         ).all()
         active_ids = {u.id for u in candidates if main_mod.follower_can_copy(u)}
         skipped = [u.username for u in candidates if u.id not in active_ids]
         if skipped:
-            print(f"[COPY AGENT] Locked / not unlocked today (skip): {', '.join(skipped[:12])}")
+            print(f"[COPY] Locked / not unlocked today (skip): {', '.join(skipped[:12])}")
     finally:
         db.close()
-
-    # Hub may mark ready a moment after connect — prefer ready, else all online
-    online = {s.user_id for s in agent_hub.online_followers(require_ready=False)}
-    targets = active_ids & online
-    if not targets:
-        print("[COPY AGENT] No unlocked online followers for fan-out")
-        return []
 
     payload = {
         "type": "copy_open",
@@ -113,30 +128,47 @@ def fanout_open_via_agents(symbol, trend, score, atr, master_lot, master_balance
         "master_ticket": master_ticket,
         "source": source,
     }
-    results = agent_hub.broadcast_sync(
-        payload,
-        roles={"follower"},
-        only_user_ids=targets,
-        require_ready=False,
-        timeout=2.5,
-    )
-    _persist_agent_open_results(
-        results, symbol, trend, score, master_ticket, SessionLocal, Trade
-    )
+
+    ws_online = {s.user_id for s in agent_hub.online_followers(require_ready=False)}
+    ws_targets = active_ids & ws_online
+    results = []
+    if ws_targets:
+        results = agent_hub.broadcast_sync(
+            payload,
+            roles={"follower"},
+            only_user_ids=ws_targets,
+            require_ready=False,
+            timeout=2.5,
+        )
+        _persist_agent_open_results(
+            results, symbol, trend, score, master_ticket, SessionLocal, Trade
+        )
+
+    # EA queue for unlocked users not already handled by WS agent
+    ea_targets = active_ids - ws_targets
+    if ea_targets:
+        n = ea_queue.enqueue(ea_targets, payload)
+        print(f"[COPY EA] queued copy_open for {n} EA followers (master={master_ticket})")
+    if not ws_targets and not ea_targets:
+        print("[COPY] No unlocked followers (WS or EA)")
     return results
 
 
 def fanout_close_via_agents(master_ticket, symbol):
-    """Broadcast COPY_CLOSE to all online follower agents in parallel."""
+    """Broadcast COPY_CLOSE to WS agents + EA queue."""
     from agent_hub import agent_hub
+    from ea_queue import ea_queue
     pool_get, pool_is_ready, SessionLocal, Trade, User, *_ = _get_pool_helpers()
+    import main as main_mod
+
+    close_payload = {
+        "type": "copy_close",
+        "master_ticket": master_ticket,
+        "symbol": symbol,
+    }
 
     results = agent_hub.broadcast_sync(
-        {
-            "type": "copy_close",
-            "master_ticket": master_ticket,
-            "symbol": symbol,
-        },
+        close_payload,
         roles={"follower"},
         require_ready=False,
         timeout=2.5,
@@ -144,16 +176,28 @@ def fanout_close_via_agents(master_ticket, symbol):
 
     db = SessionLocal()
     try:
-        rows = db.query(Trade).filter(
+        # Queue close for EA users who still have this master ticket open
+        open_rows = db.query(Trade).filter(
             Trade.master_ticket == master_ticket,
             Trade.status == "open",
         ).all()
+        ws_ids = {r.get("user_id") for r in (results or []) if r.get("user_id")}
+        ea_ids = {row.user_id for row in open_rows if row.user_id not in ws_ids}
+        # Also any online EA followers
+        ea_ids |= (ea_queue.online_user_ids() - ws_ids)
+        if ea_ids:
+            ea_queue.enqueue(ea_ids, close_payload)
+            print(f"[COPY EA] queued copy_close master={master_ticket} users={len(ea_ids)}")
+
+        rows = open_rows
         by_user = {r.get("user_id"): r for r in (results or []) if r.get("user_id")}
         for row in rows:
             ack = by_user.get(row.user_id)
+            if not ack:
+                continue  # EA will ack later via /ea/ack
             row.status = "closed"
             row.closed_at = datetime.utcnow()
-            if ack and ack.get("profit") is not None:
+            if ack.get("profit") is not None:
                 row.profit = float(ack.get("profit") or 0)
         db.commit()
     except Exception as e:

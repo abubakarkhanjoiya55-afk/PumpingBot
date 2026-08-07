@@ -21,6 +21,7 @@ class DailyUnlockTests(unittest.TestCase):
             daily_profit_owed=0.0,
             payment_status="clear",
             daily_unlock_date=today,
+            vps_status="ea_online",
         )
         with mock.patch.object(main, "is_master_user", return_value=False):
             self.assertTrue(main.follower_can_copy(user))
@@ -31,6 +32,10 @@ class DailyUnlockTests(unittest.TestCase):
             self.assertFalse(main.follower_can_copy(user))
             user.daily_profit_owed = 0
             user.payment_status = "pending"
+            self.assertFalse(main.follower_can_copy(user))
+            user.payment_status = "clear"
+            user.vps_status = "user_stopped"
+            user.bot_active = False
             self.assertFalse(main.follower_can_copy(user))
 
     def test_master_always_can_copy(self):

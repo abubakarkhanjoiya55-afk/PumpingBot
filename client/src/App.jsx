@@ -4,7 +4,7 @@ import {
   fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
   uploadPaymentScreenshot, fetchAdminStats, fetchAdminUsers, fetchPendingPayments,
   confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
-  fetchAgentToken, fetchAgentSetup, adminDailyUnlock, adminDailyUnlockAllClear,
+  fetchAgentToken, fetchAgentSetup, adminDailyUnlock, adminDailyUnlockAllClear, eaDownloadUrl,
   fetchApiInfo, applyAppUpdate,
 } from './api';
 
@@ -189,53 +189,48 @@ function SubscriptionPage({ me, onRefresh }) {
 
 function PcSetupPage({ me, onRefresh }) {
   const [setup, setSetup] = useState(null);
-  const [tokenInfo, setTokenInfo] = useState(null);
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     fetchAgentSetup()
-      .then(setSetup)
-      .catch((ex) => setErr(ex.response?.data?.detail || ex.message));
+      .then(async (s) => {
+        if (cancelled) return;
+        setSetup(s);
+        await onRefresh();
+      })
+      .catch((ex) => {
+        if (!cancelled) setErr(ex.response?.data?.detail || ex.message);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const getToken = async () => {
-    setBusy(true);
-    setErr('');
-    try {
-      const data = await fetchAgentToken();
-      setTokenInfo(data);
-      await onRefresh();
-    } catch (ex) {
-      setErr(ex.response?.data?.detail || ex.message);
-    }
-    setBusy(false);
-  };
-
+  const token = setup?.ea_token || me?.ea_token || '';
   const copyToken = async () => {
-    if (!tokenInfo?.access_token) return;
+    if (!token) return;
     try {
-      await navigator.clipboard.writeText(tokenInfo.access_token);
-      alert('Token copied — START_FOLLOWER.bat mein ACCESS_TOKEN pe paste karo');
+      await navigator.clipboard.writeText(token);
+      alert('EA Token copied — MT5 EA Inputs → InpToken mein paste');
     } catch (_) {
-      alert(tokenInfo.access_token);
+      alert(token);
     }
   };
 
   return (
     <>
-      <h1>💻 PC Setup (trades ke liye)</h1>
-      <p style={{ color: '#aaa', marginBottom: '1rem', lineHeight: 1.5 }}>
-        Mobile se sirf login / Start Bot. <strong>Asal trades aapke Windows PC</strong> pe
-        follower agent se lagenge. PC din-raat ON rakho.
-      </p>
+      <h1>💻 PC Setup</h1>
+      <div className="warn-banner" style={{ borderColor: '#00ff88' }}>
+        <strong>Rozana user sirf yeh kare:</strong> Exness MT5 open → account login → Algo / AutoTrading ON.
+        Python, VPS, bat file — kuch nahi.
+      </div>
       {err && <p className="error">{err}</p>}
 
       <div className="stats-grid">
         <div className="stat-card">
-          <div className="stat-label">Agent</div>
-          <div className={`stat-value ${(me?.agent_online || me?.vps_ready) ? 'green' : 'red'}`}>
-            {(me?.agent_online || me?.vps_ready) ? 'ONLINE' : 'OFFLINE'}
+          <div className="stat-label">EA status</div>
+          <div className={`stat-value ${(me?.ea_online || me?.agent_online || me?.vps_ready) ? 'green' : 'red'}`}>
+            {(me?.ea_online || me?.agent_online || me?.vps_ready) ? 'ONLINE' : 'OFFLINE'}
           </div>
         </div>
         <div className="stat-card">
@@ -251,40 +246,43 @@ function PcSetupPage({ me, onRefresh }) {
       </div>
 
       <div className="sub-upload-card" style={{ marginBottom: '1rem' }}>
-        <h2>1) Agent token</h2>
-        <p>Pehle MT5 page pe account save karo, phir token lo → bat file mein paste.</p>
-        <button type="button" className="btn-start" disabled={busy || !me?.mt5_connected} onClick={getToken}>
-          {busy ? '…' : 'Get Agent Token'}
-        </button>
-        {tokenInfo?.access_token && (
-          <div style={{ marginTop: '1rem' }}>
-            <p style={{ color: '#00ff88' }}>Token ready (role: {tokenInfo.role}, {tokenInfo.expires_days}d)</p>
-            <textarea
-              readOnly
-              value={tokenInfo.access_token}
-              rows={3}
-              style={{ width: '100%', background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 8, padding: 8 }}
-            />
-            <button type="button" className="btn-start" style={{ marginTop: 8 }} onClick={copyToken}>Copy token</button>
-          </div>
+        <h2>Ek dafa: EA download + token</h2>
+        <p>Pehle app → MT5 page pe login save karo, phir:</p>
+        <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+          <a className="btn-start" href={eaDownloadUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
+            Download EA (.mq5)
+          </a>
+          <button type="button" className="btn-start" disabled={!token} onClick={copyToken}>
+            Copy EA Token
+          </button>
+        </div>
+        {token ? (
+          <textarea
+            readOnly
+            value={token}
+            rows={2}
+            style={{ width: '100%', background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 8, padding: 8 }}
+          />
+        ) : (
+          <p style={{ color: '#f59e0b' }}>MT5 connect ke baad token yahan aayega.</p>
+        )}
+        {setup?.server_url && (
+          <p style={{ color: '#888', marginTop: 8 }}>
+            WebRequest allow URL: <code>{setup.server_url}</code>
+          </p>
         )}
       </div>
 
       <div className="sub-upload-card">
-        <h2>2) PC pe yeh steps</h2>
+        <h2>PC pe steps</h2>
         <ol style={{ paddingLeft: '1.2rem', lineHeight: 1.7, color: '#ddd' }}>
           {(setup?.steps || [
-            'Windows pe Exness MT5 install + login',
-            'Algo Trading ON',
-            'START_FOLLOWER.bat mein SERVER_URL + ACCESS_TOKEN + MT5_* set karo',
-            'Bat chalao — window open rakho',
-            'Dashboard → Start Bot',
+            'Exness MT5 download + apna account login',
+            'Algo Trading ON + WebRequest URL allow',
+            'EA Experts folder mein copy → chart pe drag',
+            'InpToken paste → AutoTrading ON',
           ]).map((s) => <li key={s}>{s}</li>)}
         </ol>
-        <p style={{ color: '#888', marginTop: '0.75rem' }}>
-          Detail: repo file <code>USER_PC_SETUP.md</code> · bat: <code>local_agent/START_FOLLOWER.bat</code>
-          {setup?.server_url ? <> · Server: <code>{setup.server_url}</code></> : null}
-        </p>
       </div>
     </>
   );
@@ -695,7 +693,7 @@ export default function App() {
             )}
             {me?.mt5_connected && !mt5Live && (
               <div className="warn-banner">
-                PC agent offline — Windows pe <code>START_FOLLOWER.bat</code> chalao (dekhó <strong>PC Setup</strong>).
+                EA offline — Exness MT5 open karo, Algo ON, PumpingBot EA chart pe (dekhó <strong>PC Setup</strong>).
               </div>
             )}
 
@@ -863,8 +861,8 @@ export default function App() {
           <>
             <h1>MT5 Connection</h1>
             <p className="mt5-hint">
-              Yahan login <strong>save</strong> hota hai. Asal trading aapke <strong>Windows PC agent</strong> se
-              hoti hai — <strong>PC Setup</strong> page dekho. Phir Dashboard → <strong>Start Bot</strong>.
+              Yahan login <strong>save</strong> hota hai. Trades aapke PC pe <strong>Exness MT5 + PumpingBot EA</strong> se
+              lagenge — <strong>PC Setup</strong> dekho (ek dafa EA). Rozana bas MT5 + Algo ON.
             </p>
 
             {me?.mt5_connected ? (
@@ -872,7 +870,7 @@ export default function App() {
                 <div className="mt5-status-header">
                   <span className="mt5-status-icon">{mt5Live ? '✅' : '⏳'}</span>
                   <strong className={mt5Live ? 'green' : ''}>
-                    {mt5Live ? 'MT5 Connected (PC agent)' : (me?.bot_active ? 'PC agent connecting…' : 'Saved — run PC agent')}
+                    {mt5Live ? 'MT5 / EA Connected' : 'Saved — Exness MT5 + EA chalao'}
                   </strong>
                 </div>
                 <div className="mt5-status-details">
@@ -886,8 +884,7 @@ export default function App() {
                 </div>
                 {!mt5Live && (
                   <p className="mt5-sync-note">
-                    PC pe <strong>START_FOLLOWER.bat</strong> chalao (token PC Setup se).
-                    Agent online aaye tab Start Bot.
+                    PC Setup se EA download + token → chart pe lagao → AutoTrading ON.
                   </p>
                 )}
                 <button

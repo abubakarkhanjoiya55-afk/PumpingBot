@@ -28,6 +28,7 @@ USER_COLUMNS = {
     "hosting_mode": "VARCHAR DEFAULT 'self'",  # self | vps
     "payment_kind": "VARCHAR DEFAULT 'subscription'",  # subscription | daily_share
     "daily_unlock_date": "VARCHAR",  # YYYY-MM-DD (PKT) — trades only that day
+    "ea_token": "VARCHAR",  # one-time token for MT5 EA poll auth
 }
 
 TRADE_COLUMNS = {

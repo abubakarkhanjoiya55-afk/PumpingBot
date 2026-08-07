@@ -24,6 +24,7 @@ from email.mime.multipart import MIMEMultipart
 from mt5_manager import mt5_manager, MT5Manager, find_or_create_metaapi_account, create_user_manager, MASTER_ACCOUNT_ID
 from db_migrate import migrate_schema
 from agent_hub import agent_hub, AgentSession
+from ea_queue import ea_queue
 from vps_auth import require_vps_secret
 from copy_trading import (
     copy_trade_to_followers,
@@ -145,7 +146,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.33.0"   # Self-PC follower agents + daily 25% profit-share unlock
+API_VERSION = "3.34.0"   # MT5 EA followers — user only needs Exness MT5 + Algo + EA
 CODE_REPO_BRANCH = "main"
 ADMIN_PROFIT_SHARE = float(os.environ.get("ADMIN_PROFIT_SHARE", "0.25"))
 REFERRER_PROFIT_SHARE = float(os.environ.get("REFERRER_PROFIT_SHARE", "0.05"))
@@ -192,17 +193,22 @@ def revoke_daily_unlock(user, reason="payment_pending"):
 
 def follower_can_copy(user) -> bool:
     """
-    Hard gate for new copy opens:
-      - bot_active
+    Hard gate for new copy opens (EA or Python agent):
+      - MT5 linked
       - no unpaid daily profit share
       - admin unlocked for today's PKT date
+      - payment clear
+    bot_active=False still blocks if user pressed Stop Bot.
     Master always allowed (strategy side).
     """
     if user is None:
         return False
     if is_master_user(user):
         return True
-    if not user.bot_active or not user.mt5_login:
+    if not user.mt5_login:
+        return False
+    # Explicit stop — user/admin turned bot off after unlock
+    if user.bot_active is False and (user.vps_status or "") == "user_stopped":
         return False
     if (user.daily_profit_owed or 0) > 0:
         return False
@@ -210,6 +216,13 @@ def follower_can_copy(user) -> bool:
     if status in ("pending", "overdue", "pending_review", "rejected"):
         return False
     return (user.daily_unlock_date or "") == pkt_today()
+
+
+def ensure_ea_token(user) -> str:
+    if getattr(user, "ea_token", None):
+        return user.ea_token
+    user.ea_token = uuid.uuid4().hex
+    return user.ea_token
 
 
 def refresh_subscription_status(user):
@@ -412,6 +425,7 @@ class User(Base):
     hosting_mode        = Column(String, default="self")  # self | vps
     payment_kind        = Column(String, default="daily_share")  # subscription | daily_share
     daily_unlock_date   = Column(String, nullable=True)  # YYYY-MM-DD PKT
+    ea_token            = Column(String, nullable=True)  # MT5 EA auth (one-time from app)
     created_at          = Column(DateTime, default=datetime.utcnow)
 
 class ReferralWithdraw(Base):
@@ -2314,6 +2328,8 @@ def get_me(request: Request,
     role = "master" if is_master_user(current_user) else "follower"
     sub_status = refresh_subscription_status(current_user)
     ref_code = ensure_referral_code(current_user, db)
+    if not is_master_user(current_user):
+        ensure_ea_token(current_user)
     db.commit()
     amount_owed = round((current_user.daily_profit_owed or 0) + (current_user.referral_owed or 0), 2)
     if sub_status not in ("active", "trial") and amount_owed <= 0:
@@ -2368,7 +2384,11 @@ def get_me(request: Request,
         and (current_user.payment_status or "clear").lower() == "clear"
     )
     profit_share_owed = round(current_user.daily_profit_owed or 0, 2)
-    agent_online = _agent_session_ready(current_user.id) or bool(current_user.vps_ready)
+    agent_online = (
+        _agent_session_ready(current_user.id)
+        or bool(current_user.vps_ready)
+        or ea_queue.is_online(current_user.id)
+    )
 
     return {
         "username":          current_user.username,
@@ -2404,6 +2424,10 @@ def get_me(request: Request,
         "daily_unlock_date": current_user.daily_unlock_date,
         "daily_unlocked_today": daily_unlocked,
         "can_copy_today":    follower_can_copy(current_user) if not is_master_user(current_user) else True,
+        "ea_token":          None if is_master_user(current_user) else (
+            ensure_ea_token(current_user)
+        ),
+        "ea_online":         ea_queue.is_online(current_user.id),
         "admin_profit_share_pct": int(ADMIN_PROFIT_SHARE * 100),
         "pkt_today":         today,
         "subscription_status": sub_status,
@@ -2639,39 +2663,40 @@ async def connect_mt5(creds: MT5Credentials,
         else:
             current_user.hosting_mode = "self"
             current_user.vps_desired = False  # central VPS pe mat host karo
-            current_user.vps_status = "awaiting_pc_agent"
+            current_user.vps_status = "awaiting_ea"
+            ensure_ea_token(current_user)
         current_user.vps_ready = False
         current_user.vps_last_error = None
         db.commit()
         role = "master" if is_master_user(current_user) else "follower"
         online = (
             bool(current_user.vps_ready)
+            or ea_queue.is_online(current_user.id)
             or any(a["user_id"] == current_user.id and a.get("ready")
                    for a in agent_hub.list_agents())
         )
-        if online:
+        if is_master_user(current_user):
             msg = (
-                "MT5 linked — PC agent online. Ab Start Bot dabao "
-                "(daily unlock + 25% share clear hona chahiye)."
+                "MT5 linked — apne PC pe master agent chalao, phir Start Bot."
             )
-        elif is_master_user(current_user):
+        elif online:
             msg = (
-                "MT5 linked — apne PC pe master agent / START_HERE chalao, "
-                "phir Start Bot."
+                "MT5 linked — EA/agent online. Daily unlock ke baad trades auto copy."
             )
         else:
             msg = (
-                "MT5 linked. Ab apne Windows PC pe follower agent chalao "
-                "(PC Setup page / USER_PC_SETUP.md). Agent online aaye → Start Bot."
+                "MT5 linked. Ab PC pe Exness MT5 + Algo ON + PumpingBot EA chart pe laga do. "
+                "Token PC Setup se EA mein ek dafa paste."
             )
         return {
             "message": msg,
             "balance": float(current_user.vps_balance or 0),
             "mt5_ready": online,
             "role": role,
-            "trading_backend": "pc_agent",
+            "trading_backend": "mt5_ea",
             "hosting_mode": current_user.hosting_mode,
             "agent_online": online,
+            "ea_token": None if is_master_user(current_user) else current_user.ea_token,
             "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status or "idle",
         }
@@ -2877,19 +2902,20 @@ def stop_bot(current_user: User = Depends(get_current_user),
              db: Session = Depends(get_db)):
     active_bots[current_user.id] = False
     current_user.bot_active = False
-    # Agent mode: keep VPS agent + MT5 online; only pause new entries
+    current_user.vps_status = "user_stopped"
+    # Agent mode: keep EA/MT5 online; only pause new entries
     if agent_mode_enabled() and not USE_METAAPI:
-        current_user.vps_desired = True
-        current_user.vps_status = "running" if current_user.vps_ready else "starting"
+        if is_master_user(current_user):
+            current_user.vps_desired = True
         db.commit()
         db.refresh(current_user)
         notify = agent_hub.notify_bot_active(current_user.id, False)
         if not notify.get("ok"):
             print(f"[BOT STOP] agent notify: {notify}")
         return {
-            "message": "Bot stopped — nayi entries band; VPS/MT5 online rahega",
+            "message": "Bot stopped — nayi entries band; MT5/EA online reh sakta hai",
             "bot_active": False,
-            "vps_desired": True,
+            "vps_desired": bool(current_user.vps_desired),
             "vps_status": current_user.vps_status,
         }
     current_user.vps_desired = False
@@ -3804,9 +3830,7 @@ def my_agent_token(current_user: User = Depends(get_current_user)):
     }
 
 
-@app.get("/me/agent-setup")
-def my_agent_setup(request: Request, current_user: User = Depends(get_current_user)):
-    """Step-by-step: user PC pe agent kaise chalaein (Urdu/English mix)."""
+def _public_base(request: Request) -> str:
     proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "https").split(",")[0].strip()
     host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
     base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
@@ -3814,34 +3838,218 @@ def my_agent_setup(request: Request, current_user: User = Depends(get_current_us
         if proto != "https" and "railway.app" in host:
             proto = "https"
         base = f"{proto}://{host}"
+    return base
+
+
+@app.get("/me/agent-setup")
+def my_agent_setup(request: Request,
+                   current_user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """User PC: sirf Exness MT5 + Algo + PumpingBot EA (ek dafa)."""
+    base = _public_base(request)
     role = "master" if is_master_user(current_user) else "follower"
+    tok = None
+    if not is_master_user(current_user):
+        tok = ensure_ea_token(current_user)
+        db.commit()
     steps = [
-        "1) Windows PC pe MetaTrader 5 (Exness) install karo aur apne account se login karo.",
-        "2) MT5 → Tools → Options → Expert Advisors → 'Allow algorithmic trading' ON + 'Allow WebRequest' (agar poochhe).",
-        "3) PC Sleep/Hibernate band karo — PC din-raat ON + internet chahiye.",
-        "4) GitHub se PumpingBot folder download/clone karo (local_agent folder).",
-        "5) App → MT5 page pe login/password/server save karo.",
-        "6) App → PC Setup → 'Get Agent Token' dabao, token copy karo.",
-        "7) local_agent\\START_FOLLOWER.bat edit: SERVER_URL, ACCESS_TOKEN, MT5_LOGIN, MT5_PASSWORD, MT5_SERVER, MT5_PATH.",
-        "8) START_FOLLOWER.bat double-click — window open rehni chahiye (band mat karo).",
-        "9) App Dashboard pe 'MT5 Live' / Agent online dikhe → Start Bot.",
-        "10) Roz: agar profit aaye to 25% admin ko bhejo + screenshot → Admin Approve. Bina approve agla din trades band.",
+        "1) Windows PC pe Exness MetaTrader 5 download/install karo.",
+        "2) Apna Exness account MT5 mein login karo.",
+        "3) Tools → Options → Expert Advisors → Allow algorithmic trading ON.",
+        "4) Same Options → 'Allow WebRequest for listed URL' ON, list mein app URL add karo.",
+        "5) App → MT5 page pe wahi login save karo.",
+        "6) Neeche se PumpingBotFollower.mq5 download → MT5 Experts folder mein copy → Navigator refresh.",
+        "7) EA chart pe drag karo → Inputs: InpToken = app ka EA token (ek dafa).",
+        "8) AutoTrading button ON (toolbar). MT5 / PC band mat karo jab trades chahiye.",
+        "9) Rozana bas MT5 open + login + Algo ON — Python/bat ki zaroorat nahi.",
+        "10) Profit aaye to 25% admin ko → screenshot → Admin Approve (warna agla din lock).",
     ]
     return {
         "role": role,
         "server_url": base,
         "mt5_login": current_user.mt5_login,
         "mt5_server": current_user.mt5_server,
-        "hosting_mode": getattr(current_user, "hosting_mode", None) or "self",
+        "hosting_mode": "ea",
+        "ea_token": tok,
+        "ea_online": ea_queue.is_online(current_user.id),
+        "ea_download": "/ea/download",
         "daily_unlocked_today": (current_user.daily_unlock_date or "") == pkt_today(),
         "daily_profit_owed": round(current_user.daily_profit_owed or 0, 2),
         "admin_profit_share_pct": int(ADMIN_PROFIT_SHARE * 100),
         "admin_usdt_bep20": ADMIN_USDT_BEP20,
         "admin_email": ADMIN_EMAIL,
         "steps": steps,
-        "bat_file": "local_agent/START_FOLLOWER.bat",
         "doc": "USER_PC_SETUP.md",
     }
+
+
+class EaHelloIn(BaseModel):
+    login: int
+    token: str
+    balance: float = 0
+    equity: float = 0
+    currency: str = ""
+    server: str = ""
+
+
+class EaAckIn(BaseModel):
+    login: int
+    token: str
+    cmd_id: str
+    ok: bool = True
+    ticket: Optional[int] = None
+    profit: Optional[float] = None
+    price: Optional[float] = None
+    error: Optional[str] = None
+    master_ticket: Optional[int] = None
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    lot: Optional[float] = None
+
+
+def _ea_auth_user(db: Session, login: int, token: str) -> "User":
+    if not login or not token:
+        raise HTTPException(401, "login + token required")
+    user = db.query(User).filter(User.mt5_login == int(login)).first()
+    if not user or is_master_user(user):
+        raise HTTPException(404, "Unknown MT5 login — pehle app pe MT5 connect karo")
+    if (user.ea_token or "") != (token or "").strip():
+        raise HTTPException(403, "Invalid EA token — app → PC Setup se naya token copy karo")
+    return user
+
+
+@app.get("/ea/download")
+def ea_download():
+    """PumpingBotFollower.mq5 — user MT5 Experts folder mein copy kare."""
+    path = Path(__file__).resolve().parent / "mql5" / "PumpingBotFollower.mq5"
+    if not path.is_file():
+        raise HTTPException(404, "EA file missing on server")
+    return FileResponse(
+        path,
+        filename="PumpingBotFollower.mq5",
+        media_type="text/plain",
+    )
+
+
+@app.post("/ea/hello")
+def ea_hello(body: EaHelloIn, db: Session = Depends(get_db)):
+    """EA onInit / timer — marks follower online; auto-enables copy if unlocked today."""
+    user = _ea_auth_user(db, body.login, body.token)
+    ea_queue.touch(user.id, {
+        "balance": body.balance,
+        "equity": body.equity,
+        "currency": body.currency,
+        "server": body.server,
+        "login": body.login,
+    })
+    was_stopped = (user.vps_status or "") == "user_stopped"
+    user.vps_balance = float(body.balance or 0)
+    user.vps_ready = True
+    user.vps_last_seen = datetime.utcnow()
+    user.hosting_mode = "ea"
+    if not was_stopped:
+        user.vps_status = "ea_online"
+        # Auto copy ON when daily unlocked (no Start Bot needed)
+        if (
+            (user.daily_unlock_date or "") == pkt_today()
+            and (user.daily_profit_owed or 0) <= 0
+            and (user.payment_status or "clear").lower() == "clear"
+        ):
+            user.bot_active = True
+            active_bots[user.id] = True
+    db.commit()
+    return {
+        "ok": True,
+        "user_id": user.id,
+        "username": user.username,
+        "can_copy": follower_can_copy(user),
+        "daily_unlock_date": user.daily_unlock_date,
+        "bot_active": bool(user.bot_active),
+        "poll_sec": 1,
+    }
+
+
+@app.get("/ea/poll")
+def ea_poll(
+    login: int = Query(...),
+    token: str = Query(...),
+    balance: float = Query(0),
+    equity: float = Query(0),
+    db: Session = Depends(get_db),
+):
+    """EA timer: pending copy_open / copy_close commands."""
+    user = _ea_auth_user(db, login, token)
+    ea_queue.touch(user.id, {"balance": balance, "equity": equity, "login": login})
+    user.vps_ready = True
+    user.vps_status = "ea_online"
+    user.vps_last_seen = datetime.utcnow()
+    if balance:
+        user.vps_balance = float(balance)
+    db.commit()
+
+    if not follower_can_copy(user):
+        return {
+            "ok": True,
+            "can_copy": False,
+            "commands": [],
+            "reason": "locked_or_unpaid",
+            "daily_unlock_date": user.daily_unlock_date,
+            "daily_profit_owed": user.daily_profit_owed or 0,
+        }
+
+    cmds = ea_queue.poll(user.id, limit=5)
+    return {
+        "ok": True,
+        "can_copy": True,
+        "commands": cmds,
+        "bot_active": bool(user.bot_active),
+    }
+
+
+@app.post("/ea/ack")
+def ea_ack(body: EaAckIn, db: Session = Depends(get_db)):
+    """EA reports fill / close result → trades table."""
+    user = _ea_auth_user(db, body.login, body.token)
+    ea_queue.touch(user.id)
+
+    if body.ok and body.ticket and body.master_ticket and (body.side or body.symbol):
+        existing = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.master_ticket == int(body.master_ticket),
+            Trade.status == "open",
+        ).first()
+        if not existing:
+            db.add(Trade(
+                user_id=user.id,
+                symbol=body.symbol or "",
+                trade_type=(body.side or "BUY").upper(),
+                lot=float(body.lot or 0.01),
+                open_price=float(body.price or 0),
+                score=0,
+                mt5_ticket=int(body.ticket),
+                master_ticket=int(body.master_ticket),
+                status="open",
+            ))
+            db.commit()
+            return {"ok": True, "saved": "open"}
+
+    if body.master_ticket and (body.profit is not None or not body.ok):
+        row = db.query(Trade).filter(
+            Trade.user_id == user.id,
+            Trade.master_ticket == int(body.master_ticket),
+            Trade.status == "open",
+        ).first()
+        if row:
+            row.status = "closed"
+            row.closed_at = datetime.utcnow()
+            if body.profit is not None:
+                row.profit = float(body.profit)
+            if body.price is not None:
+                row.close_price = float(body.price)
+            db.commit()
+            return {"ok": True, "saved": "closed"}
+
+    return {"ok": True, "saved": None, "error": body.error}
 
 
 @app.post("/admin/vps/report")

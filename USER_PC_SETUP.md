@@ -1,80 +1,63 @@
-# PumpingBot — User PC Setup (Follower)
+# PumpingBot — User ke liye (bahut simple)
 
-Admin ka **ek master account** trades karta hai.  
-Aapke **Windows PC** pe chhoti agent file chalti hai → aapke Exness account pe **same trades copy** hoti hain.
+Aapko **Python / VPS / bat file** ki zaroorat **nahi**.
 
-**VPS ki zaroorat nahi** (user ke liye).  
-**PC din-raat ON** + internet zaroori.
+## Rozana sirf yeh 3 cheezein
 
----
+1. PC pe **Exness MetaTrader 5** open  
+2. Apna account **login**  
+3. **Algo / AutoTrading ON**
 
-## Join ke baad aapko kya karna hai (step by step)
-
-### A) App pe (mobile ya browser)
-
-1. PumpingBot app pe **Register / Login** karo.
-2. **MT5** page kholo → apna Exness **Login, Password, Server** save karo.
-3. **PC Setup** page pe jao → **Get Agent Token** dabao → token **copy** karo (30 din valid).
-4. Baad mein Dashboard pe **Start Bot** tab dabana jab PC agent online ho.
-
-### B) Windows PC pe (trades yahan lagenge)
-
-5. PC pe **MetaTrader 5 (Exness)** install karo aur **usi account** se login karo jo app pe save kiya.
-6. MT5 menu: **Tools → Options → Expert Advisors**
-   - ✅ **Allow algorithmic trading**
-   - ✅ DLL imports (agar option ho)
-7. Windows **Sleep / Hibernate OFF** karo (Power Options).
-8. Is repo ka folder PC pe rakho (zip ya `git clone`).
-9. Command Prompt / PowerShell:
-
-```bat
-cd C:\path\to\PumpingBot
-pip install -r local_agent\requirements.txt
-```
-
-10. `local_agent\START_FOLLOWER.bat` Notepad se kholo aur set karo:
-
-| Variable | Example |
-|----------|---------|
-| `SERVER_URL` | `https://web-production-c78a0.up.railway.app` |
-| `ACCESS_TOKEN` | (app se Get Agent Token) |
-| `MT5_LOGIN` | aapka login number |
-| `MT5_PASSWORD` | investor/trading password (jo MT5 API allow kare) |
-| `MT5_SERVER` | e.g. `Exness-MT5Real…` |
-| `MT5_PATH` | optional — agar ek hi MT5 hai to khali chhod sakte ho; warna `C:\Program Files\MetaTrader 5 EXNESS\terminal64.exe` |
-
-11. **START_FOLLOWER.bat** double-click karo.  
-    Black window **band mat karo** — yahi agent hai.
-12. App Dashboard pe badge **MT5 Live / Agent online** aaye.
-13. **Start Bot** dabao.
-
-Ab jab master trade karega, aapke PC ke MT5 pe copy trade lagegi.
+Bas. Jab admin (master) trade karega, aapke MT5 pe copy trade EA khud laga degi — **agar aaj ka admin unlock + 25% clear ho**.
 
 ---
 
-## Rozana payment (25% profit → Admin)
+## Ek dafa setup (pehli baar)
 
-1. Din ke **winning closed trades** ka **25%** admin ko bhejo (USDT BEP20 — app pe address dikhega).
-2. App → **Payment / Subscription** page pe **screenshot upload**.
-3. **Admin Approve** kare → **usi din / agla din** trades unlock.
-4. **Bina admin approve** ke nayi trades **band** rehti hain.
-5. Naya din (PKT midnight) pe unlock expire — dobara approve / daily unlock chahiye.
+### A) App (mobile/browser)
+
+1. Register / Login  
+2. **MT5** page pe apna Exness login / password / server **save**  
+3. **PC Setup** pe jao → **EA Token** copy karo  
+4. **Download EA** (`PumpingBotFollower.mq5`)
+
+### B) Windows PC — Exness MT5
+
+1. [Exness MT5](https://www.exness.com/apps/) download + install  
+2. Apna account login  
+3. **Tools → Options → Expert Advisors**
+   - ✅ Allow algorithmic trading  
+   - ✅ Allow WebRequest for listed URL → add:
+     `https://web-production-c78a0.up.railway.app`  
+     (ya jo bhi aapki app URL ho)
+4. EA file copy karo:
+   - MT5 → File → Open Data Folder → `MQL5\Experts\`
+   - `PumpingBotFollower.mq5` yahan paste
+5. Navigator (Ctrl+N) → Experts → refresh → **PumpingBotFollower** kisi chart pe drag  
+6. Inputs:
+   - `InpServerUrl` = app URL  
+   - `InpToken` = app se copy kiya hua EA token  
+7. OK → toolbar pe **AutoTrading** button green/ON  
+8. Chart corner pe smiley / “PumpingBot EA: ONLINE”
+
+PC **Sleep band** rakho jab trades chahiye.
 
 ---
 
-## Agar trades nahi lag rahi
+## Rozana payment (25%)
 
-| Check | |
-|-------|--|
-| PC on + agent window open? | Zaroori |
-| MT5 logged in + Algo Trading ON? | Zaroori |
-| App pe Start Bot ON? | Zaroori |
-| Daily unlock / 25% paid + admin approve? | Zaroori |
-| Internet / Railway app online? | Zaroori |
+- Din ke profit ka **25%** admin ko (USDT — app pe address)  
+- Screenshot → **Payment** page  
+- Admin **Approve** → agla / aaj unlock  
+- Bina approve → EA trades **lock** (chart pe LOCKED dikhega)
 
 ---
 
-## Master (Admin) PC
+## Trouble
 
-Admin apne PC pe **master** agent chalata hai (`AGENT_ROLE=master`) — sirf **ek** strategy account.  
-Followers alag-alag apne PC pe `AGENT_ROLE=follower` chalate hain.
+| Problem | Fix |
+|--------|-----|
+| WebRequest failed | Options → EA → URL allow list |
+| Token invalid | App → PC Setup → naya token EA mein |
+| LOCKED | 25% pay + admin approve |
+| No trades | Master trading? EA ONLINE? AutoTrading ON? |
