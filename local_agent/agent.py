@@ -1001,16 +1001,53 @@ class PumpingAgent:
                 "profit": result.get("profit"),
             })
 
+    def _send_hello(self):
+        acc = self.mt5.account() if self.mt5 else {}
+        self.send({
+            "type": "hello",
+            "role": self.role,
+            "login": self.login,
+            "server": self.server,
+            "balance": acc.get("balance", 0),
+            "equity": acc.get("equity", 0),
+            "currency": acc.get("currency", ""),
+            "is_cent": bool(acc.get("is_cent")),
+            "ready": bool(self.mt5.ready) if self.mt5 else False,
+        })
+
     def run(self):
-        if not self.connect_mt5():
-            raise SystemExit("MT5 connect failed")
+        # Connect WS first so Railway sees the agent even while MT5 IPC retries
+        # (Exness bind 22346 / portable race — do not die on first failure).
         self.start_ws()
         threading.Thread(target=self.heartbeat_loop, daemon=True, name="heartbeat").start()
+        time.sleep(1.5)
+
+        for attempt in range(1, 16):
+            if self.connect_mt5():
+                print(f"[AGENT] MT5 ready on attempt {attempt}")
+                self._send_hello()
+                break
+            print(
+                f"[AGENT] MT5 not ready (attempt {attempt}/15) — "
+                f"retry in 12s (check Journal bind 22346 / Algo Trading)"
+            )
+            self._send_hello()
+            time.sleep(12)
+        else:
+            raise SystemExit("MT5 connect failed after retries")
+
         if self.role == "master":
             self.master_loop()
         else:
             print("[AGENT] Follower mode - waiting for copy commands")
             while not self._stop.is_set():
+                if not self.mt5.ready:
+                    print("[AGENT] MT5 dropped — reconnecting…")
+                    if self.connect_mt5():
+                        self._send_hello()
+                    else:
+                        time.sleep(10)
+                        continue
                 time.sleep(1)
 
 

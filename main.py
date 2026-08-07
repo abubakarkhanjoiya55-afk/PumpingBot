@@ -145,7 +145,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.32.2"   # Fix multi-MT5 IPC portable=True (MT5 Syncing / bind 22346)
+API_VERSION = "3.32.3"   # Agent retries MT5 IPC instead of exiting (fixes Syncing stuck)
 CODE_REPO_BRANCH = "main"
 
 # Supervisor remote commands (in-memory; supervisor polls roster)
