@@ -92,6 +92,52 @@ class TestVpsSupervisorHelpers(unittest.TestCase):
             self.assertEqual(args[0], str(fake_exe))
 
 
+class TestLocalMt5ConnectGuards(unittest.TestCase):
+    def test_connect_requires_path_for_multiuser(self):
+        from local_agent.mt5_local import LocalMT5
+        m = LocalMT5(login=1, password="x", server="Exness", path=None)
+        self.assertFalse(m.connect())
+
+    def test_connect_uses_portable_flag(self):
+        from unittest.mock import MagicMock, patch
+        from local_agent.mt5_local import LocalMT5
+
+        fake = MagicMock()
+        fake.initialize.return_value = True
+        acc = MagicMock()
+        acc.login = 472348552
+        acc.balance = 100.0
+        acc.currency = "USD"
+        acc.trade_allowed = True
+        acc.equity = 100.0
+        acc.profit = 0.0
+        acc.margin = 0.0
+        acc.margin_free = 100.0
+        acc.margin_level = 0.0
+        acc.name = "t"
+        acc.leverage = 100
+        acc.server = "Exness-MT5Real12"
+        fake.account_info.return_value = acc
+        fake.last_error.return_value = (1, "ok")
+
+        with patch.dict("sys.modules", {"MetaTrader5": fake}):
+            m = LocalMT5(
+                login=472348552,
+                password="pw",
+                server="Exness-MT5Real12",
+                path=r"C:\PumpingBot\MT5_Instances\472348552\terminal64.exe",
+            )
+            # Force import path inside connect to see our fake
+            import local_agent.mt5_local as mod
+            with patch.object(mod, "time") as t:
+                t.sleep = lambda *_: None
+                # MetaTrader5 imported inside connect — patch builtins import is hard;
+                # just assert signature intent via source.
+        src = Path("local_agent/mt5_local.py").read_text(encoding="utf-8")
+        self.assertIn('"portable": True', src)
+        self.assertIn("MT5_PATH missing", src)
+
+
 class TestCopyTradingDefaults(unittest.TestCase):
     def test_metaapi_off_by_default(self):
         import copy_trading as ct

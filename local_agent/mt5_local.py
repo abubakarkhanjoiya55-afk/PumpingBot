@@ -30,13 +30,28 @@ class LocalMT5:
 
         self._mt5 = mt5
 
-        # Multi-user VPS: always prefer THIS account's portable path first.
-        # Attaching to a random already-open terminal first made followers land
-        # on Admin99's master terminal and fail / kick Algo Trading.
-        attempts = []
-        if self.path:
-            attempts.append({"path": self.path})
-        attempts.append({})  # fallback: any default/running terminal
+        # Multi-user VPS: MUST use this login's portable path + portable=True.
+        # Without portable=True, Python IPC sticks to the first terminal's
+        # 127.0.0.1:22346 — followers show "MT5 Syncing..." / $0 forever.
+        if not self.path:
+            print("[LOCAL MT5] MT5_PATH missing — cannot safely multi-attach")
+            return False
+
+        attempts = [
+            {
+                "path": self.path,
+                "portable": True,
+                "login": int(self.login),
+                "password": self.password,
+                "server": self.server,
+                "timeout": 120_000,
+            },
+            {
+                "path": self.path,
+                "portable": True,
+                "timeout": 120_000,
+            },
+        ]
 
         last_err = None
         for kwargs in attempts:
@@ -46,38 +61,34 @@ class LocalMT5:
                     mt5.shutdown()
                 except Exception:
                     pass
-                if mt5.initialize(**kwargs):
+                ok = False
+                try:
+                    ok = bool(mt5.initialize(**kwargs))
+                except TypeError:
+                    # Older MetaTrader5 wheels may not accept portable=
+                    slim = {k: v for k, v in kwargs.items() if k != "portable"}
+                    ok = bool(mt5.initialize(**slim))
+                if ok:
                     initialized = True
-                    label = kwargs.get("path") or "default-running-terminal"
-                    print(f"[LOCAL MT5] initialize ok via {label}")
+                    print(
+                        f"[LOCAL MT5] initialize ok via {self.path} "
+                        f"portable={kwargs.get('portable', False)}"
+                    )
                     break
                 last_err = mt5.last_error()
-                print(f"[LOCAL MT5] initialize failed (try {attempt}/3) {kwargs}: {last_err}")
-                time.sleep(3)
+                print(f"[LOCAL MT5] initialize failed (try {attempt}/3): {last_err}")
+                time.sleep(4)
             if not initialized:
                 continue
 
             info = mt5.account_info()
             current_login = int(getattr(info, "login", 0) or 0) if info else 0
             if current_login == int(self.login):
-                # Re-login on same account kicks other IPC / drops Algo Trading
                 print(
                     f"[LOCAL MT5] Already logged in as {self.login} - skip login() "
                     f"(keeps Algo Trading session stable)"
                 )
-            elif not kwargs.get("path"):
-                # Wrong account on some other open terminal — do NOT login() into it.
-                print(
-                    f"[LOCAL MT5] Default terminal is login={current_login}, "
-                    f"need {self.login} — skip attach, try next"
-                )
-                try:
-                    mt5.shutdown()
-                except Exception:
-                    pass
-                continue
             else:
-                # Correct portable instance path — login this account here.
                 authorized = mt5.login(
                     self.login, password=self.password, server=self.server
                 )
@@ -106,6 +117,10 @@ class LocalMT5:
             return True
 
         print(f"[LOCAL MT5] initialize/login failed: {last_err}")
+        print(
+            "[LOCAL MT5] Tip: Journal bind error 22346 = IPC clash. "
+            "Kill extra terminal64, keep one portable per login, restart supervisor."
+        )
         return False
 
     def shutdown(self):

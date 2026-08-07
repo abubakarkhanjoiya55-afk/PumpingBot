@@ -206,6 +206,7 @@ class Supervisor:
                 "MT5_PASSWORD": agent.password,
                 "MT5_SERVER": agent.server,
                 "MT5_PATH": mt5_path,
+                "MT5_PORTABLE": "1",
                 "AGENT_ROLE": agent.role,
                 "BOT_ACTIVE": "1" if user.get("bot_active") else "0",
                 "ACCOUNT_TYPE": os.environ.get("ACCOUNT_TYPE", "standard"),
@@ -342,11 +343,18 @@ class Supervisor:
                 self.stop_agent(a)
                 del self.agents[uid]
 
-        # Start / restart wanted agents
+        # Start / restart wanted agents (stagger new launches — avoids Exness
+        # Journal "bind error 127.0.0.1:22346" when two terminals boot together)
+        stagger = float(os.environ.get("MT5_STAGGER_SEC", "15"))
+        new_starts = 0
         for uid, user in wanted.items():
             existing = self.agents.get(uid)
             if existing is None:
+                if new_starts > 0 and stagger > 0:
+                    print(f"[VPS] Stagger {stagger:.0f}s before next MT5/agent start")
+                    time.sleep(stagger)
                 self.agents[uid] = self.start_agent(user)
+                new_starts += 1
                 continue
 
             # Credentials / role changed -> restart.
