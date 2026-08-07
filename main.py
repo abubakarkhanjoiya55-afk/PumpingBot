@@ -146,7 +146,7 @@ SYMBOLS = [
     "XAUUSDm", "BTCUSDm", "ETHUSDm",
 ]
 
-API_VERSION = "3.34.0"   # MT5 EA followers — user only needs Exness MT5 + Algo + EA
+API_VERSION = "3.35.0"   # One-click Windows installer for MT5 EA followers
 CODE_REPO_BRANCH = "main"
 ADMIN_PROFIT_SHARE = float(os.environ.get("ADMIN_PROFIT_SHARE", "0.25"))
 REFERRER_PROFIT_SHARE = float(os.environ.get("REFERRER_PROFIT_SHARE", "0.05"))
@@ -3853,16 +3853,12 @@ def my_agent_setup(request: Request,
         tok = ensure_ea_token(current_user)
         db.commit()
     steps = [
-        "1) Windows PC pe Exness MetaTrader 5 download/install karo.",
-        "2) Apna Exness account MT5 mein login karo.",
-        "3) Tools → Options → Expert Advisors → Allow algorithmic trading ON.",
-        "4) Same Options → 'Allow WebRequest for listed URL' ON, list mein app URL add karo.",
-        "5) App → MT5 page pe wahi login save karo.",
-        "6) Neeche se PumpingBotFollower.mq5 download → MT5 Experts folder mein copy → Navigator refresh.",
-        "7) EA chart pe drag karo → Inputs: InpToken = app ka EA token (ek dafa).",
-        "8) AutoTrading button ON (toolbar). MT5 / PC band mat karo jab trades chahiye.",
-        "9) Rozana bas MT5 open + login + Algo ON — Python/bat ki zaroorat nahi.",
-        "10) Profit aaye to 25% admin ko → screenshot → Admin Approve (warna agla din lock).",
+        "1) PC pe Exness MetaTrader 5 install + apna account login.",
+        "2) App → MT5 page pe wahi login save + yahan se EA Token COPY.",
+        "3) Neeche se Installer ZIP download → unzip → PumpingBotSetup.bat double-click.",
+        "4) Setup token maange to paste — baaki EA/config/WebRequest khud ho jayega.",
+        "5) MT5 mein AutoTrading ON + Navigator se PumpingBotFollower chart pe ek dafa drag.",
+        "6) Rozana: sirf MT5 open + login + AutoTrading ON.",
     ]
     return {
         "role": role,
@@ -3873,6 +3869,7 @@ def my_agent_setup(request: Request,
         "ea_token": tok,
         "ea_online": ea_queue.is_online(current_user.id),
         "ea_download": "/ea/download",
+        "installer_download": "/ea/installer.zip",
         "daily_unlocked_today": (current_user.daily_unlock_date or "") == pkt_today(),
         "daily_profit_owed": round(current_user.daily_profit_owed or 0, 2),
         "admin_profit_share_pct": int(ADMIN_PROFIT_SHARE * 100),
@@ -3928,6 +3925,42 @@ def ea_download():
         path,
         filename="PumpingBotFollower.mq5",
         media_type="text/plain",
+    )
+
+
+@app.get("/ea/installer.zip")
+def ea_installer_zip():
+    """
+    One-click Windows pack: Setup.bat + Setup.ps1 + EA mq5.
+    User unzip karke PumpingBotSetup.bat double-click kare.
+    """
+    import io
+    import zipfile
+    from fastapi.responses import Response
+
+    root = Path(__file__).resolve().parent
+    files = [
+        (root / "installer" / "PumpingBotSetup.bat", "PumpingBotSetup.bat"),
+        (root / "installer" / "PumpingBotSetup.ps1", "PumpingBotSetup.ps1"),
+        (root / "mql5" / "PumpingBotFollower.mq5", "PumpingBotFollower.mq5"),
+        (root / "installer" / "README.txt", "README.txt"),
+    ]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        written = 0
+        for src, name in files:
+            if not src.is_file():
+                continue
+            zf.write(src, arcname=name)
+            written += 1
+        if written == 0:
+            raise HTTPException(404, "Installer files missing")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="PumpingBotSetup.zip"',
+        },
     )
 
 

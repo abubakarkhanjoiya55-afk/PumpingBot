@@ -116,6 +116,10 @@ export function eaDownloadUrl() {
   return `${API_URL}/ea/download`;
 }
 
+export function eaInstallerUrl() {
+  return `${API_URL}/ea/installer.zip`;
+}
+
 export async function adminDailyUnlock(userId) {
   const { data } = await api.post(`/admin/daily-unlock/${userId}`, null, { headers: authHeaders() });
   return data;

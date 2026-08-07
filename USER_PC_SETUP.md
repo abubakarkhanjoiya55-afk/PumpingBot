@@ -1,63 +1,40 @@
-# PumpingBot — User ke liye (bahut simple)
+# PumpingBot — User Setup (sab se asaan)
 
-Aapko **Python / VPS / bat file** ki zaroorat **nahi**.
+## Rozana (har din)
 
-## Rozana sirf yeh 3 cheezein
+1. Exness MT5 open  
+2. Account login  
+3. **AutoTrading ON**
 
-1. PC pe **Exness MetaTrader 5** open  
-2. Apna account **login**  
-3. **Algo / AutoTrading ON**
-
-Bas. Jab admin (master) trade karega, aapke MT5 pe copy trade EA khud laga degi — **agar aaj ka admin unlock + 25% clear ho**.
+Bas.
 
 ---
 
-## Ek dafa setup (pehli baar)
+## Ek dafa (pehli baar) — Installer
 
-### A) App (mobile/browser)
+### App pe
+1. Login  
+2. **MT5** page → apna Exness login save  
+3. **PC Setup** → **Copy EA Token**  
+4. **Download Installer (ZIP)**
 
-1. Register / Login  
-2. **MT5** page pe apna Exness login / password / server **save**  
-3. **PC Setup** pe jao → **EA Token** copy karo  
-4. **Download EA** (`PumpingBotFollower.mq5`)
+### PC pe
+1. ZIP unzip karo  
+2. **`PumpingBotSetup.bat`** double-click  
+3. Token paste (jo copy kiya)  
+4. Installer **khud** karega:
+   - EA Experts folder mein  
+   - Token config file  
+   - WebRequest URL  
+5. MT5 khule to:
+   - AutoTrading ON  
+   - Navigator → **PumpingBotFollower** → chart pe **ek dafa drag** → OK  
 
-### B) Windows PC — Exness MT5
-
-1. [Exness MT5](https://www.exness.com/apps/) download + install  
-2. Apna account login  
-3. **Tools → Options → Expert Advisors**
-   - ✅ Allow algorithmic trading  
-   - ✅ Allow WebRequest for listed URL → add:
-     `https://web-production-c78a0.up.railway.app`  
-     (ya jo bhi aapki app URL ho)
-4. EA file copy karo:
-   - MT5 → File → Open Data Folder → `MQL5\Experts\`
-   - `PumpingBotFollower.mq5` yahan paste
-5. Navigator (Ctrl+N) → Experts → refresh → **PumpingBotFollower** kisi chart pe drag  
-6. Inputs:
-   - `InpServerUrl` = app URL  
-   - `InpToken` = app se copy kiya hua EA token  
-7. OK → toolbar pe **AutoTrading** button green/ON  
-8. Chart corner pe smiley / “PumpingBot EA: ONLINE”
-
-PC **Sleep band** rakho jab trades chahiye.
+Token Inputs mein paste karne ki **zaroorat nahi** (installer ne config likh di).
 
 ---
 
-## Rozana payment (25%)
+## Agar Setup.bat error de
 
-- Din ke profit ka **25%** admin ko (USDT — app pe address)  
-- Screenshot → **Payment** page  
-- Admin **Approve** → agla / aaj unlock  
-- Bina approve → EA trades **lock** (chart pe LOCKED dikhega)
-
----
-
-## Trouble
-
-| Problem | Fix |
-|--------|-----|
-| WebRequest failed | Options → EA → URL allow list |
-| Token invalid | App → PC Setup → naya token EA mein |
-| LOCKED | 25% pay + admin approve |
-| No trades | Master trading? EA ONLINE? AutoTrading ON? |
+- Pehle Exness MT5 install karke **ek dafa khol/band** karo, phir Setup dubara  
+- Windows SmartScreen aaye to **More info → Run anyway**

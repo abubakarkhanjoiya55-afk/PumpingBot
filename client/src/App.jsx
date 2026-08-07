@@ -4,7 +4,7 @@ import {
   fetchDashboard, connectMT5, disconnectMT5, startBot, stopBot, API_URL,
   uploadPaymentScreenshot, fetchAdminStats, fetchAdminUsers, fetchPendingPayments,
   confirmPayment, rejectPayment, toggleUserBot, deleteUser, paymentScreenshotUrl,
-  fetchAgentToken, fetchAgentSetup, adminDailyUnlock, adminDailyUnlockAllClear, eaDownloadUrl,
+  fetchAgentToken, fetchAgentSetup, adminDailyUnlock, adminDailyUnlockAllClear, eaDownloadUrl, eaInstallerUrl,
   fetchApiInfo, applyAppUpdate,
 } from './api';
 
@@ -211,7 +211,7 @@ function PcSetupPage({ me, onRefresh }) {
     if (!token) return;
     try {
       await navigator.clipboard.writeText(token);
-      alert('EA Token copied — MT5 EA Inputs → InpToken mein paste');
+      alert('Token copied! Ab PumpingBotSetup.bat chalao aur jab pooche paste karo.');
     } catch (_) {
       alert(token);
     }
@@ -221,8 +221,8 @@ function PcSetupPage({ me, onRefresh }) {
     <>
       <h1>💻 PC Setup</h1>
       <div className="warn-banner" style={{ borderColor: '#00ff88' }}>
-        <strong>Rozana user sirf yeh kare:</strong> Exness MT5 open → account login → Algo / AutoTrading ON.
-        Python, VPS, bat file — kuch nahi.
+        <strong>Asaan tarika:</strong> Installer ZIP download → Setup.bat → token paste.
+        Installer EA + WebRequest khud laga dega. Rozana sirf MT5 + AutoTrading ON.
       </div>
       {err && <p className="error">{err}</p>}
 
@@ -246,11 +246,11 @@ function PcSetupPage({ me, onRefresh }) {
       </div>
 
       <div className="sub-upload-card" style={{ marginBottom: '1rem' }}>
-        <h2>Ek dafa: EA download + token</h2>
-        <p>Pehle app → MT5 page pe login save karo, phir:</p>
+        <h2>1) Installer (recommended)</h2>
+        <p>Pehle MT5 page pe account save karo, phir:</p>
         <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
-          <a className="btn-start" href={eaDownloadUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
-            Download EA (.mq5)
+          <a className="btn-start" href={eaInstallerUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
+            Download Installer (ZIP)
           </a>
           <button type="button" className="btn-start" disabled={!token} onClick={copyToken}>
             Copy EA Token
@@ -266,23 +266,23 @@ function PcSetupPage({ me, onRefresh }) {
         ) : (
           <p style={{ color: '#f59e0b' }}>MT5 connect ke baad token yahan aayega.</p>
         )}
-        {setup?.server_url && (
-          <p style={{ color: '#888', marginTop: 8 }}>
-            WebRequest allow URL: <code>{setup.server_url}</code>
-          </p>
-        )}
+        <ol style={{ paddingLeft: '1.2rem', lineHeight: 1.7, color: '#ddd', marginTop: '1rem' }}>
+          <li>ZIP unzip karo</li>
+          <li><strong>PumpingBotSetup.bat</strong> double-click</li>
+          <li>Token paste</li>
+          <li>MT5 → AutoTrading ON → PumpingBotFollower chart pe drag (ek dafa)</li>
+        </ol>
       </div>
 
       <div className="sub-upload-card">
-        <h2>PC pe steps</h2>
-        <ol style={{ paddingLeft: '1.2rem', lineHeight: 1.7, color: '#ddd' }}>
-          {(setup?.steps || [
-            'Exness MT5 download + apna account login',
-            'Algo Trading ON + WebRequest URL allow',
-            'EA Experts folder mein copy → chart pe drag',
-            'InpToken paste → AutoTrading ON',
-          ]).map((s) => <li key={s}>{s}</li>)}
-        </ol>
+        <h2>2) Advanced (manual EA only)</h2>
+        <a className="btn-start" href={eaDownloadUrl()} style={{ display: 'inline-block', textDecoration: 'none' }}>
+          Download EA (.mq5) only
+        </a>
+        <p style={{ color: '#888', marginTop: 8 }}>
+          Detail: <code>USER_PC_SETUP.md</code>
+          {setup?.server_url ? <> · Server: <code>{setup.server_url}</code></> : null}
+        </p>
       </div>
     </>
   );
